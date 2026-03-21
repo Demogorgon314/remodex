@@ -1,14 +1,15 @@
 // FILE: push-service.js
-// Purpose: Stores session-scoped APNs registration state and sends completion pushes for relay-hosted Remodex sessions.
+// Purpose: Stores session-scoped push registration state and sends completion pushes for relay-hosted Remodex sessions.
 // Layer: Hosted service helper
 // Exports: createPushSessionService, createFileBackedPushStateStore, resolvePushStateFilePath
-// Depends on: crypto, fs, os, path, ./apns-client
+// Depends on: crypto, fs, os, path, ./apns-client, ./fcm-client
 
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { createAPNsClient } = require("./apns-client");
+const { createFCMClient } = require("./fcm-client");
 
 const PUSH_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
 const PUSH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -16,6 +17,7 @@ const PUSH_PREVIEW_MAX_CHARS = 160;
 
 function createPushSessionService({
   apnsClient = createAPNsClient(apnsConfigFromEnv(process.env)),
+  fcmClient = createFCMClient(fcmConfigFromEnv(process.env)),
   canRegisterSession = () => true,
   canNotifyCompletion = null,
   now = () => Date.now(),
@@ -28,7 +30,12 @@ function createPushSessionService({
     ? canNotifyCompletion
     : canRegisterSession;
   const persistedState = stateStore.read();
-  const sessions = new Map(persistedState.sessions || []);
+  const sessions = new Map(
+    (persistedState.sessions || []).map(([sessionId, session]) => [
+      sessionId,
+      normalizeSessionRecord(session),
+    ])
+  );
   const deliveredDedupeKeys = new Map(persistedState.deliveredDedupeKeys || []);
   pruneStaleState();
 
@@ -37,11 +44,19 @@ function createPushSessionService({
     notificationSecret,
     deviceToken,
     alertsEnabled,
+    authorizationStatus,
+    appEnvironment,
     apnsEnvironment,
+    platform,
+    pushProvider,
   } = {}) {
     const normalizedSessionId = readString(sessionId);
     const normalizedSecret = readString(notificationSecret);
     const normalizedDeviceToken = normalizeDeviceToken(deviceToken);
+    const normalizedPlatform = readPushPlatform(platform);
+    const normalizedPushProvider = readPushProvider(pushProvider, normalizedPlatform);
+    const normalizedAuthorizationStatus = readPushAuthorizationStatus(authorizationStatus);
+    const normalizedAppEnvironment = readPushAppEnvironment(appEnvironment || apnsEnvironment);
 
     if (!normalizedSessionId || !normalizedSecret || !normalizedDeviceToken) {
       throw pushServiceError(
@@ -71,7 +86,10 @@ function createPushSessionService({
       notificationSecret: normalizedSecret,
       deviceToken: normalizedDeviceToken,
       alertsEnabled: Boolean(alertsEnabled),
-      apnsEnvironment: apnsEnvironment === "development" ? "development" : "production",
+      authorizationStatus: normalizedAuthorizationStatus,
+      appEnvironment: normalizedAppEnvironment,
+      platform: normalizedPlatform,
+      pushProvider: normalizedPushProvider,
       updatedAt: now(),
     });
     persistState("registerDevice");
@@ -127,17 +145,21 @@ function createPushSessionService({
       return { ok: true, skipped: true };
     }
 
-    await apnsClient.sendNotification({
-      deviceToken: session.deviceToken,
-      apnsEnvironment: session.apnsEnvironment,
-      title: normalizePreviewText(title) || "New Thread",
-      body: normalizePreviewText(body) || fallbackBodyForResult(normalizedResult),
-      payload: {
-        source: "codex.runCompletion",
-        threadId: normalizedThreadId,
-        turnId: readString(turnId) || "",
-        result: normalizedResult,
-      },
+    const notificationTitle = normalizePreviewText(title) || "Conversation";
+    const notificationBody = normalizePreviewText(body) || fallbackBodyForResult(normalizedResult);
+    const notificationPayload = {
+      source: "codex.runCompletion",
+      threadId: normalizedThreadId,
+      turnId: readString(turnId) || "",
+      result: normalizedResult,
+    };
+    await sendCompletionNotification({
+      session,
+      apnsClient,
+      fcmClient,
+      title: notificationTitle,
+      body: notificationBody,
+      payload: notificationPayload,
     });
 
     deliveredDedupeKeys.set(normalizedDedupeKey, now());
@@ -151,6 +173,7 @@ function createPushSessionService({
       registeredSessions: sessions.size,
       deliveredDedupeKeys: deliveredDedupeKeys.size,
       apnsConfigured: apnsClient.isConfigured(),
+      fcmConfigured: fcmClient.isConfigured(),
     };
   }
 
@@ -203,6 +226,35 @@ function createPushSessionService({
     notifyCompletion,
     getStats,
   };
+}
+
+async function sendCompletionNotification({
+  session,
+  apnsClient,
+  fcmClient,
+  title,
+  body,
+  payload,
+}) {
+  if (session.pushProvider === "fcm") {
+    if (!fcmClient.isConfigured()) {
+      return { ok: true, skipped: true };
+    }
+    return fcmClient.sendNotification({
+      deviceToken: session.deviceToken,
+      title,
+      body,
+      payload,
+    });
+  }
+
+  return apnsClient.sendNotification({
+    deviceToken: session.deviceToken,
+    apnsEnvironment: session.appEnvironment || session.apnsEnvironment || "production",
+    title,
+    body,
+    payload,
+  });
 }
 
 function createFileBackedPushStateStore({ stateFilePath } = {}) {
@@ -260,6 +312,24 @@ function apnsConfigFromEnv(env) {
   };
 }
 
+function fcmConfigFromEnv(env) {
+  return {
+    projectId: readFirstDefinedEnv(["REMODEX_FCM_PROJECT_ID", "PHODEX_FCM_PROJECT_ID"], env),
+    credentialsFile: readFirstDefinedEnv(
+      [
+        "REMODEX_FCM_SERVICE_ACCOUNT_FILE",
+        "PHODEX_FCM_SERVICE_ACCOUNT_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+      ],
+      env
+    ),
+    credentialsJSON: readFirstDefinedEnv(
+      ["REMODEX_FCM_SERVICE_ACCOUNT_JSON", "PHODEX_FCM_SERVICE_ACCOUNT_JSON"],
+      env
+    ),
+  };
+}
+
 function readAPNsPrivateKey(env) {
   const rawValue = readFirstDefinedEnv(["REMODEX_APNS_PRIVATE_KEY", "PHODEX_APNS_PRIVATE_KEY"], env);
   if (rawValue) {
@@ -297,7 +367,40 @@ function normalizeDeviceToken(value) {
     return "";
   }
 
+  if (!/^[0-9a-fA-F\s]+$/.test(normalized)) {
+    return normalized;
+  }
+
   return normalized.replace(/[^a-fA-F0-9]/g, "").toLowerCase();
+}
+
+function readPushPlatform(value) {
+  return value === "android" ? "android" : "ios";
+}
+
+function readPushProvider(value, platform) {
+  if (value === "fcm") {
+    return "fcm";
+  }
+  if (value === "apns") {
+    return "apns";
+  }
+  return platform === "android" ? "fcm" : "apns";
+}
+
+function readPushAuthorizationStatus(value) {
+  switch (value) {
+    case "notDetermined":
+    case "denied":
+    case "authorized":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+
+function readPushAppEnvironment(value) {
+  return value === "development" ? "development" : "production";
 }
 
 function normalizePreviewText(value) {
@@ -340,6 +443,23 @@ function emptyPushState() {
   return {
     sessions: [],
     deliveredDedupeKeys: [],
+  };
+}
+
+function normalizeSessionRecord(value) {
+  const session = value && typeof value === "object" ? value : {};
+  const platform = readPushPlatform(session.platform);
+  const pushProvider = readPushProvider(session.pushProvider, platform);
+  return {
+    notificationSecret: readString(session.notificationSecret),
+    deviceToken: normalizeDeviceToken(session.deviceToken),
+    alertsEnabled: Boolean(session.alertsEnabled),
+    authorizationStatus: readPushAuthorizationStatus(session.authorizationStatus),
+    appEnvironment: readPushAppEnvironment(session.appEnvironment || session.apnsEnvironment),
+    apnsEnvironment: readPushAppEnvironment(session.appEnvironment || session.apnsEnvironment),
+    platform,
+    pushProvider,
+    updatedAt: Number(session.updatedAt || 0),
   };
 }
 

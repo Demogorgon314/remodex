@@ -8,7 +8,7 @@
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
 [Follow on X](https://x.com/emanueledpt)
 
-Control [Codex](https://openai.com/index/codex/) from your iPhone. Remodex is a local-first open-source bridge + iOS app that keeps the Codex runtime on your Mac and lets your phone connect through a paired secure session.
+Control [Codex](https://openai.com/index/codex/) from your phone. Remodex is a local-first open-source bridge with mobile clients that keep the Codex runtime on your Mac and let your device connect through a paired secure session.
 
 ## Key App Features
 
@@ -46,6 +46,24 @@ Build the iOS app from source in Xcode, install your own signed build on-device,
 
 If you scan the pairing QR with a generic camera or QR reader before installing the app, your device may treat the QR payload as plain text and open a web search instead of pairing.
 
+## Android Preview Client
+
+`CodexMobileAndroid` is now the Android client workspace for the same local-first pairing model. You can build it from Android Studio or with Gradle:
+
+```sh
+cd CodexMobileAndroid
+./gradlew :app:assembleDebug
+```
+
+Current Android scope now follows the iOS client much more closely: onboarding, QR recovery, trusted reconnect, grouped thread browsing, pinned plans, reducer-backed timelines, send/stop/queue composer flows, `@files`, `$skills`, `/commands`, subagent and inline review entry points, git/worktree controls, assistant undo previews, image intake from the Android photo picker, local notifications, and managed push registration for Android when Firebase is configured.
+
+Managed push on Android requires Firebase configuration that is intentionally not committed to this repository:
+
+- add your own `CodexMobileAndroid/app/google-services.json` for the Android app build
+- provide relay-side FCM credentials through Google Application Default Credentials or an equivalent service-account configuration
+
+Direct camera capture is still the main intentionally deferred Android gap; the current Android composer uses the system photo picker for image intake.
+
 ## Architecture
 
 ```
@@ -78,6 +96,8 @@ This repo contains the local bridge, the iOS app target, and their tests:
 ├── phodex-bridge/                # Node.js bridge package used by `remodex`
 │   ├── bin/                      # CLI entrypoints
 │   └── src/                      # Bridge runtime, git/workspace handlers, refresh helpers
+├── CodexMobileAndroid/           # Android Studio / Gradle app project
+│   └── app/                      # Compose UI, data layer, platform integrations, and tests
 ├── CodexMobile/                  # Xcode project root
 │   ├── CodexMobile/              # App source target
 │   │   ├── Services/             # Connection, sync, incoming-event, git, and persistence logic
@@ -97,6 +117,7 @@ This repo contains the local bridge, the iOS app target, and their tests:
 - **A signed Remodex iOS build** installed on your iPhone or iPad before scanning the pairing QR
 - **macOS** (for desktop refresh features — the core bridge works on any OS)
 - **Xcode 16+** (only if building the iOS app from source)
+- **Android Studio / JDK 11+** (only if building the Android client from source)
 
 ## Install the Bridge
 

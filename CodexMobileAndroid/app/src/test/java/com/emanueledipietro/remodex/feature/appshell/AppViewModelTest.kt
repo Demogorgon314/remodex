@@ -1,0 +1,456 @@
+package com.emanueledipietro.remodex.feature.appshell
+
+import com.emanueledipietro.remodex.MainDispatcherRule
+import com.emanueledipietro.remodex.data.app.RemodexAppRepository
+import com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot
+import com.emanueledipietro.remodex.data.connection.PairingQrPayload
+import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
+import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
+import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
+import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexConnectionPhase
+import com.emanueledipietro.remodex.model.RemodexConnectionStatus
+import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
+import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
+import com.emanueledipietro.remodex.model.RemodexReasoningEffort
+import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.ConversationSpeaker
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class AppViewModelTest {
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
+    @Test
+    fun `ui state reflects repository updates`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            onboardingCompleted = true,
+            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 2),
+            secureConnection = SecureConnectionSnapshot(
+                phaseMessage = "Secure handshake complete. Android is connected to your trusted Remodex session.",
+                secureState = SecureConnectionState.ENCRYPTED,
+                attempt = 2,
+            ),
+        )
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.onboardingCompleted)
+        assertTrue(viewModel.uiState.value.isConnected)
+        assertEquals("Connected to Remodex", viewModel.uiState.value.connectionHeadline)
+    }
+
+    @Test
+    fun `composer state reflects the selected thread draft rules`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                com.emanueledipietro.remodex.model.RemodexThreadSummary(
+                    id = "thread-1",
+                    title = "Composer thread",
+                    preview = "Preview",
+                    projectPath = "/tmp/remodex",
+                    lastUpdatedLabel = "Updated just now",
+                    isRunning = true,
+                    queuedDrafts = 0,
+                    runtimeLabel = "Plan, medium reasoning",
+                    messages = emptyList(),
+                ),
+            ),
+            selectedThreadId = "thread-1",
+        )
+        advanceUntilIdle()
+        viewModel.updateComposerInput("Queue this next")
+        advanceUntilIdle()
+
+        assertEquals("Queue follow-up", viewModel.uiState.value.composer.sendLabel)
+        assertTrue(viewModel.uiState.value.composer.canStop)
+        assertTrue(viewModel.uiState.value.composer.canSend)
+    }
+
+    @Test
+    fun `attachment limit keeps only the allowed images and shows a limit message`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(threadSummary(id = "thread-1", title = "Attachment thread")),
+            selectedThreadId = "thread-1",
+        )
+        advanceUntilIdle()
+
+        viewModel.addAttachments(
+            List(5) { index ->
+                RemodexComposerAttachment(
+                    id = "attachment-$index",
+                    uriString = "content://attachments/$index",
+                    displayName = "Image $index",
+                )
+            },
+        )
+        advanceUntilIdle()
+
+        assertEquals(4, viewModel.uiState.value.composer.attachments.size)
+        assertEquals(
+            "Only 4 images are allowed per message.",
+            viewModel.uiState.value.composer.attachmentLimitMessage,
+        )
+    }
+
+    @Test
+    fun `assistant revert preview and apply update the sheet and final button state`() = runTest {
+        val repository = TestRemodexAppRepository()
+        repository.snapshot.value = repository.snapshot.value.copy(
+            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+            secureConnection = SecureConnectionSnapshot(
+                phaseMessage = "Connected",
+                secureState = SecureConnectionState.ENCRYPTED,
+                attempt = 1,
+            ),
+            threads = listOf(
+                threadSummary(
+                    id = "thread-1",
+                    title = "Undo thread",
+                    messages = listOf(
+                        assistantMessage(
+                            id = "assistant-1",
+                            threadId = "thread-1",
+                            patchPath = "src/App.kt",
+                        ),
+                    ),
+                ),
+            ),
+            selectedThreadId = "thread-1",
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.startAssistantRevertPreview("assistant-1")
+        advanceUntilIdle()
+
+        assertNotNull(viewModel.uiState.value.assistantRevertSheet)
+        assertTrue(viewModel.uiState.value.assistantRevertSheet?.preview?.canRevert == true)
+        assertEquals(1, repository.previewRequests.size)
+
+        viewModel.confirmAssistantRevert()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.applyRequests.size)
+        assertEquals(null, viewModel.uiState.value.assistantRevertSheet)
+        assertEquals(
+            "Already undone",
+            viewModel.uiState.value.assistantRevertStatesByMessageId["assistant-1"]?.title,
+        )
+    }
+
+    @Test
+    fun `assistant revert warns when another live thread touched the same file`() = runTest {
+        val repository = TestRemodexAppRepository()
+        repository.snapshot.value = repository.snapshot.value.copy(
+            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+            secureConnection = SecureConnectionSnapshot(
+                phaseMessage = "Connected",
+                secureState = SecureConnectionState.ENCRYPTED,
+                attempt = 1,
+            ),
+            threads = listOf(
+                threadSummary(
+                    id = "thread-1",
+                    title = "Current",
+                    messages = listOf(
+                        assistantMessage(
+                            id = "assistant-1",
+                            threadId = "thread-1",
+                            patchPath = "src/shared/File.kt",
+                        ),
+                    ),
+                ),
+                threadSummary(
+                    id = "thread-2",
+                    title = "Sibling",
+                    messages = listOf(
+                        assistantMessage(
+                            id = "assistant-2",
+                            threadId = "thread-2",
+                            patchPath = "src/shared/File.kt",
+                        ),
+                    ),
+                ),
+            ),
+            selectedThreadId = "thread-1",
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        assertEquals(
+            RemodexAssistantRevertRiskLevel.WARNING,
+            viewModel.uiState.value.assistantRevertStatesByMessageId["assistant-1"]?.riskLevel,
+        )
+    }
+
+    @Test
+    fun `thread completion banner appears when another thread stops running`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                threadSummary(id = "thread-active", title = "Current chat"),
+                threadSummary(id = "thread-finished", title = "Finished chat", isRunning = true),
+            ),
+            selectedThreadId = "thread-active",
+        )
+        advanceUntilIdle()
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                threadSummary(id = "thread-active", title = "Current chat"),
+                threadSummary(id = "thread-finished", title = "Finished chat", isRunning = false),
+            ),
+            selectedThreadId = "thread-active",
+        )
+        advanceUntilIdle()
+
+        assertEquals("thread-finished", viewModel.uiState.value.threadCompletionBanner?.threadId)
+        assertEquals("Finished chat", viewModel.uiState.value.threadCompletionBanner?.title)
+    }
+
+    private class TestRemodexAppRepository : RemodexAppRepository {
+        val snapshot = MutableStateFlow(RemodexSessionSnapshot())
+        val previewRequests = mutableListOf<Pair<String, String>>()
+        val applyRequests = mutableListOf<Pair<String, String>>()
+        var previewResult = RemodexRevertPreviewResult(
+            canRevert = true,
+            affectedFiles = listOf("src/App.kt"),
+            conflicts = emptyList(),
+            unsupportedReasons = emptyList(),
+            stagedFiles = emptyList(),
+        )
+        var applyResult = RemodexRevertApplyResult(
+            success = true,
+            revertedFiles = listOf("src/App.kt"),
+            conflicts = emptyList(),
+            unsupportedReasons = emptyList(),
+            stagedFiles = emptyList(),
+            status = null,
+        )
+
+        override val session: StateFlow<RemodexSessionSnapshot> = snapshot
+
+        override suspend fun completeOnboarding() {
+            snapshot.value = snapshot.value.copy(onboardingCompleted = true)
+        }
+
+        override suspend fun selectThread(threadId: String) = Unit
+
+        override suspend fun createThread(preferredProjectPath: String?) = Unit
+
+        override suspend fun renameThread(threadId: String, name: String) = Unit
+
+        override suspend fun archiveThread(threadId: String) = Unit
+
+        override suspend fun unarchiveThread(threadId: String) = Unit
+
+        override suspend fun deleteThread(threadId: String) = Unit
+
+        override suspend fun archiveProject(projectPath: String) = Unit
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            attachments: List<RemodexComposerAttachment>,
+        ) = Unit
+
+        override suspend fun stopTurn(threadId: String) = Unit
+
+        override suspend fun sendQueuedDraft(threadId: String, draftId: String) = Unit
+
+        override suspend fun setPlanningMode(
+            threadId: String,
+            planningMode: RemodexPlanningMode,
+        ) = Unit
+
+        override suspend fun setModelId(threadId: String, modelId: String?) = Unit
+
+        override suspend fun setReasoningEffort(
+            threadId: String,
+            reasoningEffort: RemodexReasoningEffort,
+        ) = Unit
+
+        override suspend fun setAccessMode(
+            threadId: String,
+            accessMode: RemodexAccessMode,
+        ) = Unit
+
+        override suspend fun setServiceTier(threadId: String, serviceTier: RemodexServiceTier?) = Unit
+
+        override suspend fun setDefaultModelId(modelId: String?) = Unit
+
+        override suspend fun setDefaultReasoningEffort(reasoningEffort: RemodexReasoningEffort?) = Unit
+
+        override suspend fun setDefaultAccessMode(accessMode: RemodexAccessMode) = Unit
+
+        override suspend fun setDefaultServiceTier(serviceTier: RemodexServiceTier?) = Unit
+
+        override suspend fun setAppearanceMode(mode: RemodexAppearanceMode) = Unit
+
+        override suspend fun fuzzyFileSearch(
+            threadId: String,
+            query: String,
+        ): List<RemodexFuzzyFileMatch> = emptyList()
+
+        override suspend fun listSkills(
+            threadId: String,
+            forceReload: Boolean,
+        ): List<RemodexSkillMetadata> = emptyList()
+
+        override suspend fun startCodeReview(
+            threadId: String,
+            target: RemodexComposerReviewTarget,
+            baseBranch: String?,
+        ) = Unit
+
+        override suspend fun forkThread(
+            threadId: String,
+            destination: RemodexComposerForkDestination,
+            baseBranch: String?,
+        ): String? = null
+
+        override suspend fun loadGitState(threadId: String): RemodexGitState = RemodexGitState()
+
+        override suspend fun checkoutGitBranch(
+            threadId: String,
+            branch: String,
+        ): RemodexGitState = RemodexGitState()
+
+        override suspend fun createGitBranch(
+            threadId: String,
+            branch: String,
+        ): RemodexGitState = RemodexGitState()
+
+        override suspend fun createGitWorktree(
+            threadId: String,
+            name: String,
+            baseBranch: String?,
+        ): RemodexGitState = RemodexGitState()
+
+        override suspend fun commitGitChanges(
+            threadId: String,
+            message: String?,
+        ): RemodexGitState = RemodexGitState()
+
+        override suspend fun pullGitChanges(threadId: String): RemodexGitState = RemodexGitState()
+
+        override suspend fun pushGitChanges(threadId: String): RemodexGitState = RemodexGitState()
+
+        override suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState = RemodexGitState()
+
+        override suspend fun previewAssistantRevert(
+            threadId: String,
+            forwardPatch: String,
+        ): RemodexRevertPreviewResult {
+            previewRequests += threadId to forwardPatch
+            return previewResult
+        }
+
+        override suspend fun applyAssistantRevert(
+            threadId: String,
+            forwardPatch: String,
+        ): RemodexRevertApplyResult {
+            applyRequests += threadId to forwardPatch
+            return applyResult
+        }
+
+        override suspend fun pairWithQrPayload(payload: PairingQrPayload) = Unit
+
+        override suspend fun retryConnection() = Unit
+
+        override suspend fun disconnect() = Unit
+
+        override suspend fun forgetTrustedMac() = Unit
+    }
+
+    private fun threadSummary(
+        id: String,
+        title: String,
+        isRunning: Boolean = false,
+        messages: List<RemodexConversationItem> = emptyList(),
+    ): com.emanueledipietro.remodex.model.RemodexThreadSummary {
+        return com.emanueledipietro.remodex.model.RemodexThreadSummary(
+            id = id,
+            title = title,
+            preview = "Preview",
+            projectPath = "/tmp/remodex",
+            lastUpdatedLabel = "Updated just now",
+            isRunning = isRunning,
+            queuedDrafts = 0,
+            runtimeLabel = "Auto, medium reasoning",
+            messages = messages,
+        )
+    }
+
+    private fun assistantMessage(
+        id: String,
+        threadId: String,
+        patchPath: String,
+    ): RemodexConversationItem {
+        return RemodexConversationItem(
+            id = id,
+            speaker = ConversationSpeaker.ASSISTANT,
+            text = "Applied changes.",
+            turnId = "turn-$id",
+            orderIndex = 0,
+            assistantChangeSet = RemodexAssistantChangeSet(
+                id = "changeset-$id",
+                repoRoot = "/tmp/remodex",
+                threadId = threadId,
+                turnId = "turn-$id",
+                assistantMessageId = id,
+                status = RemodexAssistantChangeSetStatus.READY,
+                source = RemodexAssistantChangeSetSource.TURN_DIFF,
+                forwardUnifiedPatch = """
+                    diff --git a/$patchPath b/$patchPath
+                    --- a/$patchPath
+                    +++ b/$patchPath
+                    @@ -1 +1 @@
+                    -old
+                    +new
+                """.trimIndent(),
+                fileChanges = listOf(
+                    RemodexAssistantFileChange(
+                        path = patchPath,
+                        additions = 1,
+                        deletions = 1,
+                    ),
+                ),
+            ),
+        )
+    }
+}

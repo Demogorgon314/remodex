@@ -49,7 +49,10 @@ function createNotificationsHandler({ pushServiceClient, logPrefix = "[remodex]"
 
     const deviceToken = readString(params.deviceToken);
     const alertsEnabled = Boolean(params.alertsEnabled);
-    const apnsEnvironment = readAPNsEnvironment(params.appEnvironment);
+    const authorizationStatus = readAuthorizationStatus(params.authorizationStatus);
+    const platform = readPushPlatform(params.platform);
+    const pushProvider = readPushProvider(params.pushProvider, platform);
+    const appEnvironment = readAppEnvironment(params.appEnvironment);
     if (!deviceToken) {
       throw notificationsError(
         "missing_device_token",
@@ -60,13 +63,19 @@ function createNotificationsHandler({ pushServiceClient, logPrefix = "[remodex]"
     await pushServiceClient.registerDevice({
       deviceToken,
       alertsEnabled,
-      apnsEnvironment,
+      authorizationStatus,
+      appEnvironment,
+      platform,
+      pushProvider,
     });
 
     return {
       ok: true,
       alertsEnabled,
-      apnsEnvironment,
+      authorizationStatus,
+      appEnvironment,
+      platform,
+      pushProvider,
     };
   }
 
@@ -79,7 +88,32 @@ function readString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function readAPNsEnvironment(value) {
+function readAuthorizationStatus(value) {
+  switch (value) {
+    case "notDetermined":
+    case "denied":
+    case "authorized":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+
+function readPushPlatform(value) {
+  return value === "android" ? "android" : "ios";
+}
+
+function readPushProvider(value, platform) {
+  if (value === "fcm") {
+    return "fcm";
+  }
+  if (value === "apns") {
+    return "apns";
+  }
+  return platform === "android" ? "fcm" : "apns";
+}
+
+function readAppEnvironment(value) {
   return value === "development" ? "development" : "production";
 }
 

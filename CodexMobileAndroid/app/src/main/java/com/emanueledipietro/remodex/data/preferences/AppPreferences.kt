@@ -1,0 +1,15 @@
+package com.emanueledipietro.remodex.data.preferences
+
+import com.emanueledipietro.remodex.model.RemodexQueuedDraft
+import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
+
+data class AppPreferences(
+    val onboardingCompleted: Boolean = false,
+    val selectedThreadId: String? = null,
+    val queuedDraftsByThread: Map<String, List<RemodexQueuedDraft>> = emptyMap(),
+    val runtimeOverridesByThread: Map<String, RemodexRuntimeOverrides> = emptyMap(),
+    val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
+    val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
+)

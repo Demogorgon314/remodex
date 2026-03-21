@@ -19,14 +19,20 @@ function createPushNotificationServiceClient({
   async function registerDevice({
     deviceToken,
     alertsEnabled,
-    apnsEnvironment,
+    authorizationStatus,
+    appEnvironment,
+    platform,
+    pushProvider,
   } = {}) {
     return postJSON("/v1/push/session/register-device", {
       sessionId,
       notificationSecret,
       deviceToken,
       alertsEnabled,
-      apnsEnvironment,
+      authorizationStatus,
+      appEnvironment,
+      platform,
+      pushProvider,
     });
   }
 

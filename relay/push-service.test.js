@@ -63,6 +63,60 @@ test("push service stores device registration and sends one completion alert", a
   assert.equal(sent[0].payload.threadId, "thread-1");
 });
 
+test("push service preserves Android FCM registrations and routes completions to the FCM client", async () => {
+  const sent = [];
+  const service = createPushSessionService({
+    apnsClient: {
+      isConfigured: () => true,
+      async sendNotification() {
+        throw new Error("APNs should not be used for Android FCM registrations.");
+      },
+    },
+    fcmClient: {
+      isConfigured: () => true,
+      async sendNotification(payload) {
+        sent.push(payload);
+      },
+    },
+    canRegisterSession: () => true,
+    stateStore: {
+      read() {
+        return {
+          sessions: [],
+          deliveredDedupeKeys: [],
+        };
+      },
+      write() {},
+    },
+  });
+
+  await service.registerDevice({
+    sessionId: "session-fcm",
+    notificationSecret: "secret-fcm",
+    deviceToken: "fcm-token-android-1",
+    alertsEnabled: true,
+    authorizationStatus: "authorized",
+    appEnvironment: "production",
+    platform: "android",
+    pushProvider: "fcm",
+  });
+
+  await service.notifyCompletion({
+    sessionId: "session-fcm",
+    notificationSecret: "secret-fcm",
+    threadId: "thread-fcm",
+    turnId: "turn-fcm",
+    dedupeKey: "done-fcm",
+    title: "Android parity",
+    body: "FCM delivery ready",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].deviceToken, "fcm-token-android-1");
+  assert.equal(sent[0].payload.threadId, "thread-fcm");
+  assert.equal(sent[0].payload.turnId, "turn-fcm");
+});
+
 test("push service rejects registration when the relay session is not active", async () => {
   const service = createPushSessionService({
     apnsClient: {
@@ -186,6 +240,47 @@ test("push service reloads registrations from persisted state after a restart", 
   assert.equal(firstSent.length, 0);
   assert.equal(secondSent.length, 1);
   assert.equal(fs.statSync(stateFilePath).mode & 0o777, 0o600);
+});
+
+test("push service still reloads legacy APNs registrations that only stored apnsEnvironment", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-push-state-"));
+  const stateFilePath = path.join(tempDir, "push-state.json");
+  fs.writeFileSync(stateFilePath, JSON.stringify({
+    sessions: [[
+      "session-legacy",
+      {
+        notificationSecret: "secret-legacy",
+        deviceToken: "aa bb cc",
+        alertsEnabled: true,
+        apnsEnvironment: "development",
+        updatedAt: Date.now(),
+      },
+    ]],
+    deliveredDedupeKeys: [],
+  }), "utf8");
+
+  const sent = [];
+  const service = createPushSessionService({
+    apnsClient: {
+      isConfigured: () => true,
+      async sendNotification(payload) {
+        sent.push(payload);
+      },
+    },
+    canRegisterSession: () => true,
+    stateStore: createFileBackedPushStateStore({ stateFilePath }),
+  });
+
+  await service.notifyCompletion({
+    sessionId: "session-legacy",
+    notificationSecret: "secret-legacy",
+    threadId: "thread-legacy",
+    dedupeKey: "done-legacy",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].deviceToken, "aabbcc");
+  assert.equal(sent[0].apnsEnvironment, "development");
 });
 
 test("push service defaults to a durable state file in the remodex home dir", () => {

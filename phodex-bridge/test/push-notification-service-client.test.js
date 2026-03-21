@@ -26,8 +26,57 @@ test("push service client aborts stalled requests with a timeout error", async (
     client.registerDevice({
       deviceToken: "aabbcc",
       alertsEnabled: true,
-      apnsEnvironment: "development",
+      authorizationStatus: "authorized",
+      appEnvironment: "development",
+      platform: "ios",
+      pushProvider: "apns",
     }),
     /timed out after 20ms/
   );
+});
+
+test("push service client forwards provider-aware registration fields", async () => {
+  const requests = [];
+  const client = createPushNotificationServiceClient({
+    baseUrl: "https://push.example.test",
+    sessionId: "session-payload",
+    notificationSecret: "secret-payload",
+    fetchImpl: async (url, options) => {
+      requests.push({
+        url,
+        method: options.method,
+        body: JSON.parse(options.body),
+      });
+      return {
+        ok: true,
+        async text() {
+          return JSON.stringify({ ok: true });
+        },
+      };
+    },
+  });
+
+  await client.registerDevice({
+    deviceToken: "fcm-token-1",
+    alertsEnabled: false,
+    authorizationStatus: "authorized",
+    appEnvironment: "production",
+    platform: "android",
+    pushProvider: "fcm",
+  });
+
+  assert.deepEqual(requests, [{
+    url: "https://push.example.test/v1/push/session/register-device",
+    method: "POST",
+    body: {
+      sessionId: "session-payload",
+      notificationSecret: "secret-payload",
+      deviceToken: "fcm-token-1",
+      alertsEnabled: false,
+      authorizationStatus: "authorized",
+      appEnvironment: "production",
+      platform: "android",
+      pushProvider: "fcm",
+    },
+  }]);
 });

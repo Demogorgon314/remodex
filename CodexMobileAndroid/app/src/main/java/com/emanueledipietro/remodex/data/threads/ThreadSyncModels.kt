@@ -1,0 +1,193 @@
+package com.emanueledipietro.remodex.data.threads
+
+import com.emanueledipietro.remodex.model.ConversationItemKind
+import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
+import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
+import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
+import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexThreadSyncState
+import kotlinx.coroutines.flow.StateFlow
+
+data class ThreadSyncSnapshot(
+    val id: String,
+    val title: String,
+    val preview: String,
+    val projectPath: String,
+    val lastUpdatedLabel: String,
+    val lastUpdatedEpochMs: Long,
+    val isRunning: Boolean,
+    val syncState: RemodexThreadSyncState = RemodexThreadSyncState.LIVE,
+    val parentThreadId: String? = null,
+    val agentNickname: String? = null,
+    val agentRole: String? = null,
+    val runtimeConfig: RemodexRuntimeConfig,
+    val timelineMutations: List<TimelineMutation>,
+)
+
+interface ThreadSyncService {
+    val threads: StateFlow<List<ThreadSyncSnapshot>>
+}
+
+interface ThreadCommandService {
+    suspend fun createThread(
+        preferredProjectPath: String?,
+        runtimeDefaults: RemodexRuntimeDefaults,
+    ): ThreadSyncSnapshot?
+
+    suspend fun renameThread(
+        threadId: String,
+        name: String,
+    )
+
+    suspend fun archiveThread(
+        threadId: String,
+        unarchive: Boolean,
+    )
+
+    suspend fun deleteThread(threadId: String)
+
+    suspend fun sendPrompt(
+        threadId: String,
+        prompt: String,
+        runtimeConfig: RemodexRuntimeConfig,
+        attachments: List<RemodexComposerAttachment>,
+    )
+
+    suspend fun startCodeReview(
+        threadId: String,
+        target: RemodexComposerReviewTarget,
+        baseBranch: String? = null,
+    )
+
+    suspend fun forkThread(
+        threadId: String,
+        destination: RemodexComposerForkDestination,
+        baseBranch: String? = null,
+    ): ThreadSyncSnapshot?
+
+    suspend fun fuzzyFileSearch(
+        threadId: String,
+        query: String,
+    ): List<RemodexFuzzyFileMatch>
+
+    suspend fun listSkills(
+        threadId: String,
+        forceReload: Boolean = false,
+    ): List<RemodexSkillMetadata>
+
+    suspend fun loadGitState(threadId: String): RemodexGitState
+
+    suspend fun checkoutGitBranch(
+        threadId: String,
+        branch: String,
+    ): RemodexGitState
+
+    suspend fun createGitBranch(
+        threadId: String,
+        branch: String,
+    ): RemodexGitState
+
+    suspend fun createGitWorktree(
+        threadId: String,
+        name: String,
+        baseBranch: String?,
+    ): RemodexGitState
+
+    suspend fun commitGitChanges(
+        threadId: String,
+        message: String? = null,
+    ): RemodexGitState
+
+    suspend fun pullGitChanges(threadId: String): RemodexGitState
+
+    suspend fun pushGitChanges(threadId: String): RemodexGitState
+
+    suspend fun discardRuntimeChangesAndSync(threadId: String): RemodexGitState
+
+    suspend fun previewAssistantRevert(
+        threadId: String,
+        forwardPatch: String,
+    ): RemodexRevertPreviewResult
+
+    suspend fun applyAssistantRevert(
+        threadId: String,
+        forwardPatch: String,
+    ): RemodexRevertApplyResult
+
+    suspend fun stopTurn(threadId: String)
+}
+
+interface ThreadHydrationService {
+    suspend fun refreshThreads()
+
+    suspend fun hydrateThread(threadId: String)
+}
+
+sealed interface TimelineMutation {
+    data class Upsert(
+        val item: RemodexConversationItem,
+    ) : TimelineMutation
+
+    data class AssistantTextDelta(
+        val messageId: String,
+        val turnId: String,
+        val itemId: String? = null,
+        val delta: String,
+        val orderIndex: Long,
+    ) : TimelineMutation
+
+    data class ReasoningTextDelta(
+        val messageId: String,
+        val turnId: String,
+        val itemId: String? = null,
+        val delta: String,
+        val orderIndex: Long,
+    ) : TimelineMutation
+
+    data class ActivityLine(
+        val messageId: String,
+        val turnId: String,
+        val itemId: String? = null,
+        val line: String,
+        val orderIndex: Long,
+    ) : TimelineMutation
+
+    data class Complete(
+        val messageId: String,
+    ) : TimelineMutation
+}
+
+fun timelineItem(
+    id: String,
+    speaker: ConversationSpeaker,
+    text: String,
+    kind: ConversationItemKind = ConversationItemKind.CHAT,
+    supportingText: String? = null,
+    turnId: String? = null,
+    itemId: String? = null,
+    isStreaming: Boolean = false,
+    orderIndex: Long,
+    assistantChangeSet: RemodexAssistantChangeSet? = null,
+): RemodexConversationItem {
+    return RemodexConversationItem(
+        id = id,
+        speaker = speaker,
+        kind = kind,
+        text = text,
+        supportingText = supportingText,
+        turnId = turnId,
+        itemId = itemId,
+        isStreaming = isStreaming,
+        orderIndex = orderIndex,
+        assistantChangeSet = assistantChangeSet,
+    )
+}

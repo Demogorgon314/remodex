@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Codex Mobile Android"
+rootProject.name = "Remodex Android"
 include(":app")
