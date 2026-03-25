@@ -11,6 +11,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +33,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -88,6 +93,8 @@ import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotific
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
 import com.emanueledipietro.remodex.platform.window.RemodexWindowLayout
 import com.emanueledipietro.remodex.platform.window.remodexWindowLayout
+import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
+import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import kotlinx.coroutines.delay
 
 private enum class ShellRoute(val title: String) {
@@ -316,7 +323,11 @@ private fun RemodexShell(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                    .windowInsetsPadding(
+                        WindowInsets.systemBars.only(
+                            WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
+                        ),
+                    ),
             ) {
                 Surface(
                     modifier = Modifier
@@ -405,14 +416,21 @@ private fun MainPane(
     onNavigateToThreadCompletion: (String) -> Unit,
     onDismissThreadCompletionBanner: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
+    val contentBackground = if (shellRoute == ShellRoute.CONTENT) {
+        chrome.canvas
+    } else {
+        MaterialTheme.colorScheme.background
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(contentBackground),
     ) {
         ShellTopBar(
             shellRoute = shellRoute,
             selectedThreadTitle = uiState.selectedThread?.title,
+            selectedThreadProjectPath = uiState.selectedThread?.projectPath,
             compact = compact,
             onMenu = onMenu,
             onBack = onBack,
@@ -520,69 +538,128 @@ private fun MainPane(
 private fun ShellTopBar(
     shellRoute: ShellRoute,
     selectedThreadTitle: String?,
+    selectedThreadProjectPath: String?,
     compact: Boolean,
     onMenu: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val title = when (shellRoute) {
         ShellRoute.CONTENT -> selectedThreadTitle ?: "Remodex"
         ShellRoute.SETTINGS -> shellRoute.title
         ShellRoute.ARCHIVED_CHATS -> shellRoute.title
     }
+    val subtitle = when (shellRoute) {
+        ShellRoute.CONTENT -> condensedProjectPath(selectedThreadProjectPath)
+        ShellRoute.SETTINGS,
+        ShellRoute.ARCHIVED_CHATS,
+        -> null
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Top,
     ) {
         when {
             shellRoute != ShellRoute.CONTENT -> {
-                IconButton(onClick = onBack) {
+                ShellTopBarButton(
+                    onClick = onBack,
+                    contentDescription = "Back",
+                ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "Back",
+                        contentDescription = null,
+                        tint = chrome.titleText,
                     )
                 }
             }
 
             compact -> {
-                IconButton(onClick = onMenu) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(10.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Menu,
-                                contentDescription = "Menu",
-                            )
-                        }
-                    }
+                ShellTopBarButton(
+                    onClick = onMenu,
+                    contentDescription = "Menu",
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Menu,
+                        contentDescription = null,
+                        tint = chrome.titleText,
+                    )
                 }
             }
 
             else -> {
-                Spacer(modifier = Modifier.size(48.dp))
+                Spacer(modifier = Modifier.size(40.dp))
             }
         }
 
-        Text(
-            text = title,
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 10.dp),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            subtitle?.let { path ->
+                Text(
+                    text = path,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = chrome.secondaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
 
-        Spacer(modifier = Modifier.size(48.dp))
+        Spacer(modifier = Modifier.size(40.dp))
     }
+}
+
+@Composable
+private fun ShellTopBarButton(
+    onClick: () -> Unit,
+    contentDescription: String,
+    content: @Composable () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = Modifier
+            .size(40.dp)
+            .clickable(onClick = onClick),
+        color = chrome.mutedSurface,
+        shape = CircleShape,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            content()
+        }
+    }
+}
+
+private fun condensedProjectPath(projectPath: String?): String? {
+    val normalized = projectPath
+        ?.trim()
+        ?.replace('\\', '/')
+        ?.takeIf(String::isNotBlank)
+        ?: return null
+    val segments = normalized.split('/').filter(String::isNotBlank)
+    if (segments.size <= 4) {
+        return normalized
+    }
+    val head = segments.take(2).joinToString("/")
+    val tail = segments.takeLast(2).joinToString("/")
+    return "/$head/.../$tail"
 }
 
 @Composable
@@ -591,13 +668,15 @@ private fun ThreadCompletionBanner(
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
+            .border(1.dp, chrome.subtleBorder, RemodexConversationShapes.card)
             .clickable(onClick = onOpen),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-        shape = RoundedCornerShape(18.dp),
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
     ) {
         Row(
             modifier = Modifier
@@ -618,6 +697,7 @@ private fun ThreadCompletionBanner(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
+                    color = chrome.bodyText,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

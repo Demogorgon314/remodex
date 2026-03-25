@@ -1,5 +1,7 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -8,16 +10,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -67,15 +76,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
@@ -103,6 +115,9 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
+import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
+import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
+import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 
 @Composable
 fun ConversationScreen(
@@ -144,6 +159,7 @@ fun ConversationScreen(
     modifier: Modifier = Modifier,
 ) {
     val thread = uiState.selectedThread
+    val chrome = remodexConversationChrome()
     if (thread == null) {
         EmptyConversationState(modifier = modifier)
         return
@@ -171,7 +187,7 @@ fun ConversationScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface),
+            .background(chrome.canvas),
     ) {
         Column(
             modifier = Modifier
@@ -188,7 +204,7 @@ fun ConversationScreen(
                     .fillMaxWidth()
                     .weight(1f)
                     .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
                 if (timelineItems.isEmpty()) {
                     item {
@@ -216,8 +232,10 @@ fun ConversationScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 pinnedPlanItem?.let { planItem ->
                     PlanAccessoryCard(
@@ -331,10 +349,201 @@ fun ConversationScreen(
 }
 
 @Composable
+private fun ConversationCircleButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    filled: Boolean = false,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = modifier.size(36.dp),
+        color = if (filled) chrome.sendButton else chrome.mutedSurface,
+        shape = CircleShape,
+        border = if (filled) null else BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        IconButton(
+            onClick = onClick,
+            enabled = enabled,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (filled) chrome.sendIcon else chrome.titleText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationMarkdownText(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
+    color: Color = remodexConversationChrome().bodyText,
+) {
+    val chrome = remodexConversationChrome()
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily
+    val blocks = remember(text) { parseConversationTextBlocks(text) }
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        blocks.forEach { block ->
+            when (block.kind) {
+                ConversationTextBlockKind.PROSE -> Text(
+                    text = buildConversationAnnotatedString(
+                        text = block.text,
+                        chrome = chrome,
+                        monoFamily = monoFamily,
+                    ),
+                    style = style,
+                    color = color,
+                )
+
+                ConversationTextBlockKind.CODE -> {
+                    Surface(
+                        color = chrome.mutedSurface,
+                        shape = RemodexConversationShapes.nestedCard,
+                        border = BorderStroke(1.dp, chrome.subtleBorder),
+                        shadowElevation = 0.dp,
+                        tonalElevation = 0.dp,
+                    ) {
+                        Text(
+                            text = block.text,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                lineHeight = 18.sp,
+                                fontFamily = monoFamily,
+                            ),
+                            color = chrome.bodyText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class ConversationTextBlockKind {
+    PROSE,
+    CODE,
+}
+
+private data class ConversationTextBlock(
+    val kind: ConversationTextBlockKind,
+    val text: String,
+)
+
+private val conversationInlineMarkdownPattern = Regex("""\[[^\]]+]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|__[^_]+__""")
+
+private fun parseConversationTextBlocks(text: String): List<ConversationTextBlock> {
+    if (text.isBlank()) {
+        return emptyList()
+    }
+
+    val blocks = mutableListOf<ConversationTextBlock>()
+    val lines = text.replace("\r\n", "\n").split('\n')
+    val buffer = StringBuilder()
+    var inCodeFence = false
+
+    fun flushBuffer() {
+        if (buffer.isEmpty()) {
+            return
+        }
+        val raw = buffer.toString().trimEnd('\n')
+        buffer.clear()
+        if (raw.isBlank()) {
+            return
+        }
+        blocks += ConversationTextBlock(
+            kind = if (inCodeFence) ConversationTextBlockKind.CODE else ConversationTextBlockKind.PROSE,
+            text = raw,
+        )
+    }
+
+    lines.forEach { line ->
+        if (line.trim().startsWith("```")) {
+            flushBuffer()
+            inCodeFence = !inCodeFence
+        } else {
+            buffer.append(line).append('\n')
+        }
+    }
+    flushBuffer()
+
+    return if (blocks.isEmpty()) {
+        listOf(ConversationTextBlock(ConversationTextBlockKind.PROSE, text.trim()))
+    } else {
+        blocks
+    }
+}
+
+private fun buildConversationAnnotatedString(
+    text: String,
+    chrome: RemodexConversationChrome,
+    monoFamily: FontFamily?,
+): AnnotatedString = buildAnnotatedString {
+    var cursor = 0
+
+    conversationInlineMarkdownPattern.findAll(text).forEach { match ->
+        if (match.range.first > cursor) {
+            append(text.substring(cursor, match.range.first))
+        }
+
+        val raw = match.value
+        when {
+            raw.startsWith("[") -> {
+                val label = raw.substringAfter('[').substringBefore(']')
+                withStyle(
+                    SpanStyle(
+                        color = chrome.accent,
+                        fontWeight = FontWeight.Medium,
+                        textDecoration = TextDecoration.Underline,
+                    ),
+                ) {
+                    append(label)
+                }
+            }
+
+            raw.startsWith("`") -> {
+                withStyle(
+                    SpanStyle(
+                        fontFamily = monoFamily,
+                        background = chrome.nestedSurface,
+                        color = chrome.bodyText,
+                    ),
+                ) {
+                    append(raw.removePrefix("`").removeSuffix("`"))
+                }
+            }
+
+            raw.startsWith("**") || raw.startsWith("__") -> {
+                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
+                    append(raw.drop(2).dropLast(2))
+                }
+            }
+        }
+
+        cursor = match.range.last + 1
+    }
+
+    if (cursor < text.length) {
+        append(text.substring(cursor))
+    }
+}
+
+@Composable
 private fun ConversationTopOverlays(
     uiState: AppUiState,
     onRetryConnection: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     if (uiState.conversationBanner == null && uiState.isConnected) {
         return
     }
@@ -351,9 +560,11 @@ private fun ConversationTopOverlays(
 
         if (!uiState.isConnected) {
             Surface(
-                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f),
+                color = chrome.panelSurface,
                 tonalElevation = 0.dp,
-                shape = RoundedCornerShape(18.dp),
+                shadowElevation = 0.dp,
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shape = RemodexConversationShapes.card,
             ) {
                 Row(
                     modifier = Modifier
@@ -370,18 +581,17 @@ private fun ConversationTopOverlays(
                             text = uiState.connectionHeadline,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
+                            color = chrome.titleText,
                         )
                         Text(
                             text = uiState.connectionMessage,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    TextButton(onClick = onRetryConnection) {
-                        Text("Reconnect")
-                    }
+                    SecondaryBarAction(label = "Reconnect", onClick = onRetryConnection)
                 }
             }
         }
@@ -390,9 +600,13 @@ private fun ConversationTopOverlays(
 
 @Composable
 private fun BannerCard(text: String) {
+    val chrome = remodexConversationChrome()
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.82f),
-        shape = RoundedCornerShape(18.dp),
+        color = chrome.accentSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier
@@ -402,7 +616,7 @@ private fun BannerCard(text: String) {
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = chrome.bodyText,
             )
         }
     }
@@ -413,13 +627,17 @@ private fun PlanAccessoryCard(
     planItem: RemodexConversationItem,
     onClick: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val planSummary = planItem.planState?.explanation
         ?.takeIf(String::isNotBlank)
         ?: planItem.planState?.steps?.firstOrNull()?.step
         ?: planItem.text
     Surface(
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
-        shape = RoundedCornerShape(20.dp),
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Row(
             modifier = Modifier
@@ -432,13 +650,13 @@ private fun PlanAccessoryCard(
             Surface(
                 modifier = Modifier.size(22.dp),
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                color = chrome.accentSurface,
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Surface(
                         modifier = Modifier.size(7.dp),
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = chrome.accent,
                     ) {}
                 }
             }
@@ -449,12 +667,12 @@ private fun PlanAccessoryCard(
                 Text(
                     text = "Plan",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = chrome.secondaryText,
                 )
                 Text(
                     text = planSummary,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = chrome.bodyText,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -465,22 +683,32 @@ private fun PlanAccessoryCard(
 
 @Composable
 private fun EmptyConversationState(modifier: Modifier = Modifier) {
+    val chrome = remodexConversationChrome()
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface)
+            .background(chrome.canvas)
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(
-            text = "Select a thread to open the iOS-aligned Android conversation view.",
-            style = MaterialTheme.typography.headlineSmall,
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = "Select a thread",
+                style = MaterialTheme.typography.titleLarge,
+                color = chrome.titleText,
+            )
+            Text(
+                text = "The phone conversation path now follows the iOS visual language, including the updated message and composer chrome.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = chrome.secondaryText,
+            )
+        }
     }
 }
 
 @Composable
 private fun EmptyThreadTimelineCard() {
+    val chrome = remodexConversationChrome()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -492,11 +720,12 @@ private fun EmptyThreadTimelineCard() {
             text = "No messages yet",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
+            color = chrome.titleText,
         )
         Text(
             text = "The next reply from your Mac will show up here.",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = chrome.secondaryText,
         )
     }
 }
@@ -507,6 +736,7 @@ private fun PlanDetailsSheet(
     planItem: RemodexConversationItem,
     onDismiss: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val planState = planItem.planState
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -520,19 +750,22 @@ private fun PlanDetailsSheet(
                 text = "Active plan",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
             )
             planState?.explanation?.takeIf(String::isNotBlank)?.let { explanation ->
                 Text(
                     text = explanation,
                     style = MaterialTheme.typography.bodyLarge,
+                    color = chrome.bodyText,
                 )
             }
             if (!planState?.steps.isNullOrEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     planState?.steps.orEmpty().forEach { step ->
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.8f),
-                            shape = RoundedCornerShape(16.dp),
+                            color = chrome.mutedSurface,
+                            shape = RemodexConversationShapes.nestedCard,
+                            border = BorderStroke(1.dp, chrome.subtleBorder),
                         ) {
                             Column(
                                 modifier = Modifier
@@ -543,11 +776,12 @@ private fun PlanDetailsSheet(
                                 Text(
                                     text = step.step,
                                     style = MaterialTheme.typography.bodyLarge,
+                                    color = chrome.bodyText,
                                 )
                                 MetaPill(
                                     label = step.status.label,
-                                    backgroundColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    backgroundColor = chrome.accentSurface,
+                                    contentColor = chrome.titleText,
                                 )
                             }
                         }
@@ -557,6 +791,7 @@ private fun PlanDetailsSheet(
                 Text(
                     text = planItem.text,
                     style = MaterialTheme.typography.bodyLarge,
+                    color = chrome.bodyText,
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
@@ -570,9 +805,13 @@ private fun QueuedDraftsCard(
     canSendQueuedDrafts: Boolean,
     onSendQueuedDraft: (String) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier
@@ -591,7 +830,7 @@ private fun QueuedDraftsCard(
                     Text(
                         text = "↩",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = chrome.secondaryText,
                     )
                     Column(
                         modifier = Modifier.weight(1f),
@@ -606,6 +845,7 @@ private fun QueuedDraftsCard(
                                 }
                             },
                             style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -613,19 +853,17 @@ private fun QueuedDraftsCard(
                             Text(
                                 text = "${draft.attachments.size} attachment(s)",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = chrome.secondaryText,
                             )
                         }
                     }
                     if (canSendQueuedDrafts) {
-                        TextButton(onClick = { onSendQueuedDraft(draft.id) }) {
-                            Text("Send")
-                        }
+                        SecondaryBarAction(label = "Send", onClick = { onSendQueuedDraft(draft.id) })
                     } else {
                         Text(
                             text = "Queued",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                         )
                     }
                 }
@@ -648,6 +886,7 @@ private fun GitContextCard(
     onPush: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     if (!gitState.hasContext) {
         return
     }
@@ -656,9 +895,9 @@ private fun GitContextCard(
 
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            containerColor = chrome.panelSurfaceStrong,
         ),
-        shape = RoundedCornerShape(26.dp),
+        shape = RemodexConversationShapes.panel,
     ) {
         Column(
             modifier = Modifier
@@ -669,6 +908,7 @@ private fun GitContextCard(
             Text(
                 text = "Git & Worktree",
                 style = MaterialTheme.typography.titleMedium,
+                color = chrome.titleText,
             )
             gitState.sync?.let { sync ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -682,6 +922,7 @@ private fun GitContextCard(
                         },
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
+                        color = chrome.titleText,
                     )
                     Text(
                         text = buildString {
@@ -694,7 +935,7 @@ private fun GitContextCard(
                             }
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = chrome.secondaryText,
                     )
                 }
             }
@@ -702,14 +943,14 @@ private fun GitContextCard(
                 Text(
                     text = message,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = chrome.accent,
                 )
             }
             gitState.errorMessage?.let { error ->
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = chrome.destructive,
                 )
             }
             RuntimeControlsSection(
@@ -800,6 +1041,7 @@ private fun ComposerSecondaryBar(
     onRefreshGitState: () -> Unit,
     onOpenGitSheet: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -808,18 +1050,20 @@ private fun ComposerSecondaryBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        MetaPill("Local", backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f))
+        MetaPill("Local", backgroundColor = chrome.mutedSurface, contentColor = chrome.titleText)
         MetaPill(
             accessMode.label,
-            backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
+            backgroundColor = chrome.mutedSurface,
+            contentColor = chrome.titleText,
         )
         gitState.branches.currentBranch?.takeIf(String::isNotBlank)?.let { branch ->
-            MetaPill(branch, backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f))
+            MetaPill(branch, backgroundColor = chrome.mutedSurface, contentColor = chrome.titleText)
         }
         if (selectedBaseBranch.isNotBlank()) {
             MetaPill(
                 label = "vs $selectedBaseBranch",
-                backgroundColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
+                backgroundColor = chrome.mutedSurface,
+                contentColor = chrome.titleText,
             )
         }
         SecondaryBarAction(label = "Refresh", onClick = onRefreshGitState)
@@ -832,9 +1076,13 @@ private fun SecondaryBarAction(
     label: String,
     onClick: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
-        shape = RoundedCornerShape(999.dp),
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Text(
             text = label,
@@ -842,7 +1090,7 @@ private fun SecondaryBarAction(
                 .clickable(onClick = onClick)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = chrome.secondaryText,
         )
     }
 }
@@ -906,6 +1154,7 @@ private fun ComposerCard(
     onForkThread: (RemodexComposerForkDestination) -> Unit,
     onComposerFocusChanged: (Boolean) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val composer = uiState.composer
     val queuedCount = composer.queuedDrafts.size
     val orderedModels = remember(composer.runtimeConfig.availableModels) {
@@ -931,9 +1180,11 @@ private fun ComposerCard(
     var plusMenuExpanded by rememberSaveable(uiState.selectedThread?.id) { mutableStateOf(false) }
 
     Surface(
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        color = chrome.panelSurfaceStrong,
         shadowElevation = 0.dp,
-        shape = RoundedCornerShape(28.dp),
+        tonalElevation = 0.dp,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shape = RemodexConversationShapes.composer,
     ) {
         Column(
             modifier = Modifier
@@ -969,8 +1220,8 @@ private fun ComposerCard(
                         } else {
                             "Ask anything... @files, \$skills, /commands"
                         },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.secondaryText.copy(alpha = 0.86f),
                     )
                 }
                 BasicTextField(
@@ -984,13 +1235,13 @@ private fun ComposerCard(
                     minLines = 1,
                     maxLines = 8,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = chrome.bodyText,
                     ),
                     keyboardOptions = KeyboardOptions(
                         capitalization = KeyboardCapitalization.Sentences,
                         keyboardType = KeyboardType.Text,
                     ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    cursorBrush = SolidColor(chrome.accent),
                 )
             }
 
@@ -999,7 +1250,7 @@ private fun ComposerCard(
                     text = limitMessage,
                     modifier = Modifier.padding(horizontal = 16.dp),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = chrome.destructive,
                 )
             }
             composer.composerMessage?.let { message ->
@@ -1007,7 +1258,7 @@ private fun ComposerCard(
                     text = message,
                     modifier = Modifier.padding(horizontal = 16.dp),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = chrome.destructive,
                 )
             }
 
@@ -1020,14 +1271,23 @@ private fun ComposerCard(
             ) {
                 Box {
                     Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.64f),
+                        modifier = Modifier.size(34.dp),
+                        color = chrome.mutedSurface,
+                        border = BorderStroke(1.dp, chrome.subtleBorder),
                         shape = CircleShape,
+                        shadowElevation = 0.dp,
+                        tonalElevation = 0.dp,
                     ) {
-                        IconButton(onClick = { plusMenuExpanded = true }) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(onClick = { plusMenuExpanded = true }),
+                            contentAlignment = Alignment.Center,
+                        ) {
                             Text(
                                 text = "+",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = chrome.titleText,
                             )
                         }
                     }
@@ -1106,51 +1366,44 @@ private fun ComposerCard(
                 if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
                     MetaPill(
                         label = "Plan",
-                        backgroundColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.74f),
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        backgroundColor = chrome.accentSurface,
+                        contentColor = chrome.titleText,
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 if (composer.canStop) {
-                    FilledTonalButton(
+                    ConversationCircleButton(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Stop",
                         onClick = onStopTurn,
-                        shape = CircleShape,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Close,
-                            contentDescription = "Stop",
-                        )
-                    }
+                    )
                 }
-                Button(
-                    onClick = onSendPrompt,
-                    enabled = composer.canSend,
-                    shape = CircleShape,
-                ) {
-                    Box {
-                        Icon(
-                            imageVector = Icons.Outlined.KeyboardArrowUp,
-                            contentDescription = composer.sendLabel,
-                        )
-                        if (queuedCount > 0) {
-                            Surface(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 10.dp, y = (-8).dp),
-                                shape = CircleShape,
-                                color = if (uiState.selectedThread?.isRunning == true) {
-                                    MaterialTheme.colorScheme.tertiary
-                                } else {
-                                    MaterialTheme.colorScheme.primary
-                                },
-                            ) {
-                                Text(
-                                    text = queuedCount.toString(),
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                            }
+                Box {
+                    ConversationCircleButton(
+                        icon = Icons.Outlined.KeyboardArrowUp,
+                        contentDescription = composer.sendLabel,
+                        onClick = onSendPrompt,
+                        enabled = composer.canSend,
+                        filled = true,
+                    )
+                    if (queuedCount > 0) {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 10.dp, y = (-8).dp),
+                            shape = CircleShape,
+                            color = if (uiState.selectedThread?.isRunning == true) {
+                                chrome.warning
+                            } else {
+                                chrome.accent
+                            },
+                        ) {
+                            Text(
+                                text = queuedCount.toString(),
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = chrome.sendIcon,
+                            )
                         }
                     }
                 }
@@ -1249,9 +1502,13 @@ private fun AccessoryChip(
     label: String,
     onRemove: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f),
-        shape = RoundedCornerShape(999.dp),
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Row(
             modifier = Modifier
@@ -1263,11 +1520,12 @@ private fun AccessoryChip(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
+                color = chrome.titleText,
             )
             Icon(
                 imageVector = Icons.Outlined.Close,
                 contentDescription = "Remove $label",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = chrome.secondaryText,
             )
         }
     }
@@ -1283,15 +1541,18 @@ private fun AutocompletePanel(
     onCloseComposerAutocomplete: () -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val autocomplete = uiState.composer.autocomplete
     if (autocomplete.panel == RemodexComposerAutocompletePanel.NONE) {
         return
     }
 
     Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-        shadowElevation = 8.dp,
+        shape = RemodexConversationShapes.panel,
+        color = chrome.panelSurfaceStrong,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier
@@ -1310,7 +1571,7 @@ private fun AutocompletePanel(
                     RemodexComposerAutocompletePanel.NONE -> ""
                 },
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
 
             when (autocomplete.panel) {
@@ -1329,7 +1590,7 @@ private fun AutocompletePanel(
                         Text(
                             text = "No files found for @${autocomplete.fileQuery}.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                         )
                     }
                 }
@@ -1349,7 +1610,7 @@ private fun AutocompletePanel(
                         Text(
                             text = "No skills found for \$${autocomplete.skillQuery}.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                         )
                     }
                 }
@@ -1367,7 +1628,7 @@ private fun AutocompletePanel(
                         Text(
                             text = "No commands available for /${autocomplete.slashQuery}.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                         )
                     }
                 }
@@ -1392,7 +1653,7 @@ private fun AutocompletePanel(
                         Text(
                             text = "Clear text, files, skills, and images before starting a code review.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            color = chrome.destructive,
                         )
                     }
                 }
@@ -1413,7 +1674,7 @@ private fun AutocompletePanel(
             Text(
                 text = "Tap outside the composer to close",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
     }
@@ -1426,40 +1687,52 @@ private fun SuggestionRow(
     trailingLabel: String? = null,
     onClick: () -> Unit,
 ) {
-    Row(
+    val chrome = remodexConversationChrome()
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clickable(onClick = onClick),
+        color = chrome.nestedSurface,
+        shape = RemodexConversationShapes.nestedCard,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
-        Column(
+        Row(
             modifier = Modifier
-                .weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (subtitle.isNotBlank()) {
+            Column(
+                modifier = Modifier
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                if (subtitle.isNotBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = chrome.secondaryText,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            trailingLabel?.takeIf(String::isNotBlank)?.let { label ->
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = chrome.secondaryText,
                 )
             }
-        }
-        trailingLabel?.takeIf(String::isNotBlank)?.let { label ->
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -1469,10 +1742,14 @@ private fun AttachmentPreviewCard(
     attachment: RemodexComposerAttachment,
     onRemoveAttachment: (String) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
         modifier = Modifier.width(140.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.76f),
-        shape = RoundedCornerShape(18.dp),
+        color = chrome.nestedSurface,
+        shape = RemodexConversationShapes.nestedCard,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier.padding(10.dp),
@@ -1495,6 +1772,7 @@ private fun AttachmentPreviewCard(
                     text = attachment.displayName,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.bodySmall,
+                    color = chrome.titleText,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1502,6 +1780,7 @@ private fun AttachmentPreviewCard(
                     Icon(
                         imageVector = Icons.Outlined.Close,
                         contentDescription = "Remove attachment",
+                        tint = chrome.secondaryText,
                     )
                 }
             }
@@ -1516,9 +1795,13 @@ private fun MetaPill(
     backgroundColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     contentColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurface,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
         color = backgroundColor,
-        shape = RoundedCornerShape(999.dp),
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Text(
             text = label,
@@ -1542,11 +1825,15 @@ private fun <T> CompactRuntimeSelector(
     onClear: (() -> Unit)? = null,
     onSelect: (T) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     var expanded by remember { mutableStateOf(false) }
     Box {
         Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
-            shape = RoundedCornerShape(999.dp),
+            color = chrome.mutedSurface,
+            shape = RemodexConversationShapes.pill,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
         ) {
             Row(
                 modifier = Modifier
@@ -1560,7 +1847,7 @@ private fun <T> CompactRuntimeSelector(
                         imageVector = icon,
                         contentDescription = null,
                         modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = chrome.secondaryText,
                     )
                 }
                 Text(
@@ -1568,7 +1855,7 @@ private fun <T> CompactRuntimeSelector(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = chrome.secondaryText,
                 )
                 RuntimeSelectorChevron()
             }
@@ -1609,11 +1896,15 @@ private fun ReasoningRuntimeSelector(
     selectedSpeed: RemodexServiceTier?,
     onSelectSpeed: (RemodexServiceTier?) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     var expanded by remember { mutableStateOf(false) }
     Box {
         Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.62f),
-            shape = RoundedCornerShape(999.dp),
+            color = chrome.mutedSurface,
+            shape = RemodexConversationShapes.pill,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
         ) {
             Row(
                 modifier = Modifier
@@ -1627,7 +1918,7 @@ private fun ReasoningRuntimeSelector(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = chrome.secondaryText,
                 )
                 RuntimeSelectorChevron()
             }
@@ -1660,7 +1951,7 @@ private fun ReasoningRuntimeSelector(
                         Text(
                             text = "✓",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                         )
                     }
                 } else {
@@ -1679,7 +1970,7 @@ private fun ReasoningRuntimeSelector(
                             Text(
                                 text = "✓",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = chrome.secondaryText,
                             )
                         }
                     } else {
@@ -1693,21 +1984,23 @@ private fun ReasoningRuntimeSelector(
 
 @Composable
 private fun RuntimeSelectorChevron() {
+    val chrome = remodexConversationChrome()
     Icon(
         imageVector = Icons.Outlined.ExpandMore,
         contentDescription = null,
         modifier = Modifier.size(14.dp),
-        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        tint = chrome.secondaryText,
     )
 }
 
 @Composable
 private fun RuntimeMenuSectionLabel(title: String) {
+    val chrome = remodexConversationChrome()
     Text(
         text = title,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = chrome.secondaryText,
     )
 }
 
@@ -1720,11 +2013,12 @@ private fun ModelRuntimeControlsSection(
     onClear: () -> Unit,
     onSelect: (RemodexModelOption) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = chrome.secondaryText,
         )
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1760,11 +2054,12 @@ private fun <T> RuntimeControlsSection(
     onClear: (() -> Unit)? = null,
     onSelect: (T) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = chrome.secondaryText,
         )
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1807,12 +2102,13 @@ private fun ConversationBubble(
 
 @Composable
 private fun UserConversationRow(item: RemodexConversationItem) {
+    val chrome = remodexConversationChrome()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(0.82f),
+            modifier = Modifier.fillMaxWidth(0.8f),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -1824,13 +2120,17 @@ private fun UserConversationRow(item: RemodexConversationItem) {
             }
             if (item.text.isNotBlank()) {
                 Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
-                    shape = RoundedCornerShape(24.dp),
+                    color = chrome.userBubble,
+                    shape = RemodexConversationShapes.bubble,
+                    border = BorderStroke(1.dp, chrome.userBubbleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
                 ) {
                     Text(
-                        text = highlightMentions(item.text),
+                        text = highlightMentions(item.text, chrome),
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
                         style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
                     )
                 }
             }
@@ -1845,22 +2145,23 @@ private fun AssistantConversationRow(
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     Column(
-        modifier = Modifier.fillMaxWidth(0.92f),
+        modifier = Modifier.fillMaxWidth(0.94f),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (item.text.isNotBlank()) {
-            Text(
+            ConversationMarkdownText(
                 text = item.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = chrome.bodyText,
             )
         }
         item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
             Text(
                 text = supportingText,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
         if (item.isStreaming) {
@@ -1896,6 +2197,7 @@ private fun SystemConversationRow(item: RemodexConversationItem) {
 
 @Composable
 private fun ThinkingConversationRow(item: RemodexConversationItem) {
+    val chrome = remodexConversationChrome()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1905,20 +2207,20 @@ private fun ThinkingConversationRow(item: RemodexConversationItem) {
         Text(
             text = "Thinking...",
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = chrome.secondaryText,
         )
         if (item.text.isNotBlank()) {
-            Text(
+            ConversationMarkdownText(
                 text = item.text,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
         item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
             Text(
                 text = supportingText,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
     }
@@ -1929,9 +2231,13 @@ private fun SystemStatusRow(
     title: String,
     item: RemodexConversationItem,
 ) {
+    val chrome = remodexConversationChrome()
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f),
-        shape = RoundedCornerShape(18.dp),
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier
@@ -1942,19 +2248,20 @@ private fun SystemStatusRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
             if (item.text.isNotBlank()) {
-                Text(
+                ConversationMarkdownText(
                     text = item.text,
                     style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.bodyText,
                 )
             }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
                 Text(
                     text = supportingText,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = chrome.secondaryText,
                 )
             }
             if (item.isStreaming) {
@@ -1966,10 +2273,14 @@ private fun SystemStatusRow(
 
 @Composable
 private fun SubagentActionRow(item: RemodexConversationItem) {
+    val chrome = remodexConversationChrome()
     val action = item.subagentAction
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.74f),
-        shape = RoundedCornerShape(18.dp),
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier
@@ -1980,16 +2291,20 @@ private fun SubagentActionRow(item: RemodexConversationItem) {
             Text(
                 text = "Subagents",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
             Text(
                 text = action?.summaryText ?: item.text,
                 style = MaterialTheme.typography.bodyMedium,
+                color = chrome.bodyText,
             )
             action?.agentRows?.forEach { row ->
                 Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                    shape = RoundedCornerShape(14.dp),
+                    color = chrome.nestedSurface,
+                    shape = RemodexConversationShapes.nestedCard,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
                 ) {
                     Column(
                         modifier = Modifier
@@ -2001,19 +2316,20 @@ private fun SubagentActionRow(item: RemodexConversationItem) {
                             text = row.displayLabel,
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
+                            color = chrome.titleText,
                         )
                         row.fallbackStatus?.takeIf(String::isNotBlank)?.let { status ->
                             Text(
                                 text = status.replace('_', ' '),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = chrome.secondaryText,
                             )
                         }
                         row.fallbackMessage?.takeIf(String::isNotBlank)?.let { message ->
                             Text(
                                 text = message,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = chrome.secondaryText,
                             )
                         }
                     }
@@ -2028,9 +2344,13 @@ private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) 
     if (request == null) {
         return
     }
+    val chrome = remodexConversationChrome()
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.72f),
-        shape = RoundedCornerShape(18.dp),
+        color = chrome.accentSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier
@@ -2041,7 +2361,7 @@ private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) 
             Text(
                 text = "Needs input",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                color = chrome.titleText,
             )
             request.questions.forEach { question ->
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2049,23 +2369,24 @@ private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) 
                         text = question.header,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        color = chrome.titleText,
                     )
                     Text(
                         text = question.question,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        color = chrome.bodyText,
                     )
                     question.options.forEach { option ->
                         Surface(
-                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.08f),
-                            shape = RoundedCornerShape(14.dp),
+                            color = chrome.nestedSurface,
+                            shape = RemodexConversationShapes.nestedCard,
+                            border = BorderStroke(1.dp, chrome.subtleBorder),
                         ) {
                             Text(
                                 text = "${option.label}: ${option.description}",
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                color = chrome.bodyText,
                             )
                         }
                     }
@@ -2077,19 +2398,20 @@ private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) 
 
 @Composable
 private fun DefaultSystemRow(item: RemodexConversationItem) {
+    val chrome = remodexConversationChrome()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         item.text.takeIf(String::isNotBlank)?.let { text ->
-            Text(
+            ConversationMarkdownText(
                 text = text,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
         item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
             Text(
                 text = supportingText,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
     }
@@ -2100,6 +2422,7 @@ private fun MessageAttachmentStrip(
     attachments: List<RemodexConversationAttachment>,
     alignToEnd: Boolean,
 ) {
+    val chrome = remodexConversationChrome()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (alignToEnd) Arrangement.End else Arrangement.Start,
@@ -2112,8 +2435,11 @@ private fun MessageAttachmentStrip(
             attachments.forEach { attachment ->
                 Surface(
                     modifier = Modifier.width(140.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.76f),
-                    shape = RoundedCornerShape(18.dp),
+                    color = chrome.nestedSurface,
+                    shape = RemodexConversationShapes.nestedCard,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
                 ) {
                     Column(
                         modifier = Modifier.padding(10.dp),
@@ -2130,6 +2456,7 @@ private fun MessageAttachmentStrip(
                         Text(
                             text = attachment.displayName,
                             style = MaterialTheme.typography.bodySmall,
+                            color = chrome.titleText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -2142,6 +2469,7 @@ private fun MessageAttachmentStrip(
 
 @Composable
 private fun MessageDeliveryStatus(state: RemodexMessageDeliveryState) {
+    val chrome = remodexConversationChrome()
     val label = when (state) {
         RemodexMessageDeliveryState.PENDING -> "sending..."
         RemodexMessageDeliveryState.FAILED -> "send failed"
@@ -2152,9 +2480,9 @@ private fun MessageDeliveryStatus(state: RemodexMessageDeliveryState) {
             text = label,
             style = MaterialTheme.typography.labelSmall,
             color = if (state == RemodexMessageDeliveryState.FAILED) {
-                MaterialTheme.colorScheme.error
+                chrome.destructive
             } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+                chrome.secondaryText
             },
         )
     }
@@ -2162,15 +2490,16 @@ private fun MessageDeliveryStatus(state: RemodexMessageDeliveryState) {
 
 @Composable
 private fun StreamingIndicator(label: String) {
+    val chrome = remodexConversationChrome()
     Text(
         text = label,
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = chrome.secondaryText,
         textDecoration = TextDecoration.None,
     )
 }
 
-private fun highlightMentions(text: String) = buildAnnotatedString {
+private fun highlightMentions(text: String, chrome: RemodexConversationChrome) = buildAnnotatedString {
     val mentionRegex = Regex("([@\\$][^\\s]+)")
     var cursor = 0
     mentionRegex.findAll(text).forEach { match ->
@@ -2179,7 +2508,7 @@ private fun highlightMentions(text: String) = buildAnnotatedString {
         }
         withStyle(
             SpanStyle(
-                color = if (match.value.startsWith("@")) Color(0xFF2563EB) else Color(0xFF4F46E5),
+                color = if (match.value.startsWith("@")) chrome.accent else chrome.warning,
                 fontWeight = FontWeight.Medium,
             ),
         ) {
@@ -2197,15 +2526,19 @@ private fun AssistantRevertAction(
     presentation: RemodexAssistantRevertPresentation,
     onTap: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val actionColor = when (presentation.riskLevel) {
-        RemodexAssistantRevertRiskLevel.SAFE -> MaterialTheme.colorScheme.primary
-        RemodexAssistantRevertRiskLevel.WARNING -> MaterialTheme.colorScheme.tertiary
-        RemodexAssistantRevertRiskLevel.BLOCKED -> MaterialTheme.colorScheme.onSurfaceVariant
+        RemodexAssistantRevertRiskLevel.SAFE -> chrome.accent
+        RemodexAssistantRevertRiskLevel.WARNING -> chrome.warning
+        RemodexAssistantRevertRiskLevel.BLOCKED -> chrome.secondaryText
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.7f),
-            shape = RoundedCornerShape(12.dp),
+            color = chrome.nestedSurface,
+            shape = RemodexConversationShapes.nestedCard,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
         ) {
             Row(
                 modifier = Modifier
@@ -2233,7 +2566,7 @@ private fun AssistantRevertAction(
             Text(
                 text = helperText,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = chrome.secondaryText,
             )
         }
     }
@@ -2246,6 +2579,7 @@ private fun AssistantRevertSheet(
     onClose: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     val affectedFiles = sheetState.preview?.affectedFiles
         ?.takeIf(List<String>::isNotEmpty)
         ?: sheetState.changeSet.fileChanges.map { fileChange -> fileChange.path }
@@ -2266,6 +2600,7 @@ private fun AssistantRevertSheet(
             Text(
                 text = "Undo this response",
                 style = MaterialTheme.typography.headlineSmall,
+                color = chrome.titleText,
             )
 
             OutlinedCard(shape = RoundedCornerShape(20.dp)) {
@@ -2278,17 +2613,18 @@ private fun AssistantRevertSheet(
                     Text(
                         text = "This action will try to undo only the changes from this response. Later local edits stay untouched unless they overlap.",
                         style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
                     )
                     Text(
                         text = "${affectedFiles.size} file(s) · +$totalAdditions · -$totalDeletions",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = chrome.secondaryText,
                     )
                     affectedFiles.forEach { path ->
                         Text(
                             text = path,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = chrome.secondaryText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -2297,7 +2633,7 @@ private fun AssistantRevertSheet(
                         Text(
                             text = warningText,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.tertiary,
+                            color = chrome.warning,
                         )
                     }
                 }
@@ -2310,6 +2646,7 @@ private fun AssistantRevertSheet(
                             text = "Checking whether the reverse patch applies cleanly...",
                             modifier = Modifier.padding(16.dp),
                             style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
                         )
                     }
                 }
@@ -2328,6 +2665,7 @@ private fun AssistantRevertSheet(
                                     else -> "Could not safely undo this response."
                                 },
                                 style = MaterialTheme.typography.titleMedium,
+                                color = chrome.titleText,
                             )
                             if (sheetState.preview.stagedFiles.isNotEmpty()) {
                                 Text(
@@ -2336,7 +2674,7 @@ private fun AssistantRevertSheet(
                                         separator = ", ",
                                     ),
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = chrome.secondaryText,
                                 )
                             }
                             if (sheetState.preview.unsupportedReasons.isNotEmpty()) {
@@ -2344,7 +2682,7 @@ private fun AssistantRevertSheet(
                                     Text(
                                         text = reason,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = chrome.secondaryText,
                                     )
                                 }
                             }
@@ -2353,7 +2691,7 @@ private fun AssistantRevertSheet(
                                     Text(
                                         text = "${conflict.path}: ${conflict.message}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = chrome.secondaryText,
                                     )
                                 }
                             }
@@ -2368,7 +2706,7 @@ private fun AssistantRevertSheet(
                         text = errorMessage,
                         modifier = Modifier.padding(16.dp),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = chrome.destructive,
                     )
                 }
             }

@@ -48,7 +48,7 @@ object RemodexComposerCommandLogic {
             return null
         }
         val query = text.substring(triggerIndex + 1)
-        if (query.isEmpty() || query.any(Char::isWhitespace)) {
+        if (query.any(Char::isWhitespace)) {
             return null
         }
         return RemodexTrailingToken(query = query, startIndex = triggerIndex)
