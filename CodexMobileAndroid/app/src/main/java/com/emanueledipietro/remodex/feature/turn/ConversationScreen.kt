@@ -7,9 +7,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.Row
@@ -18,16 +21,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -45,7 +52,6 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedAssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -69,6 +75,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -80,6 +88,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -88,6 +97,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import coil.compose.AsyncImage
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
@@ -118,6 +131,16 @@ import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
+import kotlinx.coroutines.flow.drop
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+
+private val ComposerFollowBottomThreshold = 156.dp
+private val ComposerTrailingButtonSize = 32.dp
+private val ComposerLeadingIconTapTarget = 24.dp
+private val ComposerModelMenuMaxWidth = 160.dp
+private val ComposerReasoningMenuMaxWidth = 132.dp
 
 @Composable
 fun ConversationScreen(
@@ -171,15 +194,65 @@ fun ConversationScreen(
     val pinnedPlanItem = thread.messages.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
     val timelineItems = thread.messages.filterNot { item -> item.id == pinnedPlanItem?.id }
     val timelineState = rememberLazyListState()
+    val density = LocalDensity.current
+    val lastTimelineItemId = timelineItems.lastOrNull()?.id
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    val followBottomThresholdPx = with(density) { ComposerFollowBottomThreshold.roundToPx() }
+    var initialScrollApplied by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var keepTimelinePinnedToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
 
-    LaunchedEffect(thread.id) {
-        if (timelineItems.isNotEmpty()) {
+    LaunchedEffect(thread.id, lastTimelineItemId) {
+        if (!initialScrollApplied && timelineItems.isNotEmpty()) {
+            withFrameNanos { }
             timelineState.scrollToItem(timelineItems.lastIndex)
+            keepTimelinePinnedToBottom = true
+            initialScrollApplied = true
         }
     }
 
-    LaunchedEffect(thread.id, timelineItems.lastOrNull()?.id, thread.isRunning) {
-        if (timelineItems.isNotEmpty() && thread.isRunning) {
+    LaunchedEffect(thread.id, followBottomThresholdPx) {
+        snapshotFlow { timelineState.isScrollInProgress }
+            .drop(1)
+            .collect { isScrolling ->
+                if (!isScrolling) {
+                    keepTimelinePinnedToBottom = isTimelineNearBottom(
+                        state = timelineState,
+                        thresholdPx = followBottomThresholdPx,
+                    )
+                }
+            }
+    }
+
+    LaunchedEffect(
+        thread.id,
+        lastTimelineItemId,
+        thread.isRunning,
+        initialScrollApplied,
+        keepTimelinePinnedToBottom,
+    ) {
+        if (
+            initialScrollApplied &&
+            timelineItems.isNotEmpty() &&
+            thread.isRunning &&
+            keepTimelinePinnedToBottom
+        ) {
+            timelineState.animateScrollToItem(timelineItems.lastIndex)
+        }
+    }
+
+    LaunchedEffect(
+        thread.id,
+        composerFocused,
+        imeVisible,
+        keepTimelinePinnedToBottom,
+        lastTimelineItemId,
+    ) {
+        if (
+            timelineItems.isNotEmpty() &&
+            composerFocused &&
+            imeVisible &&
+            keepTimelinePinnedToBottom
+        ) {
             timelineState.animateScrollToItem(timelineItems.lastIndex)
         }
     }
@@ -348,6 +421,26 @@ fun ConversationScreen(
     }
 }
 
+private fun isTimelineNearBottom(
+    state: LazyListState,
+    thresholdPx: Int,
+): Boolean {
+    val layoutInfo = state.layoutInfo
+    val totalItems = layoutInfo.totalItemsCount
+    if (totalItems == 0) {
+        return true
+    }
+
+    val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull() ?: return true
+    val lastItemIndex = totalItems - 1
+    if (lastVisibleItem.index != lastItemIndex) {
+        return false
+    }
+
+    val bottomOverflowPx = (lastVisibleItem.offset + lastVisibleItem.size) - layoutInfo.viewportEndOffset
+    return bottomOverflowPx <= thresholdPx
+}
+
 @Composable
 private fun ConversationCircleButton(
     icon: ImageVector,
@@ -359,20 +452,23 @@ private fun ConversationCircleButton(
 ) {
     val chrome = remodexConversationChrome()
     Surface(
-        modifier = modifier.size(36.dp),
+        modifier = modifier.requiredSize(ComposerTrailingButtonSize),
         color = if (filled) chrome.sendButton else chrome.mutedSurface,
         shape = CircleShape,
         border = if (filled) null else BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
-        IconButton(
-            onClick = onClick,
-            enabled = enabled,
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
+                modifier = Modifier.size(14.dp),
                 tint = if (filled) chrome.sendIcon else chrome.titleText,
             )
         }
@@ -1262,148 +1358,157 @@ private fun ComposerCard(
                 )
             }
 
-            Row(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box {
-                    Surface(
-                        modifier = Modifier.size(34.dp),
-                        color = chrome.mutedSurface,
-                        border = BorderStroke(1.dp, chrome.subtleBorder),
-                        shape = CircleShape,
-                        shadowElevation = 0.dp,
-                        tonalElevation = 0.dp,
+                val compactSpacing = if (maxWidth < 360.dp) 4.dp else 6.dp
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(compactSpacing),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Box(
+                        Box {
+                            Box(
+                                modifier = Modifier
+                                    .requiredSize(ComposerLeadingIconTapTarget)
+                                    .clickable(onClick = { plusMenuExpanded = !plusMenuExpanded }),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = "+",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = chrome.secondaryText,
+                                )
+                            }
+                            ComposerDropdownMenu(
+                                expanded = plusMenuExpanded,
+                                onDismissRequest = { plusMenuExpanded = false },
+                            ) {
+                                ComposerDropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
+                                                "Disable plan mode"
+                                            } else {
+                                                "Enable plan mode"
+                                            },
+                                        )
+                                    },
+                                    onClick = {
+                                        plusMenuExpanded = false
+                                        onSelectPlanningMode(
+                                            if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
+                                                RemodexPlanningMode.AUTO
+                                            } else {
+                                                RemodexPlanningMode.PLAN
+                                            },
+                                        )
+                                    },
+                                )
+                                ComposerDropdownMenuItem(
+                                    text = { Text("Photo library") },
+                                    onClick = {
+                                        plusMenuExpanded = false
+                                        onOpenAttachmentPicker()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.AddPhotoAlternate,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                )
+                                ComposerDropdownMenuItem(
+                                    text = { Text("Take a photo") },
+                                    enabled = false,
+                                    onClick = {
+                                        plusMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+
+                        CompactRuntimeSelector(
+                            title = selectedModelTitle,
+                            options = orderedModels,
+                            selected = selectedModelOption,
+                            label = { option -> RemodexRuntimeMetaMapper.modelTitle(option) },
+                            key = { option -> option.id },
                             modifier = Modifier
-                                .fillMaxSize()
-                                .clickable(onClick = { plusMenuExpanded = true }),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "+",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = chrome.titleText,
-                            )
+                                .weight(1f, fill = false)
+                                .widthIn(max = ComposerModelMenuMaxWidth),
+                            leadingIcon = if (composer.runtimeConfig.serviceTier != null) {
+                                Icons.Outlined.Bolt
+                            } else {
+                                null
+                            },
+                            onClear = { onSelectModel(null) },
+                            onSelect = { option -> onSelectModel(option.id) },
+                        )
+                        ReasoningRuntimeSelector(
+                            title = composer.runtimeConfig.reasoningEffort
+                                ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
+                                ?: "Auto",
+                            reasoningOptions = composer.runtimeConfig.availableReasoningEfforts,
+                            selectedReasoning = selectedReasoningOption,
+                            onSelectReasoning = { option -> onSelectReasoningEffort(option.reasoningEffort) },
+                            speedOptions = composer.runtimeConfig.availableServiceTiers,
+                            selectedSpeed = composer.runtimeConfig.serviceTier,
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .widthIn(max = ComposerReasoningMenuMaxWidth),
+                            onSelectSpeed = onSelectServiceTier,
+                        )
+                        if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
+                            ComposerPlanIndicator()
                         }
                     }
-                    DropdownMenu(
-                        expanded = plusMenuExpanded,
-                        onDismissRequest = { plusMenuExpanded = false },
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
-                                        "Disable plan mode"
-                                    } else {
-                                        "Enable plan mode"
-                                    },
-                                )
-                            },
-                            onClick = {
-                                plusMenuExpanded = false
-                                onSelectPlanningMode(
-                                    if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
-                                        RemodexPlanningMode.AUTO
-                                    } else {
-                                        RemodexPlanningMode.PLAN
-                                    },
-                                )
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Photo library") },
-                            onClick = {
-                                plusMenuExpanded = false
-                                onOpenAttachmentPicker()
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Outlined.AddPhotoAlternate,
-                                    contentDescription = null,
-                                )
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Take a photo") },
-                            enabled = false,
-                            onClick = {
-                                plusMenuExpanded = false
-                            },
-                        )
-                    }
-                }
-                CompactRuntimeSelector(
-                    title = selectedModelTitle,
-                    options = orderedModels,
-                    selected = selectedModelOption,
-                    label = { option -> RemodexRuntimeMetaMapper.modelTitle(option) },
-                    key = { option -> option.id },
-                    leadingIcon = if (composer.runtimeConfig.serviceTier != null) {
-                        Icons.Outlined.Bolt
-                    } else {
-                        null
-                    },
-                    onClear = { onSelectModel(null) },
-                    onSelect = { option -> onSelectModel(option.id) },
-                )
-                ReasoningRuntimeSelector(
-                    title = composer.runtimeConfig.reasoningEffort
-                        ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
-                        ?: "Auto",
-                    reasoningOptions = composer.runtimeConfig.availableReasoningEfforts,
-                    selectedReasoning = selectedReasoningOption,
-                    onSelectReasoning = { option -> onSelectReasoningEffort(option.reasoningEffort) },
-                    speedOptions = composer.runtimeConfig.availableServiceTiers,
-                    selectedSpeed = composer.runtimeConfig.serviceTier,
-                    onSelectSpeed = onSelectServiceTier,
-                )
-                if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
-                    MetaPill(
-                        label = "Plan",
-                        backgroundColor = chrome.accentSurface,
-                        contentColor = chrome.titleText,
-                    )
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                if (composer.canStop) {
-                    ConversationCircleButton(
-                        icon = Icons.Outlined.Close,
-                        contentDescription = "Stop",
-                        onClick = onStopTurn,
-                    )
-                }
-                Box {
-                    ConversationCircleButton(
-                        icon = Icons.Outlined.KeyboardArrowUp,
-                        contentDescription = composer.sendLabel,
-                        onClick = onSendPrompt,
-                        enabled = composer.canSend,
-                        filled = true,
-                    )
-                    if (queuedCount > 0) {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .offset(x = 10.dp, y = (-8).dp),
-                            shape = CircleShape,
-                            color = if (uiState.selectedThread?.isRunning == true) {
-                                chrome.warning
-                            } else {
-                                chrome.accent
-                            },
-                        ) {
-                            Text(
-                                text = queuedCount.toString(),
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = chrome.sendIcon,
+                        if (composer.canStop) {
+                            ConversationCircleButton(
+                                icon = Icons.Outlined.Close,
+                                contentDescription = "Stop",
+                                onClick = onStopTurn,
                             )
+                        }
+                        Box {
+                            ConversationCircleButton(
+                                icon = Icons.Outlined.KeyboardArrowUp,
+                                contentDescription = composer.sendLabel,
+                                onClick = onSendPrompt,
+                                enabled = composer.canSend,
+                                filled = true,
+                            )
+                            if (queuedCount > 0) {
+                                Surface(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 8.dp, y = (-6).dp),
+                                    shape = CircleShape,
+                                    color = if (uiState.selectedThread?.isRunning == true) {
+                                        chrome.warning
+                                    } else {
+                                        chrome.accent
+                                    },
+                                ) {
+                                    Text(
+                                        text = queuedCount.toString(),
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = chrome.sendIcon,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1821,64 +1926,49 @@ private fun <T> CompactRuntimeSelector(
     selected: T?,
     label: (T) -> String,
     key: (T) -> Any,
+    modifier: Modifier = Modifier,
     leadingIcon: ImageVector? = null,
     onClear: (() -> Unit)? = null,
     onSelect: (T) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     var expanded by remember { mutableStateOf(false) }
-    Box {
-        Surface(
-            color = chrome.mutedSurface,
-            shape = RemodexConversationShapes.pill,
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 0.dp,
-            tonalElevation = 0.dp,
-        ) {
-            Row(
-                modifier = Modifier
-                    .clickable(onClick = { expanded = true })
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                leadingIcon?.let { icon ->
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = chrome.secondaryText,
-                    )
-                }
-                Text(
-                    text = title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = chrome.secondaryText,
-                )
-                RuntimeSelectorChevron()
-            }
-        }
-        DropdownMenu(
+    val selectedKey = selected?.let(key)
+    Box(modifier = modifier) {
+        ComposerMenuTrigger(
+            title = title,
+            leadingIcon = leadingIcon,
+            onClick = { expanded = !expanded },
+        )
+        ComposerDropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
             onClear?.let {
-                DropdownMenuItem(
+                ComposerDropdownMenuItem(
                     text = { Text("Auto") },
                     onClick = {
                         expanded = false
                         it()
                     },
+                    trailingIcon = if (selected == null) {
+                        { ComposerMenuCheckmark() }
+                    } else {
+                        null
+                    },
                 )
             }
             options.forEach { option ->
-                DropdownMenuItem(
+                ComposerDropdownMenuItem(
                     text = { Text(label(option)) },
                     onClick = {
                         expanded = false
                         onSelect(option)
+                    },
+                    trailingIcon = if (selectedKey == key(option)) {
+                        { ComposerMenuCheckmark() }
+                    } else {
+                        null
                     },
                 )
             }
@@ -1894,85 +1984,59 @@ private fun ReasoningRuntimeSelector(
     onSelectReasoning: (com.emanueledipietro.remodex.model.RemodexReasoningEffortOption) -> Unit,
     speedOptions: List<RemodexServiceTier>,
     selectedSpeed: RemodexServiceTier?,
+    modifier: Modifier = Modifier,
     onSelectSpeed: (RemodexServiceTier?) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     var expanded by remember { mutableStateOf(false) }
-    Box {
-        Surface(
-            color = chrome.mutedSurface,
-            shape = RemodexConversationShapes.pill,
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-            shadowElevation = 0.dp,
-            tonalElevation = 0.dp,
-        ) {
-            Row(
-                modifier = Modifier
-                    .clickable(onClick = { expanded = true })
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = chrome.secondaryText,
-                )
-                RuntimeSelectorChevron()
-            }
-        }
-        DropdownMenu(
+    Box(modifier = modifier) {
+        ComposerMenuTrigger(
+            title = title,
+            onClick = { expanded = !expanded },
+        )
+        ComposerDropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
-            RuntimeMenuSectionLabel("Reasoning")
-            reasoningOptions.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(option.label) },
-                    onClick = {
-                        expanded = false
-                        onSelectReasoning(option)
-                    },
-                )
-            }
-
-            HorizontalDivider()
             RuntimeMenuSectionLabel("Speed")
-            DropdownMenuItem(
-                text = { Text("Normal") },
-                onClick = {
-                    expanded = false
-                    onSelectSpeed(null)
-                },
-                trailingIcon = if (selectedSpeed == null) {
-                    {
-                        Text(
-                            text = "✓",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = chrome.secondaryText,
-                        )
-                    }
-                } else {
-                    null
-                },
-            )
             speedOptions.forEach { option ->
-                DropdownMenuItem(
+                ComposerDropdownMenuItem(
                     text = { Text(option.label) },
                     onClick = {
                         expanded = false
                         onSelectSpeed(option)
                     },
                     trailingIcon = if (selectedSpeed == option) {
-                        {
-                            Text(
-                                text = "✓",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = chrome.secondaryText,
-                            )
-                        }
+                        { ComposerMenuCheckmark() }
+                    } else {
+                        null
+                    },
+                )
+            }
+            ComposerDropdownMenuItem(
+                text = { Text("Normal") },
+                onClick = {
+                    expanded = false
+                    onSelectSpeed(null)
+                },
+                trailingIcon = if (selectedSpeed == null) {
+                    { ComposerMenuCheckmark() }
+                } else {
+                    null
+                },
+            )
+
+            HorizontalDivider()
+            RuntimeMenuSectionLabel("Reasoning")
+            reasoningOptions.forEach { option ->
+                ComposerDropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        expanded = false
+                        onSelectReasoning(option)
+                    },
+                    trailingIcon = if (selectedReasoning?.reasoningEffort == option.reasoningEffort) {
+                        { ComposerMenuCheckmark() }
                     } else {
                         null
                     },
@@ -1994,12 +2058,170 @@ private fun RuntimeSelectorChevron() {
 }
 
 @Composable
+private fun ComposerMenuTrigger(
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    leadingIcon: ImageVector? = null,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        leadingIcon?.let { icon ->
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = chrome.secondaryText,
+            )
+        }
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f, fill = false),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelMedium,
+            color = chrome.secondaryText,
+        )
+        RuntimeSelectorChevron()
+    }
+}
+
+@Composable
+private fun ComposerPlanIndicator() {
+    val chrome = remodexConversationChrome()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .height(14.dp)
+                .background(chrome.subtleBorder),
+        )
+        Text(
+            text = "Plan",
+            style = MaterialTheme.typography.labelMedium,
+            color = chrome.accent,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun ComposerDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val verticalGapPx = with(density) { 8.dp.roundToPx() }
+    val windowMarginPx = with(density) { 12.dp.roundToPx() }
+    if (!expanded) {
+        return
+    }
+
+    Popup(
+        popupPositionProvider = remember(verticalGapPx, windowMarginPx) {
+            ComposerMenuPositionProvider(
+                verticalGapPx = verticalGapPx,
+                windowMarginPx = windowMarginPx,
+            )
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = false),
+    ) {
+        Surface(
+            color = chrome.panelSurfaceStrong,
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 6.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 180.dp, max = 228.dp)
+                    .padding(vertical = 2.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+private class ComposerMenuPositionProvider(
+    private val verticalGapPx: Int,
+    private val windowMarginPx: Int,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val preferredX = when (layoutDirection) {
+            LayoutDirection.Ltr -> anchorBounds.left
+            LayoutDirection.Rtl -> anchorBounds.right - popupContentSize.width
+        }
+        val maxX = (windowSize.width - popupContentSize.width - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedX = preferredX.coerceIn(windowMarginPx, maxX)
+
+        val aboveY = anchorBounds.top - popupContentSize.height - verticalGapPx
+        val belowY = anchorBounds.bottom + verticalGapPx
+        val maxY = (windowSize.height - popupContentSize.height - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedY = when {
+            aboveY >= windowMarginPx -> aboveY
+            belowY <= maxY -> belowY
+            else -> aboveY.coerceIn(windowMarginPx, maxY)
+        }
+
+        return IntOffset(resolvedX, resolvedY)
+    }
+}
+
+@Composable
 private fun RuntimeMenuSectionLabel(title: String) {
     val chrome = remodexConversationChrome()
     Text(
         text = title,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
         style = MaterialTheme.typography.labelSmall,
+        color = chrome.secondaryText,
+    )
+}
+
+@Composable
+private fun ComposerDropdownMenuItem(
+    text: @Composable () -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null,
+) {
+    DropdownMenuItem(
+        text = text,
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 30.dp),
+        enabled = enabled,
+        leadingIcon = leadingIcon,
+        trailingIcon = trailingIcon,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+    )
+}
+
+@Composable
+private fun ComposerMenuCheckmark() {
+    val chrome = remodexConversationChrome()
+    Text(
+        text = "✓",
+        style = MaterialTheme.typography.labelMedium,
         color = chrome.secondaryText,
     )
 }

@@ -66,6 +66,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -422,6 +424,8 @@ private fun MainPane(
     } else {
         MaterialTheme.colorScheme.background
     }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -432,7 +436,12 @@ private fun MainPane(
             selectedThreadTitle = uiState.selectedThread?.title,
             selectedThreadProjectPath = uiState.selectedThread?.projectPath,
             compact = compact,
-            onMenu = onMenu,
+            onMenu = {
+                focusManager.clearFocus(force = true)
+                keyboardController?.hide()
+                viewModel.closeComposerAutocomplete()
+                onMenu()
+            },
             onBack = onBack,
         )
 

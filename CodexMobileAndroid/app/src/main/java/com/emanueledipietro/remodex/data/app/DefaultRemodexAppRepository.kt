@@ -426,7 +426,10 @@ class DefaultRemodexAppRepository(
         serviceTier: RemodexServiceTier?,
     ) {
         val currentOverride = preferencesState.value.runtimeOverridesByThread[threadId]
-        val nextOverride = (currentOverride ?: RemodexRuntimeOverrides()).copy(serviceTier = serviceTier)
+        val nextOverride = (currentOverride ?: RemodexRuntimeOverrides()).copy(
+            serviceTier = serviceTier,
+            hasServiceTierOverride = true,
+        )
         appPreferencesRepository.setRuntimeOverrides(
             threadId = threadId,
             overrides = nextOverride,
@@ -481,7 +484,10 @@ class DefaultRemodexAppRepository(
 
     override suspend fun setDefaultServiceTier(serviceTier: RemodexServiceTier?) {
         mutateRuntimeDefaults { defaults ->
-            defaults.copy(serviceTier = serviceTier)
+            defaults.copy(
+                serviceTier = serviceTier,
+                hasServiceTierPreference = true,
+            )
         }
     }
 

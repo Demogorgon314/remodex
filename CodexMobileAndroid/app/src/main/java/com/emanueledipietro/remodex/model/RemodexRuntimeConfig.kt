@@ -118,6 +118,7 @@ data class RemodexRuntimeOverrides(
     val reasoningEffort: String? = null,
     val accessMode: RemodexAccessMode? = null,
     val serviceTier: RemodexServiceTier? = null,
+    val hasServiceTierOverride: Boolean = false,
 )
 
 @Serializable
@@ -126,6 +127,7 @@ data class RemodexRuntimeDefaults(
     val reasoningEffort: String? = null,
     val accessMode: RemodexAccessMode = RemodexAccessMode.ON_REQUEST,
     val serviceTier: RemodexServiceTier? = null,
+    val hasServiceTierPreference: Boolean = false,
 )
 
 @Serializable
@@ -146,7 +148,11 @@ data class RemodexRuntimeConfig(
             selectedModelId = defaults.modelId?.trim()?.takeIf(String::isNotEmpty) ?: selectedModelId,
             reasoningEffort = defaults.reasoningEffort?.trim()?.takeIf(String::isNotEmpty) ?: reasoningEffort,
             accessMode = defaults.accessMode,
-            serviceTier = defaults.serviceTier ?: serviceTier,
+            serviceTier = if (defaults.hasServiceTierPreference) {
+                defaults.serviceTier
+            } else {
+                serviceTier
+            },
         ).normalizeSelections()
     }
 
@@ -158,7 +164,11 @@ data class RemodexRuntimeConfig(
             planningMode = overrides.planningMode ?: planningMode,
             reasoningEffort = overrides.reasoningEffort?.trim()?.takeIf(String::isNotEmpty) ?: reasoningEffort,
             accessMode = overrides.accessMode ?: accessMode,
-            serviceTier = overrides.serviceTier ?: serviceTier,
+            serviceTier = if (overrides.hasServiceTierOverride) {
+                overrides.serviceTier
+            } else {
+                serviceTier
+            },
         ).normalizeSelections()
     }
 

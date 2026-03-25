@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -52,6 +53,34 @@ class RemodexRuntimeConfigTest {
 
         assertEquals("gpt-5.4", config.selectedModelId)
         assertEquals("xhigh", config.reasoningEffort)
+    }
+
+    @Test
+    fun `thread override can reset speed back to normal`() {
+        val config = RemodexRuntimeConfig(
+            serviceTier = RemodexServiceTier.FAST,
+        ).applyThreadOverrides(
+            RemodexRuntimeOverrides(
+                serviceTier = null,
+                hasServiceTierOverride = true,
+            ),
+        )
+
+        assertNull(config.serviceTier)
+    }
+
+    @Test
+    fun `defaults can reset speed back to normal`() {
+        val config = RemodexRuntimeConfig(
+            serviceTier = RemodexServiceTier.FAST,
+        ).applyDefaults(
+            RemodexRuntimeDefaults(
+                serviceTier = null,
+                hasServiceTierPreference = true,
+            ),
+        )
+
+        assertNull(config.serviceTier)
     }
 
     private fun gpt54Model(): RemodexModelOption {
