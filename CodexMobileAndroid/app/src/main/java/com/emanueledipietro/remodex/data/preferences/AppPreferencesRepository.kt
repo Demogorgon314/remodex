@@ -3,7 +3,6 @@ package com.emanueledipietro.remodex.data.preferences
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
 import com.emanueledipietro.remodex.model.RemodexServiceTier

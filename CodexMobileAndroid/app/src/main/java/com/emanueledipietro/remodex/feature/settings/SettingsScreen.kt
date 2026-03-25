@@ -39,8 +39,8 @@ import com.emanueledipietro.remodex.data.connection.statusLabel
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
-import com.emanueledipietro.remodex.model.RemodexModelOption
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
+import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
 
@@ -51,7 +51,7 @@ fun SettingsScreen(
     onNotificationAction: () -> Unit,
     onSelectAppearanceMode: (RemodexAppearanceMode) -> Unit,
     onSelectDefaultModelId: (String?) -> Unit,
-    onSelectDefaultReasoningEffort: (RemodexReasoningEffort?) -> Unit,
+    onSelectDefaultReasoningEffort: (String?) -> Unit,
     onSelectDefaultAccessMode: (RemodexAccessMode) -> Unit,
     onSelectDefaultServiceTier: (RemodexServiceTier?) -> Unit,
     onDisconnect: () -> Unit,
@@ -61,23 +61,23 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val archivedThreads = uiState.threads.filter { thread -> thread.syncState.name == "ARCHIVED_LOCAL" }
-    val availableModels = remember(uiState.threads, uiState.selectedThread?.id) {
-        uiState.selectedThread?.runtimeConfig?.availableModels
-            ?.takeIf(List<RemodexModelOption>::isNotEmpty)
-            ?: uiState.threads.firstNotNullOfOrNull { thread ->
-                thread.runtimeConfig.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
-            }
-            ?: emptyList()
+    val availableModels = remember(uiState.availableModels) {
+        RemodexRuntimeMetaMapper.orderedModels(uiState.availableModels)
     }
-    val resolvedModel = remember(availableModels, uiState.runtimeDefaults.modelId) {
-        availableModels.firstOrNull { model ->
-            model.id == uiState.runtimeDefaults.modelId || model.model == uiState.runtimeDefaults.modelId
-        }
+    val effectiveRuntimeDefaults = remember(availableModels, uiState.runtimeDefaults) {
+        RemodexRuntimeConfig(
+            availableModels = availableModels,
+            selectedModelId = uiState.runtimeDefaults.modelId,
+            reasoningEffort = uiState.runtimeDefaults.reasoningEffort,
+            accessMode = uiState.runtimeDefaults.accessMode,
+            serviceTier = uiState.runtimeDefaults.serviceTier,
+        ).normalizeSelections()
     }
-    val reasoningOptions = remember(resolvedModel) {
-        resolvedModel?.supportedReasoningEfforts
-            ?.takeIf(List<RemodexReasoningEffort>::isNotEmpty)
-            ?: RemodexReasoningEffort.entries
+    val resolvedModel = remember(effectiveRuntimeDefaults) {
+        effectiveRuntimeDefaults.selectedModelOption()
+    }
+    val reasoningOptions = remember(effectiveRuntimeDefaults) {
+        effectiveRuntimeDefaults.availableReasoningEfforts
     }
     val serviceTierOptions = remember(uiState.threads, uiState.selectedThread?.id) {
         uiState.selectedThread?.runtimeConfig?.availableServiceTiers
@@ -178,24 +178,30 @@ fun SettingsScreen(
         SettingsSection(title = "Runtime defaults") {
             SettingsSelectionRow(
                 title = "Model",
-                currentLabel = resolvedModel?.displayName ?: "Auto",
+                currentLabel = resolvedModel?.let(RemodexRuntimeMetaMapper::modelTitle)
+                    ?: uiState.runtimeDefaults.modelId
+                    ?: "Auto",
                 options = buildList {
                     add(SettingsOption("__AUTO__", "Auto"))
-                    addAll(availableModels.map { model -> SettingsOption(model.id, model.displayName) })
+                    addAll(availableModels.map { model ->
+                        SettingsOption(model.id, RemodexRuntimeMetaMapper.modelTitle(model))
+                    })
                 },
                 onSelected = { key -> onSelectDefaultModelId(key.takeUnless { it == "__AUTO__" }) },
             )
             SettingsSelectionRow(
                 title = "Reasoning",
-                currentLabel = uiState.runtimeDefaults.reasoningEffort?.label ?: "Auto",
+                currentLabel = effectiveRuntimeDefaults.reasoningEffort
+                    ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
+                    ?: "Auto",
                 options = buildList {
                     add(SettingsOption("__AUTO__", "Auto"))
-                    addAll(reasoningOptions.map { effort -> SettingsOption(effort.name, effort.label) })
+                    addAll(reasoningOptions.map { effort ->
+                        SettingsOption(effort.reasoningEffort, effort.label)
+                    })
                 },
                 onSelected = { key ->
-                    onSelectDefaultReasoningEffort(
-                        key.takeUnless { it == "__AUTO__" }?.let(RemodexReasoningEffort::valueOf),
-                    )
+                    onSelectDefaultReasoningEffort(key.takeUnless { it == "__AUTO__" })
                 },
             )
             SettingsSelectionRow(

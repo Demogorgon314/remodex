@@ -4,7 +4,6 @@ import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
@@ -56,14 +55,13 @@ interface RemodexAppRepository {
         planningMode: RemodexPlanningMode,
     )
 
-    suspend fun setModelId(
-        threadId: String,
+    suspend fun setSelectedModelId(
         modelId: String?,
     )
 
     suspend fun setReasoningEffort(
         threadId: String,
-        reasoningEffort: RemodexReasoningEffort,
+        reasoningEffort: String,
     )
 
     suspend fun setAccessMode(
@@ -78,7 +76,7 @@ interface RemodexAppRepository {
 
     suspend fun setDefaultModelId(modelId: String?)
 
-    suspend fun setDefaultReasoningEffort(reasoningEffort: RemodexReasoningEffort?)
+    suspend fun setDefaultReasoningEffort(reasoningEffort: String?)
 
     suspend fun setDefaultAccessMode(accessMode: RemodexAccessMode)
 

@@ -11,6 +11,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -40,6 +41,7 @@ data class ThreadSyncSnapshot(
 
 interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
+    val availableModels: StateFlow<List<RemodexModelOption>>
 }
 
 interface ThreadCommandService {

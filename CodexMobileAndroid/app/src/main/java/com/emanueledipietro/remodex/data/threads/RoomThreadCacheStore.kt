@@ -122,7 +122,11 @@ class RoomThreadCacheStore(
                     parentThreadId = record.thread.parentThreadId,
                     agentNickname = record.thread.agentNickname,
                     agentRole = record.thread.agentRole,
-                    runtimeConfig = threadCacheJson.decodeFromString(record.thread.runtimeConfigJson),
+                    runtimeConfig = runCatching {
+                        threadCacheJson.decodeFromString<RemodexRuntimeConfig>(record.thread.runtimeConfigJson)
+                    }.getOrElse {
+                        RemodexRuntimeConfig()
+                    },
                     timelineItems = record.timelineItems
                         .sortedBy(CachedTimelineItemEntity::orderIndex)
                         .map(CachedTimelineItemEntity::toModel),

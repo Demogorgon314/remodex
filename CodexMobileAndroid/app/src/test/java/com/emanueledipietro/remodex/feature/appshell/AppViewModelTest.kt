@@ -23,7 +23,6 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -297,11 +296,11 @@ class AppViewModelTest {
             planningMode: RemodexPlanningMode,
         ) = Unit
 
-        override suspend fun setModelId(threadId: String, modelId: String?) = Unit
+        override suspend fun setSelectedModelId(modelId: String?) = Unit
 
         override suspend fun setReasoningEffort(
             threadId: String,
-            reasoningEffort: RemodexReasoningEffort,
+            reasoningEffort: String,
         ) = Unit
 
         override suspend fun setAccessMode(
@@ -313,7 +312,7 @@ class AppViewModelTest {
 
         override suspend fun setDefaultModelId(modelId: String?) = Unit
 
-        override suspend fun setDefaultReasoningEffort(reasoningEffort: RemodexReasoningEffort?) = Unit
+        override suspend fun setDefaultReasoningEffort(reasoningEffort: String?) = Unit
 
         override suspend fun setDefaultAccessMode(accessMode: RemodexAccessMode) = Unit
 

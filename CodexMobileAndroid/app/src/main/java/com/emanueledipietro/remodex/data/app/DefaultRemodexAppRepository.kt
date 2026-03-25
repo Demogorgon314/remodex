@@ -23,9 +23,9 @@ import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -73,6 +73,7 @@ class DefaultRemodexAppRepository(
             connectionStatus = secureConnectionCoordinator.state.value.toConnectionStatus(),
             secureConnection = secureConnectionCoordinator.state.value,
             trustedMac = secureConnectionCoordinator.state.value.toTrustedMacPresentation(),
+            availableModels = threadSyncService.availableModels.value,
             threads = initialBaseThreads,
             selectedThreadId = initialBaseThreads.firstOrNull()?.id,
         ),
@@ -102,19 +103,30 @@ class DefaultRemodexAppRepository(
                 secureConnectionCoordinator.state,
                 baseThreadsState,
                 managedPushRegistrationState,
-            ) { preferences, secureConnection, baseThreads, notificationRegistration ->
+                threadSyncService.availableModels,
+            ) { preferences, secureConnection, baseThreads, notificationRegistration, availableModels ->
                 SessionInputs(
                     preferences = preferences,
                     secureConnection = secureConnection,
                     baseThreads = baseThreads,
                     notificationRegistration = notificationRegistration,
+                    availableModels = availableModels,
                 )
             }.collectLatest { inputs ->
                 val preferences = inputs.preferences
                 val secureConnection = inputs.secureConnection
                 val baseThreads = inputs.baseThreads
+                val resolvedAvailableModels = inputs.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
+                    ?: baseThreads.firstNotNullOfOrNull { thread ->
+                        thread.runtimeConfig.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
+                    }
+                    ?: emptyList()
                 preferencesState.value = preferences
-                val threads = materializeThreads(baseThreads, preferences)
+                val threads = materializeThreads(
+                    baseThreads = baseThreads,
+                    preferences = preferences,
+                    availableModels = resolvedAvailableModels,
+                )
                 val selectedThreadId = resolveSelectedThreadId(
                     preferredThreadId = preferences.selectedThreadId ?: sessionState.value.selectedThreadId,
                     threads = threads,
@@ -128,6 +140,7 @@ class DefaultRemodexAppRepository(
                         connectionStatus = secureConnection.toConnectionStatus(),
                         secureConnection = secureConnection,
                         runtimeDefaults = preferences.runtimeDefaults,
+                        availableModels = resolvedAvailableModels,
                         appearanceMode = preferences.appearanceMode,
                         trustedMac = secureConnection.toTrustedMacPresentation(),
                         threads = threads,
@@ -377,35 +390,22 @@ class DefaultRemodexAppRepository(
         )
     }
 
-    override suspend fun setModelId(
-        threadId: String,
+    override suspend fun setSelectedModelId(
         modelId: String?,
     ) {
-        val currentOverride = preferencesState.value.runtimeOverridesByThread[threadId]
-        val nextOverride = (currentOverride ?: RemodexRuntimeOverrides()).copy(
-            modelId = modelId?.trim()?.takeIf(String::isNotEmpty),
-        )
-        appPreferencesRepository.setRuntimeOverrides(
-            threadId = threadId,
-            overrides = nextOverride,
-        )
-        applyPreferencesLocally(
-            preferencesState.value.copy(
-                runtimeOverridesByThread = preferencesState.value.runtimeOverridesByThread
-                    .toMutableMap()
-                    .apply {
-                        this[threadId] = nextOverride
-                    },
-            ),
-        )
+        mutateRuntimeDefaults { defaults ->
+            defaults.copy(modelId = modelId?.trim()?.takeIf(String::isNotEmpty))
+        }
     }
 
     override suspend fun setReasoningEffort(
         threadId: String,
-        reasoningEffort: RemodexReasoningEffort,
+        reasoningEffort: String,
     ) {
         val currentOverride = preferencesState.value.runtimeOverridesByThread[threadId]
-        val nextOverride = (currentOverride ?: RemodexRuntimeOverrides()).copy(reasoningEffort = reasoningEffort)
+        val nextOverride = (currentOverride ?: RemodexRuntimeOverrides()).copy(
+            reasoningEffort = reasoningEffort.trim().takeIf(String::isNotEmpty),
+        )
         appPreferencesRepository.setRuntimeOverrides(
             threadId = threadId,
             overrides = nextOverride,
@@ -464,14 +464,12 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun setDefaultModelId(modelId: String?) {
-        mutateRuntimeDefaults { defaults ->
-            defaults.copy(modelId = modelId?.trim()?.takeIf(String::isNotEmpty))
-        }
+        setSelectedModelId(modelId)
     }
 
-    override suspend fun setDefaultReasoningEffort(reasoningEffort: RemodexReasoningEffort?) {
+    override suspend fun setDefaultReasoningEffort(reasoningEffort: String?) {
         mutateRuntimeDefaults { defaults ->
-            defaults.copy(reasoningEffort = reasoningEffort)
+            defaults.copy(reasoningEffort = reasoningEffort?.trim()?.takeIf(String::isNotEmpty))
         }
     }
 
@@ -643,11 +641,17 @@ class DefaultRemodexAppRepository(
 
     private fun applyPreferencesLocally(preferences: AppPreferences) {
         preferencesState.value = preferences
-        val threads = materializeThreads(baseThreadsState.value, preferences)
+        val resolvedAvailableModels = resolveAvailableModels(baseThreadsState.value)
+        val threads = materializeThreads(
+            baseThreads = baseThreadsState.value,
+            preferences = preferences,
+            availableModels = resolvedAvailableModels,
+        )
         sessionState.update { snapshot ->
             snapshot.copy(
                 onboardingCompleted = preferences.onboardingCompleted,
                 runtimeDefaults = preferences.runtimeDefaults,
+                availableModels = resolvedAvailableModels,
                 appearanceMode = preferences.appearanceMode,
                 trustedMac = snapshot.secureConnection.toTrustedMacPresentation(),
                 threads = threads,
@@ -661,9 +665,15 @@ class DefaultRemodexAppRepository(
 
     private fun refreshThreadsLocally(baseThreads: List<RemodexThreadSummary>) {
         baseThreadsState.value = baseThreads
-        val threads = materializeThreads(baseThreads, preferencesState.value)
+        val resolvedAvailableModels = resolveAvailableModels(baseThreads)
+        val threads = materializeThreads(
+            baseThreads = baseThreads,
+            preferences = preferencesState.value,
+            availableModels = resolvedAvailableModels,
+        )
         sessionState.update { snapshot ->
             snapshot.copy(
+                availableModels = resolvedAvailableModels,
                 threads = threads,
                 trustedMac = snapshot.secureConnection.toTrustedMacPresentation(),
                 selectedThreadId = resolveSelectedThreadId(
@@ -682,6 +692,14 @@ class DefaultRemodexAppRepository(
         appPreferencesRepository.setRuntimeDefaults(updatedDefaults)
         applyPreferencesLocally(updatedPreferences)
     }
+
+    private fun resolveAvailableModels(baseThreads: List<RemodexThreadSummary>): List<RemodexModelOption> {
+        return threadSyncService.availableModels.value.takeIf(List<RemodexModelOption>::isNotEmpty)
+            ?: baseThreads.firstNotNullOfOrNull { thread ->
+                thread.runtimeConfig.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
+            }
+            ?: sessionState.value.availableModels
+    }
 }
 
 private data class SessionInputs(
@@ -689,6 +707,7 @@ private data class SessionInputs(
     val secureConnection: SecureConnectionSnapshot,
     val baseThreads: List<RemodexThreadSummary>,
     val notificationRegistration: RemodexNotificationRegistrationState,
+    val availableModels: List<RemodexModelOption>,
 )
 
 private fun resolveSelectedThreadId(
@@ -704,12 +723,14 @@ private fun resolveSelectedThreadId(
 private fun materializeThreads(
     baseThreads: List<RemodexThreadSummary>,
     preferences: AppPreferences,
+    availableModels: List<RemodexModelOption>,
 ): List<RemodexThreadSummary> {
     return baseThreads.map { thread ->
         val queuedDraftItems = preferences.queuedDraftsByThread[thread.id].orEmpty()
         val effectiveRuntime = thread.runtimeConfig
-            .apply(preferences.runtimeDefaults.asOverrides())
-            .apply(preferences.runtimeOverridesByThread[thread.id])
+            .withAvailableModels(availableModels)
+            .applyDefaults(preferences.runtimeDefaults)
+            .applyThreadOverrides(preferences.runtimeOverridesByThread[thread.id])
         thread.copy(
             queuedDrafts = queuedDraftItems.size,
             queuedDraftItems = queuedDraftItems,

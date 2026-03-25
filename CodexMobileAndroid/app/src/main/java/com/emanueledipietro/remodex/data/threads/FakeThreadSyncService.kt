@@ -20,9 +20,10 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexModelOption
+import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
@@ -35,12 +36,14 @@ import java.util.UUID
 class FakeThreadSyncService(
     initialThreads: List<ThreadSyncSnapshot> = seededThreadSnapshots(),
 ) : ThreadSyncService, ThreadCommandService {
+    private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
     }.toMutableMap()
 
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
+    override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
 
     fun updateThreads(threads: List<ThreadSyncSnapshot>) {
         backingThreads.value = threads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
@@ -60,11 +63,12 @@ class FakeThreadSyncService(
             lastUpdatedEpochMs = now,
             isRunning = false,
             runtimeConfig = RemodexRuntimeConfig(
+                availableModels = availableModels.value,
                 selectedModelId = runtimeDefaults.modelId,
-                reasoningEffort = runtimeDefaults.reasoningEffort ?: RemodexReasoningEffort.MEDIUM,
+                reasoningEffort = runtimeDefaults.reasoningEffort ?: "medium",
                 accessMode = runtimeDefaults.accessMode,
                 serviceTier = runtimeDefaults.serviceTier,
-            ),
+            ).normalizeSelections(),
             timelineMutations = emptyList(),
         )
         backingThreads.update { threads ->
@@ -564,7 +568,7 @@ fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
         parentThreadId = parentThreadId,
         agentNickname = agentNickname,
         agentRole = agentRole,
-        runtimeConfig = runtimeConfig,
+            runtimeConfig = runtimeConfig,
         timelineItems = TurnTimelineReducer.reduce(timelineMutations),
     )
 }
@@ -574,6 +578,7 @@ private fun nextOrderIndex(snapshot: ThreadSyncSnapshot): Long {
 }
 
 private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
+    val availableModels = seededModelOptions()
     return listOf(
         ThreadSyncSnapshot(
             id = "thread-android-client",
@@ -584,10 +589,12 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
             lastUpdatedEpochMs = 1_713_000_000_000,
             isRunning = true,
             runtimeConfig = RemodexRuntimeConfig(
+                availableModels = availableModels,
+                selectedModelId = "gpt-5.4",
                 planningMode = com.emanueledipietro.remodex.model.RemodexPlanningMode.PLAN,
-                reasoningEffort = RemodexReasoningEffort.MEDIUM,
+                reasoningEffort = "medium",
                 accessMode = RemodexAccessMode.ON_REQUEST,
-            ),
+            ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(
                     timelineItem(
@@ -637,9 +644,11 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
             lastUpdatedEpochMs = 1_712_999_500_000,
             isRunning = false,
             runtimeConfig = RemodexRuntimeConfig(
-                reasoningEffort = RemodexReasoningEffort.LOW,
+                availableModels = availableModels,
+                selectedModelId = "gpt-5.4",
+                reasoningEffort = "low",
                 accessMode = RemodexAccessMode.ON_REQUEST,
-            ),
+            ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(
                     timelineItem(
@@ -670,10 +679,12 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
             lastUpdatedEpochMs = 1_712_913_600_000,
             isRunning = false,
             runtimeConfig = RemodexRuntimeConfig(
+                availableModels = availableModels,
+                selectedModelId = "gpt-5.4",
                 planningMode = com.emanueledipietro.remodex.model.RemodexPlanningMode.AUTO,
-                reasoningEffort = RemodexReasoningEffort.HIGH,
+                reasoningEffort = "xhigh",
                 accessMode = RemodexAccessMode.FULL_ACCESS,
-            ),
+            ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(
                     timelineItem(
@@ -692,6 +703,35 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                     ),
                 ),
             ),
+        ),
+    )
+}
+
+private fun seededModelOptions(): List<RemodexModelOption> {
+    return listOf(
+        RemodexModelOption(
+            id = "gpt-5.4",
+            model = "gpt-5.4",
+            displayName = "GPT-5.4",
+            isDefault = true,
+            supportedReasoningEfforts = listOf(
+                RemodexReasoningEffortOption(reasoningEffort = "low", description = "Low"),
+                RemodexReasoningEffortOption(reasoningEffort = "medium", description = "Medium"),
+                RemodexReasoningEffortOption(reasoningEffort = "high", description = "High"),
+                RemodexReasoningEffortOption(reasoningEffort = "xhigh", description = "Extra High"),
+            ),
+            defaultReasoningEffort = "medium",
+        ),
+        RemodexModelOption(
+            id = "gpt-5.3-codex",
+            model = "gpt-5.3-codex",
+            displayName = "GPT-5.3-Codex",
+            supportedReasoningEfforts = listOf(
+                RemodexReasoningEffortOption(reasoningEffort = "low", description = "Low"),
+                RemodexReasoningEffortOption(reasoningEffort = "medium", description = "Medium"),
+                RemodexReasoningEffortOption(reasoningEffort = "high", description = "High"),
+            ),
+            defaultReasoningEffort = "medium",
         ),
     )
 }

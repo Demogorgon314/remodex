@@ -27,9 +27,9 @@ import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
@@ -78,6 +78,7 @@ data class AppUiState(
     val selectedThread: RemodexThreadSummary? = null,
     val notificationRegistration: RemodexNotificationRegistrationState = RemodexNotificationRegistrationState(),
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
+    val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val composer: ComposerUiState = ComposerUiState(),
@@ -223,6 +224,7 @@ class AppViewModel(
                 selectedThread = selectedThread,
                 notificationRegistration = snapshot.notificationRegistration,
                 runtimeDefaults = snapshot.runtimeDefaults,
+                availableModels = snapshot.availableModels,
                 appearanceMode = snapshot.appearanceMode,
                 trustedMac = snapshot.trustedMac,
                 composer = composerState(
@@ -660,13 +662,12 @@ class AppViewModel(
     }
 
     fun selectModel(modelId: String?) {
-        val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
-            repository.setModelId(threadId, modelId)
+            repository.setSelectedModelId(modelId)
         }
     }
 
-    fun selectReasoningEffort(reasoningEffort: RemodexReasoningEffort) {
+    fun selectReasoningEffort(reasoningEffort: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
             repository.setReasoningEffort(threadId, reasoningEffort)
@@ -900,7 +901,7 @@ class AppViewModel(
         }
     }
 
-    fun setDefaultReasoningEffort(reasoningEffort: RemodexReasoningEffort?) {
+    fun setDefaultReasoningEffort(reasoningEffort: String?) {
         viewModelScope.launch {
             repository.setDefaultReasoningEffort(reasoningEffort)
         }

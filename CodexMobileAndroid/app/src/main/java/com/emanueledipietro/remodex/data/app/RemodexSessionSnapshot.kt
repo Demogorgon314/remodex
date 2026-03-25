@@ -3,6 +3,7 @@ package com.emanueledipietro.remodex.data.app
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
@@ -14,6 +15,7 @@ data class RemodexSessionSnapshot(
     val secureConnection: SecureConnectionSnapshot = SecureConnectionSnapshot(),
     val notificationRegistration: RemodexNotificationRegistrationState = RemodexNotificationRegistrationState(),
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
+    val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val threads: List<RemodexThreadSummary> = emptyList(),

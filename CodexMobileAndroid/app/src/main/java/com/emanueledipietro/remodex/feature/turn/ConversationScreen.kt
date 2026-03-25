@@ -93,7 +93,7 @@ import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
+import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
@@ -110,7 +110,7 @@ fun ConversationScreen(
     onSendQueuedDraft: (String) -> Unit,
     onSelectModel: (String?) -> Unit,
     onSelectPlanningMode: (RemodexPlanningMode) -> Unit,
-    onSelectReasoningEffort: (RemodexReasoningEffort) -> Unit,
+    onSelectReasoningEffort: (String) -> Unit,
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
@@ -885,7 +885,7 @@ private fun ComposerCard(
     onStopTurn: () -> Unit,
     onSelectModel: (String?) -> Unit,
     onSelectPlanningMode: (RemodexPlanningMode) -> Unit,
-    onSelectReasoningEffort: (RemodexReasoningEffort) -> Unit,
+    onSelectReasoningEffort: (String) -> Unit,
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
@@ -904,13 +904,26 @@ private fun ComposerCard(
 ) {
     val composer = uiState.composer
     val queuedCount = composer.queuedDrafts.size
-    val selectedModelTitle = composer.runtimeConfig.availableModels
-        .firstOrNull { option ->
+    val orderedModels = remember(composer.runtimeConfig.availableModels) {
+        RemodexRuntimeMetaMapper.orderedModels(composer.runtimeConfig.availableModels)
+    }
+    val selectedModelOption = remember(orderedModels, composer.runtimeConfig.selectedModelId) {
+        orderedModels.firstOrNull { option ->
             option.id == composer.runtimeConfig.selectedModelId || option.model == composer.runtimeConfig.selectedModelId
         }
-        ?.displayName
-        ?: composer.runtimeConfig.availableModels.firstOrNull()?.displayName
+    }
+    val selectedModelTitle = selectedModelOption
+        ?.let(RemodexRuntimeMetaMapper::modelTitle)
+        ?: composer.runtimeConfig.selectedModelId
         ?: "Auto"
+    val selectedReasoningOption = remember(
+        composer.runtimeConfig.availableReasoningEfforts,
+        composer.runtimeConfig.reasoningEffort,
+    ) {
+        composer.runtimeConfig.availableReasoningEfforts.firstOrNull { option ->
+            option.reasoningEffort == composer.runtimeConfig.reasoningEffort
+        }
+    }
     var plusMenuExpanded by rememberSaveable(uiState.selectedThread?.id) { mutableStateOf(false) }
 
     Surface(
@@ -1063,23 +1076,22 @@ private fun ComposerCard(
                 }
                 CompactRuntimeSelector(
                     title = selectedModelTitle,
-                    options = composer.runtimeConfig.availableModels,
-                    selected = composer.runtimeConfig.availableModels.firstOrNull { option ->
-                        option.id == composer.runtimeConfig.selectedModelId ||
-                            option.model == composer.runtimeConfig.selectedModelId
-                    },
-                    label = { option -> option.displayName },
+                    options = orderedModels,
+                    selected = selectedModelOption,
+                    label = { option -> RemodexRuntimeMetaMapper.modelTitle(option) },
                     key = { option -> option.id },
                     onClear = { onSelectModel(null) },
                     onSelect = { option -> onSelectModel(option.id) },
                 )
                 CompactRuntimeSelector(
-                    title = composer.runtimeConfig.reasoningEffort.label,
+                    title = composer.runtimeConfig.reasoningEffort
+                        ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
+                        ?: "Auto",
                     options = composer.runtimeConfig.availableReasoningEfforts,
-                    selected = composer.runtimeConfig.reasoningEffort,
+                    selected = selectedReasoningOption,
                     label = { option -> option.label },
-                    key = { option -> option.name },
-                    onSelect = onSelectReasoningEffort,
+                    key = { option -> option.reasoningEffort },
+                    onSelect = { option -> onSelectReasoningEffort(option.reasoningEffort) },
                 )
                 CompactRuntimeSelector(
                     title = composer.runtimeConfig.serviceTier?.label ?: "Normal",

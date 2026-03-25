@@ -35,6 +35,7 @@ import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertConflict
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -73,10 +74,12 @@ class BridgeThreadSyncService(
     private val appVersionName: String = "1.0",
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) : ThreadSyncService, ThreadCommandService, ThreadHydrationService {
+    private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private var initializedAttempt: Int? = null
 
+    override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
 
     init {
@@ -86,6 +89,7 @@ class BridgeThreadSyncService(
                     if (initializedAttempt != snapshot.attempt) {
                         initializedAttempt = snapshot.attempt
                         initializeSession()
+                        refreshAvailableModels()
                         refreshThreads()
                     }
                 } else {
@@ -178,7 +182,9 @@ class BridgeThreadSyncService(
             runtimeConfig = mergeRuntimeConfig(
                 existing = null,
                 incoming = RemodexRuntimeConfig(
+                    availableModels = availableModels.value,
                     selectedModelId = runtimeDefaults.modelId,
+                    reasoningEffort = runtimeDefaults.reasoningEffort,
                     serviceTier = runtimeDefaults.serviceTier,
                 ),
             ),
@@ -670,6 +676,32 @@ class BridgeThreadSyncService(
         )
     }
 
+    private suspend fun refreshAvailableModels() {
+        if (!isConnected()) {
+            return
+        }
+
+        val response = runCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = "model/list",
+                params = buildJsonObject {
+                    put("cursor", JsonNull)
+                    put("limit", JsonPrimitive(50))
+                    put("includeHidden", JsonPrimitive(false))
+                },
+            )
+        }.getOrNull() ?: return
+
+        val resultObject = response.result?.jsonObjectOrNull ?: return
+        val items = resultObject.firstArray("items", "data", "models").orEmpty()
+        val parsedModels = items.mapNotNull(::parseModelOption)
+        if (parsedModels.isEmpty()) {
+            return
+        }
+
+        backingAvailableModels.value = parsedModels
+    }
+
     private suspend fun listThreads(archived: Boolean): List<ThreadSyncSnapshot> {
         val sourceKinds = JsonArray(
             listOf("cli", "vscode", "appServer", "exec", "unknown").map(::JsonPrimitive),
@@ -1032,15 +1064,7 @@ class BridgeThreadSyncService(
             existing = existing?.runtimeConfig,
             incoming = RemodexRuntimeConfig(
                 selectedModelId = modelId,
-                availableModels = modelId?.let {
-                    listOf(
-                        RemodexModelOption(
-                            id = it,
-                            model = it,
-                            displayName = it,
-                        ),
-                    )
-                }.orEmpty(),
+                availableModels = availableModels.value,
             ),
         )
         return ThreadSyncSnapshot(
@@ -1677,7 +1701,9 @@ class BridgeThreadSyncService(
                 put("cwd", JsonPrimitive(projectPath))
             }
             runtimeConfig.selectedModelId?.takeIf { it.isNotBlank() }?.let { put("model", JsonPrimitive(it)) }
-            put("reasoningEffort", JsonPrimitive(runtimeConfig.reasoningEffort.name.lowercase(Locale.ROOT)))
+            runtimeConfig.reasoningEffort?.takeIf { it.isNotBlank() }?.let {
+                put("reasoningEffort", JsonPrimitive(it))
+            }
             runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
             if (runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
                 put("collaborationMode", JsonPrimitive("plan"))
@@ -1750,17 +1776,65 @@ class BridgeThreadSyncService(
         incoming: RemodexRuntimeConfig,
     ): RemodexRuntimeConfig {
         if (existing == null) {
-            return incoming
+            return incoming.normalizeSelections()
         }
         return incoming.copy(
             availableModels = if (incoming.availableModels.isNotEmpty()) incoming.availableModels else existing.availableModels,
+            availableReasoningEfforts = if (incoming.availableReasoningEfforts.isNotEmpty()) {
+                incoming.availableReasoningEfforts
+            } else {
+                existing.availableReasoningEfforts
+            },
             availableServiceTiers = if (incoming.availableServiceTiers.isNotEmpty()) incoming.availableServiceTiers else existing.availableServiceTiers,
             selectedModelId = incoming.selectedModelId ?: existing.selectedModelId,
             planningMode = incoming.planningMode,
             reasoningEffort = incoming.reasoningEffort,
             accessMode = incoming.accessMode,
             serviceTier = incoming.serviceTier ?: existing.serviceTier,
-        )
+        ).normalizeSelections()
+    }
+
+    private fun parseModelOption(value: JsonElement): RemodexModelOption? {
+        val modelObject = value.jsonObjectOrNull ?: return null
+        val model = modelObject.firstString("model", "id")?.trim().orEmpty()
+        val id = modelObject.firstString("id")?.trim()?.takeIf { value -> value.isNotEmpty() } ?: model
+        if (id.isEmpty() && model.isEmpty()) {
+            return null
+        }
+        return RemodexModelOption(
+            id = id.ifEmpty { model },
+            model = model.ifEmpty { id },
+            displayName = modelObject.firstString("displayName", "display_name")?.trim()?.takeIf { value ->
+                value.isNotEmpty()
+            }
+                ?: model.ifEmpty { id },
+            description = modelObject.firstString("description")?.trim().orEmpty(),
+            isDefault = modelObject.firstBoolean("isDefault", "is_default") ?: false,
+            supportedReasoningEfforts = modelObject
+                .firstArray("supportedReasoningEfforts", "supported_reasoning_efforts")
+                .orEmpty()
+                .mapNotNull(::parseReasoningEffortOption),
+            defaultReasoningEffort = modelObject
+                .firstString("defaultReasoningEffort", "default_reasoning_effort")
+                ?.trim()
+                ?.takeIf(String::isNotEmpty),
+        ).normalizedOrNull()
+    }
+
+    private fun parseReasoningEffortOption(value: JsonElement): RemodexReasoningEffortOption? {
+        val primitiveValue = value.stringOrNull?.trim()
+        if (!primitiveValue.isNullOrEmpty()) {
+            return RemodexReasoningEffortOption(
+                reasoningEffort = primitiveValue,
+                description = "",
+            ).normalizedOrNull()
+        }
+
+        val optionObject = value.jsonObjectOrNull ?: return null
+        return RemodexReasoningEffortOption(
+            reasoningEffort = optionObject.firstString("reasoningEffort", "reasoning_effort", "id", "name").orEmpty(),
+            description = optionObject.firstString("description").orEmpty(),
+        ).normalizedOrNull()
     }
 
     private fun nextOrderIndex(snapshot: ThreadSyncSnapshot): Long {

@@ -13,7 +13,6 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
-import com.emanueledipietro.remodex.model.RemodexReasoningEffort
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -193,8 +192,8 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
 
         repository.setPlanningMode("thread-notifications", RemodexPlanningMode.PLAN)
-        repository.setModelId("thread-notifications", "gpt-5.4")
-        repository.setReasoningEffort("thread-notifications", RemodexReasoningEffort.LOW)
+        repository.setSelectedModelId("gpt-5.4")
+        repository.setReasoningEffort("thread-notifications", "low")
         repository.setServiceTier("thread-notifications", null)
         repository.setAccessMode("thread-notifications", RemodexAccessMode.ON_REQUEST)
         advanceUntilIdle()
@@ -202,7 +201,7 @@ class DefaultRemodexAppRepositoryTest {
         val selectedThread = repository.session.value.selectedThread
         assertEquals("gpt-5.4", selectedThread?.runtimeConfig?.selectedModelId)
         assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
-        assertEquals(RemodexReasoningEffort.LOW, selectedThread?.runtimeConfig?.reasoningEffort)
+        assertEquals("low", selectedThread?.runtimeConfig?.reasoningEffort)
         assertEquals(RemodexAccessMode.ON_REQUEST, selectedThread?.runtimeConfig?.accessMode)
         assertEquals("gpt-5.4, Plan, low reasoning", selectedThread?.runtimeLabel)
     }
@@ -217,13 +216,13 @@ class DefaultRemodexAppRepositoryTest {
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
 
-        repository.setDefaultReasoningEffort(RemodexReasoningEffort.HIGH)
+        repository.setDefaultReasoningEffort("high")
         repository.setDefaultAccessMode(RemodexAccessMode.FULL_ACCESS)
         repository.setAppearanceMode(RemodexAppearanceMode.DARK)
         advanceUntilIdle()
 
         val session = repository.session.value
-        assertEquals(RemodexReasoningEffort.HIGH, session.selectedThread?.runtimeConfig?.reasoningEffort)
+        assertEquals("high", session.selectedThread?.runtimeConfig?.reasoningEffort)
         assertEquals(RemodexAccessMode.FULL_ACCESS, session.selectedThread?.runtimeConfig?.accessMode)
         assertEquals(RemodexAppearanceMode.DARK, session.appearanceMode)
         assertEquals(RemodexAppearanceMode.DARK, preferencesRepository.preferencesState.value.appearanceMode)
@@ -254,6 +253,30 @@ class DefaultRemodexAppRepositoryTest {
             selectedThread?.messages.orEmpty().any { item ->
                 item.attachments.any { attachment -> attachment.displayName == "screenshot.png" }
             },
+        )
+    }
+
+    @Test
+    fun `selected model is global across threads and xhigh survives normalization`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        repository.setSelectedModelId("gpt-5.4")
+        repository.setReasoningEffort("thread-notifications", "xhigh")
+        advanceUntilIdle()
+
+        repository.selectThread("thread-reconnect")
+        advanceUntilIdle()
+
+        val selectedThread = repository.session.value.selectedThread
+        assertEquals("gpt-5.4", selectedThread?.runtimeConfig?.selectedModelId)
+        assertEquals("gpt-5.4", repository.session.value.runtimeDefaults.modelId)
+        assertTrue(repository.session.value.availableModels.any { model -> model.id == "gpt-5.4" })
+        assertTrue(
+            repository.session.value.threads.first { thread -> thread.id == "thread-notifications" }
+                .runtimeConfig.availableReasoningEfforts
+                .any { option -> option.reasoningEffort == "xhigh" },
         )
     }
 
