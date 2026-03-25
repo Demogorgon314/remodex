@@ -1,9 +1,11 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -89,6 +91,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -141,6 +144,8 @@ private val ComposerTrailingButtonSize = 32.dp
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
+internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
+internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
 
 @Composable
 fun ConversationScreen(
@@ -187,6 +192,7 @@ fun ConversationScreen(
         EmptyConversationState(modifier = modifier)
         return
     }
+    val autocompleteVisible = uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
@@ -257,6 +263,10 @@ fun ConversationScreen(
         }
     }
 
+    BackHandler(enabled = autocompleteVisible) {
+        onCloseComposerAutocomplete()
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -266,123 +276,162 @@ fun ConversationScreen(
             modifier = Modifier
                 .fillMaxSize(),
         ) {
-            ConversationTopOverlays(
-                uiState = uiState,
-                onRetryConnection = onRetryConnection,
-            )
-
-            LazyColumn(
-                state = timelineState,
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+                    .fillMaxWidth(),
             ) {
-                if (timelineItems.isEmpty()) {
-                    item {
-                        if (pinnedPlanItem == null) {
-                            EmptyThreadTimelineCard()
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    ConversationTopOverlays(
+                        uiState = uiState,
+                        onRetryConnection = onRetryConnection,
+                    )
+
+                    LazyColumn(
+                        state = timelineState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                    ) {
+                        if (timelineItems.isEmpty()) {
+                            item {
+                                if (pinnedPlanItem == null) {
+                                    EmptyThreadTimelineCard()
+                                } else {
+                                    Spacer(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(1.dp),
+                                    )
+                                }
+                            }
                         } else {
-                            Spacer(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(1.dp),
-                            )
+                            items(timelineItems, key = { it.id }) { message ->
+                                ConversationBubble(
+                                    item = message,
+                                    assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
+                                    onTapAssistantRevert = onStartAssistantRevertPreview,
+                                )
+                            }
                         }
                     }
-                } else {
-                    items(timelineItems, key = { it.id }) { message ->
-                        ConversationBubble(
-                            item = message,
-                            assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
-                            onTapAssistantRevert = onStartAssistantRevertPreview,
-                        )
-                    }
+                }
+
+                if (autocompleteVisible) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .testTag(ComposerAutocompleteDismissLayerTag)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = onCloseComposerAutocomplete,
+                            ),
+                    )
                 }
             }
 
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp)
                     .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                     .imePadding(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                pinnedPlanItem?.let { planItem ->
-                    PlanAccessoryCard(
-                        planItem = planItem,
-                        onClick = { planSheetExpanded = true },
+                if (autocompleteVisible) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = onCloseComposerAutocomplete,
+                            ),
                     )
                 }
 
-                if (uiState.composer.queuedDrafts.isNotEmpty()) {
-                    QueuedDraftsCard(
-                        queuedDrafts = uiState.composer.queuedDrafts,
-                        canSendQueuedDrafts = !thread.isRunning,
-                        onSendQueuedDraft = onSendQueuedDraft,
-                    )
-                }
-
-                Box(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    ComposerCard(
-                        uiState = uiState,
-                        onComposerInputChanged = onComposerInputChanged,
-                        onSendPrompt = onSendPrompt,
-                        onStopTurn = onStopTurn,
-                        onSelectModel = onSelectModel,
-                        onSelectPlanningMode = onSelectPlanningMode,
-                        onSelectReasoningEffort = onSelectReasoningEffort,
-                        onSelectAccessMode = onSelectAccessMode,
-                        onSelectServiceTier = onSelectServiceTier,
-                        onOpenAttachmentPicker = onOpenAttachmentPicker,
-                        onRemoveAttachment = onRemoveAttachment,
-                        onSelectFileAutocomplete = onSelectFileAutocomplete,
-                        onRemoveMentionedFile = onRemoveMentionedFile,
-                        onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                        onRemoveMentionedSkill = onRemoveMentionedSkill,
-                        onSelectSlashCommand = onSelectSlashCommand,
-                        onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                        onClearReviewSelection = onClearReviewSelection,
-                        onClearSubagentsSelection = onClearSubagentsSelection,
-                        onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                        onForkThread = onForkThread,
-                        onComposerFocusChanged = { isFocused ->
-                            composerFocused = isFocused
-                        },
-                    )
+                    pinnedPlanItem?.let { planItem ->
+                        PlanAccessoryCard(
+                            planItem = planItem,
+                            onClick = { planSheetExpanded = true },
+                        )
+                    }
 
-                    if (uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.TopStart)
-                                .offset(y = (-12).dp),
-                        ) {
-                            AutocompletePanel(
-                                uiState = uiState,
-                                onSelectFileAutocomplete = onSelectFileAutocomplete,
-                                onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                onSelectSlashCommand = onSelectSlashCommand,
-                                onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                                onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                onForkThread = onForkThread,
-                            )
+                    if (uiState.composer.queuedDrafts.isNotEmpty()) {
+                        QueuedDraftsCard(
+                            queuedDrafts = uiState.composer.queuedDrafts,
+                            canSendQueuedDrafts = !thread.isRunning,
+                            onSendQueuedDraft = onSendQueuedDraft,
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        ComposerCard(
+                            uiState = uiState,
+                            onComposerInputChanged = onComposerInputChanged,
+                            onSendPrompt = onSendPrompt,
+                            onStopTurn = onStopTurn,
+                            onSelectModel = onSelectModel,
+                            onSelectPlanningMode = onSelectPlanningMode,
+                            onSelectReasoningEffort = onSelectReasoningEffort,
+                            onSelectAccessMode = onSelectAccessMode,
+                            onSelectServiceTier = onSelectServiceTier,
+                            onOpenAttachmentPicker = onOpenAttachmentPicker,
+                            onRemoveAttachment = onRemoveAttachment,
+                            onSelectFileAutocomplete = onSelectFileAutocomplete,
+                            onRemoveMentionedFile = onRemoveMentionedFile,
+                            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                            onRemoveMentionedSkill = onRemoveMentionedSkill,
+                            onSelectSlashCommand = onSelectSlashCommand,
+                            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                            onClearReviewSelection = onClearReviewSelection,
+                            onClearSubagentsSelection = onClearSubagentsSelection,
+                            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                            onForkThread = onForkThread,
+                            onComposerFocusChanged = { isFocused ->
+                                composerFocused = isFocused
+                            },
+                        )
+
+                        if (autocompleteVisible) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.TopStart)
+                                    .offset(y = (-12).dp),
+                            ) {
+                                AutocompletePanel(
+                                    uiState = uiState,
+                                    onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                    onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                    onSelectSlashCommand = onSelectSlashCommand,
+                                    onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                    onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                    onForkThread = onForkThread,
+                                )
+                            }
                         }
                     }
-                }
 
-                if (!composerFocused) {
-                    ComposerSecondaryBar(
-                        gitState = uiState.composer.gitState,
-                        selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
-                        accessMode = uiState.composer.runtimeConfig.accessMode,
-                        onRefreshGitState = onRefreshGitState,
-                        onOpenGitSheet = { gitSheetExpanded = true },
-                    )
+                    if (!composerFocused) {
+                        ComposerSecondaryBar(
+                            gitState = uiState.composer.gitState,
+                            selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
+                            accessMode = uiState.composer.runtimeConfig.accessMode,
+                            onRefreshGitState = onRefreshGitState,
+                            onOpenGitSheet = { gitSheetExpanded = true },
+                        )
+                    }
                 }
             }
         }
@@ -1653,6 +1702,7 @@ private fun AutocompletePanel(
     }
 
     Surface(
+        modifier = Modifier.testTag(ComposerAutocompletePanelTag),
         shape = RemodexConversationShapes.panel,
         color = chrome.panelSurfaceStrong,
         border = BorderStroke(1.dp, chrome.subtleBorder),
