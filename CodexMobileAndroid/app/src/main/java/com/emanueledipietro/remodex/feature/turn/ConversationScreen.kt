@@ -400,7 +400,6 @@ fun ConversationScreen(
                                     onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                                     onForkThread = onForkThread,
                                     modifier = Modifier
-                                        .padding(horizontal = 16.dp)
                                         .padding(bottom = 6.dp),
                                 )
                             }
