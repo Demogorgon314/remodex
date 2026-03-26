@@ -54,6 +54,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.max
 
 data class ComposerUiState(
     val draftText: String = "",
@@ -140,6 +141,12 @@ private data class SettingsRenderState(
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
 )
 
+private data class AutoReconnectUiState(
+    val isActive: Boolean = false,
+    val attempt: Int = 0,
+    val message: String = "Reconnecting...",
+)
+
 private data class PendingComposerSendState(
     val draftText: String,
     val attachments: List<RemodexComposerAttachment>,
@@ -168,12 +175,20 @@ class AppViewModel(
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
+    private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
+    private var autoReconnectJob: Job? = null
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
     private var lastHydrationConnected = false
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
+    private var isAppForeground = false
+    private var isManualScannerActive = false
+    private var suppressAutoReconnectUntilManualConnect = false
+    internal var autoReconnectAttemptLimitOverride: Int? = null
+    internal var autoReconnectBackoffMillisOverride: List<Long>? = null
+    internal var reconnectSleepChunkMillisOverride: Long? = null
 
     private val composerRenderStateA =
         combine(
@@ -333,9 +348,9 @@ class AppViewModel(
                 assistantRevertSheet = revertSheetState,
                 commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
             )
-    }
+        }
 
-    val uiState: StateFlow<AppUiState> =
+    private val decoratedUiState =
         combine(
             baseUiState,
             threadCompletionBannerState,
@@ -357,6 +372,41 @@ class AppViewModel(
                 gptAccountErrorMessage = settingsState.gptAccountErrorMessage,
                 bridgeVersionStatus = settingsState.bridgeVersionStatus,
                 usageStatus = settingsState.usageStatus,
+            )
+        }
+
+    val uiState: StateFlow<AppUiState> =
+        combine(
+            decoratedUiState,
+            autoReconnectState,
+        ) { baseState, reconnectState ->
+            val shouldShowReconnectState =
+                reconnectState.isActive &&
+                    baseState.connectionStatus.phase != RemodexConnectionPhase.CONNECTED &&
+                    baseState.recoveryState.secureState !in setOf(
+                        SecureConnectionState.REPAIR_REQUIRED,
+                        SecureConnectionState.UPDATE_REQUIRED,
+                        SecureConnectionState.NOT_PAIRED,
+                    )
+            baseState.copy(
+                connectionStatus = if (shouldShowReconnectState) {
+                    RemodexConnectionStatus(
+                        phase = RemodexConnectionPhase.RETRYING,
+                        attempt = max(baseState.connectionStatus.attempt, reconnectState.attempt),
+                    )
+                } else {
+                    baseState.connectionStatus
+                },
+                connectionHeadline = if (shouldShowReconnectState) {
+                    "Retrying connection"
+                } else {
+                    baseState.connectionHeadline
+                },
+                connectionMessage = if (shouldShowReconnectState) {
+                    reconnectState.message
+                } else {
+                    baseState.connectionMessage
+                },
             )
         }.stateIn(
             scope = viewModelScope,
@@ -389,6 +439,7 @@ class AppViewModel(
                 }
                 lastHydrationConnected = isConnected
                 detectThreadCompletionBanner(snapshot)
+                handleAutoReconnectSnapshot(snapshot)
             }
         }
     }
@@ -401,6 +452,24 @@ class AppViewModel(
         viewModelScope.launch {
             repository.completeOnboarding()
         }
+    }
+
+    fun onAppForegroundChanged(isForeground: Boolean) {
+        isAppForeground = isForeground
+        if (!isForeground) {
+            return
+        }
+        maybeStartAutoReconnect(repository.session.value)
+    }
+
+    fun prepareForManualScan() {
+        viewModelScope.launch {
+            stopAutoReconnectForManualScan()
+        }
+    }
+
+    fun finishManualScan() {
+        isManualScannerActive = false
     }
 
     fun refreshThreads() {
@@ -1155,26 +1224,282 @@ class AppViewModel(
 
     fun pairWithQrPayload(payload: PairingQrPayload) {
         viewModelScope.launch {
+            stopAutoReconnectForManualScan()
+            isManualScannerActive = false
+            suppressAutoReconnectUntilManualConnect = false
             repository.pairWithQrPayload(payload)
         }
     }
 
     fun retryConnection() {
         viewModelScope.launch {
+            stopAutoReconnectForManualRetry()
+            suppressAutoReconnectUntilManualConnect = false
             repository.retryConnection()
         }
     }
 
     fun disconnect() {
         viewModelScope.launch {
+            suppressAutoReconnectUntilManualConnect = true
+            isManualScannerActive = false
+            stopAutoReconnectLoop()
             repository.disconnect()
         }
     }
 
     fun forgetTrustedMac() {
         viewModelScope.launch {
+            suppressAutoReconnectUntilManualConnect = true
+            isManualScannerActive = false
+            stopAutoReconnectLoop()
             repository.forgetTrustedMac()
         }
+    }
+
+    private fun handleAutoReconnectSnapshot(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ) {
+        when (snapshot.secureConnection.secureState) {
+            SecureConnectionState.ENCRYPTED -> {
+                suppressAutoReconnectUntilManualConnect = false
+                clearAutoReconnectState()
+                return
+            }
+
+            SecureConnectionState.REPAIR_REQUIRED,
+            SecureConnectionState.UPDATE_REQUIRED,
+            SecureConnectionState.NOT_PAIRED -> {
+                stopAutoReconnectLoop()
+                return
+            }
+
+            else -> Unit
+        }
+
+        if (shouldAttemptAutoReconnect(snapshot)) {
+            maybeStartAutoReconnect(snapshot)
+        } else if (autoReconnectJob?.isActive != true) {
+            clearAutoReconnectState()
+        }
+    }
+
+    private fun maybeStartAutoReconnect(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ) {
+        if (!shouldAttemptAutoReconnect(snapshot) || autoReconnectJob?.isActive == true) {
+            return
+        }
+        autoReconnectJob = viewModelScope.launch {
+            runAutoReconnectLoop()
+        }.also { job ->
+            job.invokeOnCompletion {
+                if (autoReconnectJob === job) {
+                    autoReconnectJob = null
+                }
+            }
+        }
+    }
+
+    private fun shouldAttemptAutoReconnect(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ): Boolean {
+        if (!snapshot.onboardingCompleted || !isAppForeground || isManualScannerActive) {
+            return false
+        }
+        if (suppressAutoReconnectUntilManualConnect || snapshot.trustedMac == null) {
+            return false
+        }
+        return snapshot.secureConnection.secureState in setOf(
+            SecureConnectionState.TRUSTED_MAC,
+            SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+        )
+    }
+
+    private suspend fun runAutoReconnectLoop() {
+        var attempt = 0
+        val maxAttempts = autoReconnectAttemptLimitOverride ?: 50
+
+        try {
+            while (shouldAttemptAutoReconnect(repository.session.value) && attempt < maxAttempts) {
+                val snapshot = repository.session.value
+                if (snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED ||
+                    snapshot.secureConnection.secureState == SecureConnectionState.ENCRYPTED
+                ) {
+                    clearAutoReconnectState()
+                    return
+                }
+
+                if (snapshot.connectionStatus.phase in setOf(
+                        RemodexConnectionPhase.CONNECTING,
+                        RemodexConnectionPhase.RETRYING,
+                    ) || snapshot.secureConnection.secureState in setOf(
+                        SecureConnectionState.HANDSHAKING,
+                        SecureConnectionState.RECONNECTING,
+                    )
+                ) {
+                    autoReconnectState.value = AutoReconnectUiState(
+                        isActive = true,
+                        attempt = max(1, attempt),
+                    )
+                    if (!sleepForReconnectBackoff(300L)) {
+                        return
+                    }
+                    continue
+                }
+
+                attempt += 1
+                autoReconnectState.value = AutoReconnectUiState(
+                    isActive = true,
+                    attempt = attempt,
+                )
+                repository.retryConnection()
+                if (waitForReconnectAttemptOutcome(attempt)) {
+                    return
+                }
+
+                val backoffSteps = autoReconnectBackoffMillisOverride ?: listOf(1_000L, 3_000L)
+                val backoff = backoffSteps.getOrElse((attempt - 1).coerceAtMost(backoffSteps.lastIndex)) {
+                    backoffSteps.last()
+                }
+                if (!sleepForReconnectBackoff(backoff)) {
+                    return
+                }
+            }
+        } finally {
+            if (repository.session.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+                clearAutoReconnectState()
+            }
+        }
+    }
+
+    private suspend fun waitForReconnectAttemptOutcome(
+        attempt: Int,
+    ): Boolean {
+        var settleRemainingMs = 500L
+        while (shouldAttemptAutoReconnect(repository.session.value)) {
+            val snapshot = repository.session.value
+            when (snapshot.secureConnection.secureState) {
+                SecureConnectionState.ENCRYPTED -> {
+                    suppressAutoReconnectUntilManualConnect = false
+                    clearAutoReconnectState()
+                    return true
+                }
+
+                SecureConnectionState.REPAIR_REQUIRED,
+                SecureConnectionState.UPDATE_REQUIRED,
+                SecureConnectionState.NOT_PAIRED -> {
+                    clearAutoReconnectState()
+                    return true
+                }
+
+                SecureConnectionState.HANDSHAKING,
+                SecureConnectionState.RECONNECTING -> {
+                    autoReconnectState.value = AutoReconnectUiState(
+                        isActive = true,
+                        attempt = attempt,
+                    )
+                    if (!sleepForReconnectBackoff(reconnectSleepChunkMillis())) {
+                        return true
+                    }
+                }
+
+                SecureConnectionState.TRUSTED_MAC,
+                SecureConnectionState.LIVE_SESSION_UNRESOLVED -> {
+                    if (settleRemainingMs <= 0L) {
+                        return false
+                    }
+                    val chunk = minOf(reconnectSleepChunkMillis(), settleRemainingMs)
+                    settleRemainingMs -= chunk
+                    if (!sleepForReconnectBackoff(chunk)) {
+                        return true
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private suspend fun stopAutoReconnectForManualRetry() {
+        isManualScannerActive = false
+        if (autoReconnectJob?.isActive != true &&
+            uiState.value.connectionStatus.phase !in setOf(
+                RemodexConnectionPhase.CONNECTING,
+                RemodexConnectionPhase.RETRYING,
+            ) &&
+            !uiState.value.isConnected
+        ) {
+            clearAutoReconnectState()
+            return
+        }
+
+        autoReconnectState.value = AutoReconnectUiState(
+            isActive = true,
+            message = "Preparing reconnect...",
+        )
+        stopAutoReconnectLoop()
+        if (uiState.value.connectionStatus.phase in setOf(
+                RemodexConnectionPhase.CONNECTING,
+                RemodexConnectionPhase.RETRYING,
+            ) || uiState.value.isConnected
+        ) {
+            repository.disconnect()
+        }
+        waitForConnectionRecoveryToStop()
+        clearAutoReconnectState()
+    }
+
+    private suspend fun stopAutoReconnectForManualScan() {
+        isManualScannerActive = true
+        stopAutoReconnectLoop()
+        if (uiState.value.connectionStatus.phase in setOf(
+                RemodexConnectionPhase.CONNECTING,
+                RemodexConnectionPhase.RETRYING,
+            ) || uiState.value.isConnected
+        ) {
+            repository.disconnect()
+        }
+        waitForConnectionRecoveryToStop()
+        clearAutoReconnectState()
+    }
+
+    private fun stopAutoReconnectLoop() {
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
+    }
+
+    private suspend fun waitForConnectionRecoveryToStop() {
+        while (autoReconnectJob?.isActive == true ||
+            uiState.value.connectionStatus.phase in setOf(
+                RemodexConnectionPhase.CONNECTING,
+                RemodexConnectionPhase.RETRYING,
+            )
+        ) {
+            delay(reconnectSleepChunkMillis())
+        }
+    }
+
+    private suspend fun sleepForReconnectBackoff(totalMillis: Long): Boolean {
+        var remaining = totalMillis
+        while (remaining > 0L) {
+            if (!shouldAttemptAutoReconnect(repository.session.value) &&
+                !repository.session.value.isConnectedForRecovery()
+            ) {
+                return false
+            }
+            val chunk = minOf(reconnectSleepChunkMillis(), remaining)
+            delay(chunk)
+            remaining -= chunk
+        }
+        return shouldAttemptAutoReconnect(repository.session.value) || repository.session.value.isConnectedForRecovery()
+    }
+
+    private fun reconnectSleepChunkMillis(): Long {
+        return reconnectSleepChunkMillisOverride ?: 100L
+    }
+
+    private fun clearAutoReconnectState() {
+        autoReconnectState.value = AutoReconnectUiState()
     }
 
     private fun detectThreadCompletionBanner(snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot) {
@@ -1730,6 +2055,11 @@ class AppViewModel(
         const val MinAutocompleteQueryLength = 2
         const val AutocompleteDebounceMs = 180L
     }
+}
+
+private fun com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot.isConnectedForRecovery(): Boolean {
+    return connectionStatus.phase == RemodexConnectionPhase.CONNECTED ||
+        secureConnection.secureState == SecureConnectionState.ENCRYPTED
 }
 
 class AppViewModelFactory(

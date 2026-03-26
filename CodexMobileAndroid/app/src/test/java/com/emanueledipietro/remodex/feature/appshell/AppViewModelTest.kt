@@ -336,6 +336,93 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `foreground auto reconnect retries a saved trusted pairing`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "The trusted Mac session is temporarily unavailable.",
+                    secureState = SecureConnectionState.TRUSTED_MAC,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository).apply {
+            autoReconnectAttemptLimitOverride = 1
+            autoReconnectBackoffMillisOverride = listOf(10L)
+            reconnectSleepChunkMillisOverride = 10L
+        }
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
+
+        assertEquals(1, repository.retryConnectionCalls)
+        assertEquals(RemodexConnectionPhase.RETRYING, viewModel.uiState.value.connectionStatus.phase)
+    }
+
+    @Test
+    fun `manual disconnect suppresses foreground auto reconnect`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Saved pairing ready.",
+                    secureState = SecureConnectionState.TRUSTED_MAC,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.disconnect()
+        advanceUntilIdle()
+        viewModel.onAppForegroundChanged(true)
+        advanceTimeBy(100)
+        advanceUntilIdle()
+
+        assertEquals(1, repository.disconnectCalls)
+        assertEquals(0, repository.retryConnectionCalls)
+    }
+
+    @Test
+    fun `opening the scanner cancels reconnect and disconnects the active session`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.prepareForManualScan()
+        advanceUntilIdle()
+        viewModel.onAppForegroundChanged(true)
+        advanceTimeBy(100)
+        advanceUntilIdle()
+
+        assertEquals(1, repository.disconnectCalls)
+        assertEquals(0, repository.retryConnectionCalls)
+    }
+
+    @Test
     fun `file autocomplete matches iOS debounce and closes after confirmed mention prose`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             fileSearchResults = listOf(
@@ -594,6 +681,8 @@ class AppViewModelTest {
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
+        var retryConnectionCalls = 0
+        var disconnectCalls = 0
         var refreshDelayMs = 1_000L
         var sendPromptDelayMs = 0L
         var sendPromptError: Throwable? = null
@@ -783,9 +872,20 @@ class AppViewModelTest {
 
         override suspend fun pairWithQrPayload(payload: PairingQrPayload) = Unit
 
-        override suspend fun retryConnection() = Unit
+        override suspend fun retryConnection() {
+            retryConnectionCalls += 1
+        }
 
-        override suspend fun disconnect() = Unit
+        override suspend fun disconnect() {
+            disconnectCalls += 1
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(),
+                secureConnection = snapshot.value.secureConnection.copy(
+                    secureState = SecureConnectionState.TRUSTED_MAC,
+                    phaseMessage = "Saved pairing ready.",
+                ),
+            )
+        }
 
         override suspend fun forgetTrustedMac() = Unit
     }

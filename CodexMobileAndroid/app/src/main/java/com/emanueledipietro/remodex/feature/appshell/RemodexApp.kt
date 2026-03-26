@@ -181,9 +181,18 @@ fun RemodexApp(
     }
 
     DisposableEffect(lifecycleOwner, notificationManager) {
+        viewModel.onAppForegroundChanged(
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+        )
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                refreshNotificationUiState()
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.onAppForegroundChanged(true)
+                Lifecycle.Event.ON_STOP -> viewModel.onAppForegroundChanged(false)
+                Lifecycle.Event.ON_RESUME -> {
+                    refreshNotificationUiState()
+                }
+
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -247,6 +256,7 @@ fun RemodexApp(
     if (!uiState.onboardingCompleted) {
         OnboardingScreen(
             onContinue = {
+                viewModel.prepareForManualScan()
                 isScannerPresented = true
                 viewModel.completeOnboarding()
             },
@@ -312,14 +322,21 @@ fun RemodexApp(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
             )
         },
-        onOpenScanner = { isScannerPresented = true },
+        onOpenScanner = {
+            viewModel.prepareForManualScan()
+            isScannerPresented = true
+        },
     )
 
     if (isScannerPresented) {
         PairingScannerScreen(
-            onDismiss = { isScannerPresented = false },
+            onDismiss = {
+                isScannerPresented = false
+                viewModel.finishManualScan()
+            },
             onPairWithQrPayload = { payload ->
                 isScannerPresented = false
+                viewModel.finishManualScan()
                 viewModel.pairWithQrPayload(payload)
             },
         )
