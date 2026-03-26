@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -62,13 +63,18 @@ import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material3.Card
@@ -113,6 +119,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -122,6 +129,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
@@ -170,12 +178,18 @@ import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexSubagentThreadPresentation
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
+import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
+import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
+import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
+import com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.graphics.drawscope.Stroke
 import kotlinx.coroutines.flow.drop
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -285,6 +299,7 @@ fun ConversationScreen(
     onCloseComposerAutocomplete: () -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
+    onRefreshUsageStatus: () -> Unit = {},
     onCheckoutGitBranch: (String) -> Unit,
     onCreateGitBranch: (String) -> Unit,
     onCreateGitWorktree: (String) -> Unit,
@@ -608,10 +623,13 @@ fun ConversationScreen(
 
                     if (!composerFocused) {
                         ComposerSecondaryBar(
+                            thread = thread,
                             gitState = uiState.composer.gitState,
-                            selectedBaseBranch = uiState.composer.selectedGitBaseBranch,
+                            usageStatus = uiState.usageStatus,
+                            isRefreshingUsage = uiState.isRefreshingUsage,
                             accessMode = uiState.composer.runtimeConfig.accessMode,
-                            onRefreshGitState = onRefreshGitState,
+                            onSelectAccessMode = onSelectAccessMode,
+                            onRefreshUsageStatus = onRefreshUsageStatus,
                             onOpenGitSheet = { gitSheetExpanded = true },
                         )
                     }
@@ -1391,39 +1409,204 @@ private fun GitContextCard(
 
 @Composable
 private fun ComposerSecondaryBar(
+    thread: RemodexThreadSummary,
     gitState: RemodexGitState,
-    selectedBaseBranch: String,
+    usageStatus: RemodexUsageStatus,
+    isRefreshingUsage: Boolean,
     accessMode: RemodexAccessMode,
-    onRefreshGitState: () -> Unit,
+    onSelectAccessMode: (RemodexAccessMode) -> Unit,
+    onRefreshUsageStatus: () -> Unit,
     onOpenGitSheet: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val uriHandler = LocalUriHandler.current
+    val isWorktreeProject = remember(thread.projectPath) {
+        isCodexManagedWorktreeProject(thread.projectPath)
+    }
+    val runtimeLabel = if (isWorktreeProject) "Worktree" else "Local"
+    val branchLabel = remember(gitState) { composerSecondaryBarBranchLabel(gitState) }
+    val showsGitBranchSelector = gitState.hasContext
+    val branchSelectorEnabled = showsGitBranchSelector && !thread.isRunning
+    val canHandOffToWorktree = showsGitBranchSelector && !thread.isRunning && !isWorktreeProject
+    val isEmptyThread = thread.messages.isEmpty()
+    var runtimeExpanded by remember(thread.id) { mutableStateOf(false) }
+    var accessExpanded by remember(thread.id) { mutableStateOf(false) }
+    var usageExpanded by remember(thread.id) { mutableStateOf(false) }
+
+    LaunchedEffect(usageExpanded, thread.id) {
+        if (usageExpanded && !isRefreshingUsage) {
+            onRefreshUsageStatus()
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        MetaPill("Local", backgroundColor = chrome.mutedSurface, contentColor = chrome.titleText)
-        MetaPill(
-            accessMode.label,
-            backgroundColor = chrome.mutedSurface,
-            contentColor = chrome.titleText,
-        )
-        gitState.branches.currentBranch?.takeIf(String::isNotBlank)?.let { branch ->
-            MetaPill(branch, backgroundColor = chrome.mutedSurface, contentColor = chrome.titleText)
+        Box {
+            SecondaryBarPill(onClick = { runtimeExpanded = !runtimeExpanded }) {
+                if (isWorktreeProject) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.CallSplit,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = chrome.secondaryText,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Computer,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = chrome.secondaryText,
+                    )
+                }
+                Text(
+                    text = runtimeLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = chrome.secondaryText,
+                    maxLines = 1,
+                )
+                RuntimeSelectorChevron()
+            }
+            ComposerDropdownMenu(
+                expanded = runtimeExpanded,
+                onDismissRequest = { runtimeExpanded = false },
+            ) {
+                RuntimeMenuSectionLabel("Continue in")
+                ComposerDropdownMenuItem(
+                    text = { Text("Cloud") },
+                    onClick = {
+                        runtimeExpanded = false
+                        uriHandler.openUri("https://chatgpt.com/codex")
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Cloud,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = chrome.secondaryText,
+                        )
+                    },
+                )
+                ComposerDropdownMenuItem(
+                    text = {
+                        Text(
+                            if (isEmptyThread) "New worktree" else "Hand off to worktree",
+                        )
+                    },
+                    onClick = {
+                        runtimeExpanded = false
+                        onOpenGitSheet()
+                    },
+                    enabled = canHandOffToWorktree,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.CallSplit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = chrome.secondaryText,
+                        )
+                    },
+                )
+                ComposerDropdownMenuItem(
+                    text = { Text("Local") },
+                    onClick = { runtimeExpanded = false },
+                    enabled = false,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Computer,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = chrome.secondaryText,
+                        )
+                    },
+                )
+            }
         }
-        if (selectedBaseBranch.isNotBlank()) {
-            MetaPill(
-                label = "vs $selectedBaseBranch",
-                backgroundColor = chrome.mutedSurface,
-                contentColor = chrome.titleText,
+
+        Box {
+            SecondaryBarPill(onClick = { accessExpanded = !accessExpanded }) {
+                Icon(
+                    imageVector = Icons.Outlined.Security,
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                    tint = if (accessMode == RemodexAccessMode.FULL_ACCESS) {
+                        Color(0xFFFF9500)
+                    } else {
+                        chrome.secondaryText
+                    },
+                )
+                RuntimeSelectorChevron()
+            }
+            ComposerDropdownMenu(
+                expanded = accessExpanded,
+                onDismissRequest = { accessExpanded = false },
+            ) {
+                RemodexAccessMode.entries.forEach { mode ->
+                    ComposerDropdownMenuItem(
+                        text = { Text(mode.label) },
+                        onClick = {
+                            accessExpanded = false
+                            onSelectAccessMode(mode)
+                        },
+                        trailingIcon = if (mode == accessMode) {
+                            { ComposerMenuCheckmark() }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        if (showsGitBranchSelector) {
+            SecondaryBarPill(
+                onClick = onOpenGitSheet,
+                enabled = branchSelectorEnabled,
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.CallSplit,
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                    tint = chrome.secondaryText,
+                )
+                Text(
+                    text = branchLabel,
+                    modifier = Modifier.widthIn(max = 128.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontFamily = FontFamily.Monospace,
+                    color = chrome.secondaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                RuntimeSelectorChevron()
+            }
+        }
+
+        Box {
+            ContextWindowStatusRing(
+                usage = usageStatus.contextWindowUsage,
+                isRefreshing = isRefreshingUsage,
+                onClick = { usageExpanded = true },
             )
+            ComposerStatusPopover(
+                expanded = usageExpanded,
+                onDismissRequest = { usageExpanded = false },
+            ) {
+                ComposerUsageStatusSummaryContent(
+                    contextWindowUsage = usageStatus.contextWindowUsage,
+                    rateLimitBuckets = usageStatus.rateLimitBuckets,
+                    rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
+                    isRefreshing = isRefreshingUsage,
+                    onRefresh = onRefreshUsageStatus,
+                )
+            }
         }
-        SecondaryBarAction(label = "Refresh", onClick = onRefreshGitState)
-        SecondaryBarAction(label = "Git", onClick = onOpenGitSheet)
     }
 }
 
@@ -1448,6 +1631,399 @@ private fun SecondaryBarAction(
             style = MaterialTheme.typography.labelMedium,
             color = chrome.secondaryText,
         )
+    }
+}
+
+@Composable
+private fun SecondaryBarPill(
+    onClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = modifier,
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .clickable(enabled = enabled && onClick != null, onClick = { onClick?.invoke() })
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun ContextWindowStatusRing(
+    usage: RemodexContextWindowUsage?,
+    isRefreshing: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val progress = usage?.fractionUsed?.coerceIn(0.0, 1.0)?.toFloat()
+    val ringColor = when {
+        progress == null -> chrome.secondaryText.copy(alpha = 0.55f)
+        progress >= 0.85f -> FileChangeDeletedColor
+        progress >= 0.65f -> Color(0xFFFF9500)
+        else -> chrome.secondaryText.copy(alpha = 0.68f)
+    }
+
+    Surface(
+        color = chrome.mutedSurface,
+        shape = CircleShape,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (progress == null && isRefreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 1.6.dp,
+                    color = chrome.secondaryText.copy(alpha = 0.6f),
+                )
+            } else {
+                Box(contentAlignment = Alignment.Center) {
+                    Canvas(modifier = Modifier.size(18.dp)) {
+                        val strokeWidth = with(density) { 2.25.dp.toPx() }
+                        drawCircle(
+                            color = chrome.subtleBorder.copy(alpha = 0.88f),
+                            style = Stroke(width = strokeWidth),
+                        )
+                        if (progress != null) {
+                            drawArc(
+                                color = ringColor,
+                                startAngle = -90f,
+                                sweepAngle = 360f * progress,
+                                useCenter = false,
+                                style = Stroke(
+                                    width = strokeWidth,
+                                    cap = StrokeCap.Round,
+                                ),
+                            )
+                        }
+                    }
+                    progress?.let {
+                        Text(
+                            text = "${(it * 100).toInt()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 6.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ringColor,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposerStatusPopover(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val verticalGapPx = with(density) { 8.dp.roundToPx() }
+    val windowMarginPx = with(density) { 12.dp.roundToPx() }
+    if (!expanded) {
+        return
+    }
+
+    Popup(
+        popupPositionProvider = remember(verticalGapPx, windowMarginPx) {
+            ComposerMenuPositionProvider(
+                verticalGapPx = verticalGapPx,
+                windowMarginPx = windowMarginPx,
+            )
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Surface(
+            color = chrome.panelSurfaceStrong,
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 8.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 260.dp, max = 320.dp)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComposerUsageStatusSummaryContent(
+    contextWindowUsage: RemodexContextWindowUsage?,
+    rateLimitBuckets: List<RemodexRateLimitBucket>,
+    rateLimitsErrorMessage: String?,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val visibleRows = remember(rateLimitBuckets) {
+        RemodexRateLimitBucket.visibleDisplayRows(rateLimitBuckets)
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        TextButton(
+            onClick = onRefresh,
+            enabled = !isRefreshing,
+        ) {
+            if (isRefreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                    color = chrome.secondaryText,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Outlined.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                    tint = chrome.secondaryText,
+                )
+            }
+            Text(
+                text = if (isRefreshing) "Refreshing..." else "Refresh",
+                modifier = Modifier.padding(start = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = chrome.secondaryText,
+            )
+        }
+    }
+
+    Text(
+        text = "Rate limits",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = chrome.titleText,
+    )
+
+    when {
+        visibleRows.isNotEmpty() -> {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                visibleRows.forEach { row ->
+                    ComposerUsageRateLimitRow(row = row)
+                }
+            }
+        }
+
+        rateLimitsErrorMessage?.isNotBlank() == true -> {
+            Text(
+                text = rateLimitsErrorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        }
+
+        isRefreshing -> {
+            Text(
+                text = "Loading current limits...",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        }
+
+        else -> {
+            Text(
+                text = "Rate limits are unavailable for this account.",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        }
+    }
+
+    HorizontalDivider(color = chrome.subtleBorder.copy(alpha = 0.7f))
+
+    Text(
+        text = "Context window",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = chrome.titleText,
+    )
+
+    if (contextWindowUsage != null) {
+        ComposerUsageMetricRow(
+            label = "Context",
+            value = "${contextWindowUsage.percentRemaining}% left",
+            detail = "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} used / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+        )
+        ComposerUsageProgressBar(progress = contextWindowUsage.fractionUsed.toFloat())
+    } else {
+        ComposerUsageMetricRow(
+            label = "Context",
+            value = "Unavailable",
+            detail = "Waiting for token usage",
+        )
+    }
+}
+
+@Composable
+private fun ComposerUsageRateLimitRow(
+    row: RemodexRateLimitDisplayRow,
+) {
+    val chrome = remodexConversationChrome()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = row.label,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+                fontFamily = FontFamily.Monospace,
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = "${row.window.remainingPercent}% left",
+                style = MaterialTheme.typography.bodyMedium,
+                color = chrome.titleText,
+                fontFamily = FontFamily.Monospace,
+            )
+            composerResetLabel(row.window)?.let { label ->
+                Text(
+                    text = " ($label)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+        ComposerUsageProgressBar(progress = row.window.clampedUsedPercent / 100f)
+    }
+}
+
+@Composable
+private fun ComposerUsageMetricRow(
+    label: String,
+    value: String,
+    detail: String,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "$label:",
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+            fontFamily = FontFamily.Monospace,
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.titleText,
+            fontFamily = FontFamily.Monospace,
+        )
+        Text(
+            text = " $detail",
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
+}
+
+@Composable
+private fun ComposerUsageProgressBar(progress: Float) {
+    val chrome = remodexConversationChrome()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(12.dp)
+            .background(
+                color = chrome.subtleBorder.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(10.dp),
+            ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(progress.coerceIn(0f, 1f))
+                .height(12.dp)
+                .background(
+                    color = chrome.titleText,
+                    shape = RoundedCornerShape(10.dp),
+                ),
+        )
+    }
+}
+
+private fun composerSecondaryBarBranchLabel(gitState: RemodexGitState): String {
+    return gitState.branches.currentBranch
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: gitState.sync?.currentBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: gitState.branches.defaultBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        ?: "Branch"
+}
+
+private fun composerCompactTokenCount(count: Int): String {
+    return when {
+        count >= 1_000_000 -> {
+            val value = count / 100_000.0
+            if (value % 10.0 == 0.0) {
+                "${(value / 10.0).toInt()}M"
+            } else {
+                String.format(Locale.US, "%.1fM", value / 10.0)
+            }
+        }
+        count >= 1_000 -> {
+            val value = count / 100.0
+            if (value % 10.0 == 0.0) {
+                "${(value / 10.0).toInt()}K"
+            } else {
+                String.format(Locale.US, "%.1fK", value / 10.0)
+            }
+        }
+        else -> "%,d".format(Locale.US, count)
+    }
+}
+
+private fun composerResetLabel(window: com.emanueledipietro.remodex.model.RemodexRateLimitWindow): String? {
+    val resetsAtEpochMs = window.resetsAtEpochMs ?: return null
+    val now = System.currentTimeMillis()
+    val remainingMs = (resetsAtEpochMs - now).coerceAtLeast(0L)
+    val totalMinutes = remainingMs / 60_000L
+    val hours = totalMinutes / 60L
+    val minutes = totalMinutes % 60L
+    return when {
+        hours > 0L -> "resets ${hours}h ${minutes}m"
+        totalMinutes > 0L -> "resets ${totalMinutes}m"
+        else -> "resets soon"
     }
 }
 

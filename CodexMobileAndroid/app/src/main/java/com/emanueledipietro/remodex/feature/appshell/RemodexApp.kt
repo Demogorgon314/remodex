@@ -664,6 +664,7 @@ private fun MainPane(
                             onCloseComposerAutocomplete = viewModel::closeComposerAutocomplete,
                             onSelectGitBaseBranch = viewModel::selectGitBaseBranch,
                             onRefreshGitState = viewModel::refreshGitState,
+                            onRefreshUsageStatus = viewModel::refreshUsageStatus,
                             onCheckoutGitBranch = viewModel::checkoutGitBranch,
                             onCreateGitBranch = viewModel::createGitBranch,
                             onCreateGitWorktree = viewModel::createGitWorktree,

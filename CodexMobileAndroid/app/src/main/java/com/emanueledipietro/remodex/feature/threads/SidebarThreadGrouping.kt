@@ -102,7 +102,7 @@ private fun projectIconSystemName(projectPath: String?): String {
     }
 }
 
-private fun isCodexManagedWorktreeProject(projectPath: String): Boolean {
+internal fun isCodexManagedWorktreeProject(projectPath: String): Boolean {
     val normalized = projectPath.trim().trimEnd('/')
     if (normalized.isEmpty()) {
         return false
