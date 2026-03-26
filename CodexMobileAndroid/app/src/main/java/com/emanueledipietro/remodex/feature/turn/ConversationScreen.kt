@@ -363,6 +363,7 @@ fun ConversationScreen(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val showsEmptyTimelineState = timelineItems.isEmpty() && pinnedPlanItem == null
     val lastTimelineItem = timelineItems.lastOrNull()
     val lastTimelineItemId = lastTimelineItem?.id
     val bottomAnchorIndex = timelineItems.size
@@ -441,6 +442,8 @@ fun ConversationScreen(
         if (!initialScrollApplied && timelineItems.isNotEmpty()) {
             withFrameNanos { }
             timelineState.scrollToItem(bottomAnchorIndex)
+            withFrameNanos { }
+            timelineState.scrollToItem(bottomAnchorIndex)
             keepTimelinePinnedToBottom = true
             initialScrollApplied = true
         }
@@ -512,53 +515,62 @@ fun ConversationScreen(
                         onRetryConnection = onRetryConnection,
                     )
 
-                    LazyColumn(
-                        state = timelineState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp),
-                    ) {
-                        if (timelineItems.isEmpty()) {
-                            item {
-                                if (pinnedPlanItem == null) {
-                                    EmptyThreadTimelineCard()
-                                } else {
+                    if (showsEmptyTimelineState) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(horizontal = 16.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            EmptyThreadTimelineCard()
+                        }
+                    } else {
+                        LazyColumn(
+                            state = timelineState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(horizontal = 16.dp),
+                            contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.Bottom),
+                        ) {
+                            if (timelineItems.isEmpty()) {
+                                item {
                                     Spacer(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(1.dp),
                                     )
                                 }
-                            }
-                        } else {
-                            items(timelineItems, key = { it.id }) { message ->
-                                ConversationBubble(
-                                    item = message,
-                                    accessoryState = blockAccessories[message.id],
-                                    assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
-                                    onTapAssistantRevert = onStartAssistantRevertPreview,
-                                    commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
-                                    onOpenFileChangeDetails = { presentation ->
-                                        fileChangeSheetPresentation = presentation
-                                    },
-                                    onOpenCommandExecutionDetails = { messageId ->
-                                        commandDetailsMessageId = messageId
-                                    },
-                                    parentThreadId = thread.id,
-                                    threads = uiState.threads,
-                                    parentThreadMessages = thread.messages,
-                                    onOpenSubagentThread = onOpenSubagentThread,
-                                    onHydrateSubagentThread = onHydrateSubagentThread,
-                                )
-                            }
-                            item(key = "conversation-bottom-anchor") {
-                                Spacer(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(ConversationBottomAnchorHeight),
-                                )
+                            } else {
+                                items(timelineItems, key = { it.id }) { message ->
+                                    ConversationBubble(
+                                        item = message,
+                                        accessoryState = blockAccessories[message.id],
+                                        assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
+                                        onTapAssistantRevert = onStartAssistantRevertPreview,
+                                        commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
+                                        onOpenFileChangeDetails = { presentation ->
+                                            fileChangeSheetPresentation = presentation
+                                        },
+                                        onOpenCommandExecutionDetails = { messageId ->
+                                            commandDetailsMessageId = messageId
+                                        },
+                                        parentThreadId = thread.id,
+                                        threads = uiState.threads,
+                                        parentThreadMessages = thread.messages,
+                                        onOpenSubagentThread = onOpenSubagentThread,
+                                        onHydrateSubagentThread = onHydrateSubagentThread,
+                                    )
+                                }
+                                item(key = "conversation-bottom-anchor") {
+                                    Spacer(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(ConversationBottomAnchorHeight),
+                                    )
+                                }
                             }
                         }
                     }
