@@ -519,6 +519,7 @@ private fun ConversationMarkdownPreviewDialog(
     preview: ConversationMarkdownPreview,
     onDismiss: () -> Unit,
 ) {
+    val colorScheme = MaterialTheme.colorScheme
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -551,12 +552,8 @@ private fun ConversationMarkdownPreviewDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Surface(
+                ConversationMarkdownPreviewGlassChip(
                     shape = RoundedCornerShape(999.dp),
-                    color = Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
                 ) {
                     IconButton(
                         onClick = onDismiss,
@@ -565,7 +562,7 @@ private fun ConversationMarkdownPreviewDialog(
                         Icon(
                             imageVector = Icons.Outlined.Close,
                             contentDescription = "Close preview",
-                            tint = Color.White,
+                            tint = colorScheme.onSurface,
                         )
                     }
                 }
@@ -575,18 +572,14 @@ private fun ConversationMarkdownPreviewDialog(
                     is ConversationMarkdownPreview.Mermaid -> preview.title
                 }
                 if (!title.isNullOrBlank()) {
-                    Surface(
+                    ConversationMarkdownPreviewGlassChip(
                         shape = RoundedCornerShape(999.dp),
-                        color = Color.White.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-                        shadowElevation = 0.dp,
-                        tonalElevation = 0.dp,
                     ) {
                         androidx.compose.material3.Text(
                             text = title,
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                             style = MaterialTheme.typography.labelLarge,
-                            color = Color.White,
+                            color = colorScheme.onSurface,
                         )
                     }
                 }
@@ -651,7 +644,7 @@ private fun ConversationMarkdownPreviewBackground(
 ) {
     val colorScheme = MaterialTheme.colorScheme
     Box(
-        modifier = modifier.background(colorScheme.background),
+        modifier = modifier.background(colorScheme.background.copy(alpha = 0.94f)),
     ) {
         Box(
             modifier = Modifier
@@ -659,8 +652,9 @@ private fun ConversationMarkdownPreviewBackground(
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            colorScheme.surfaceVariant.copy(alpha = 0.68f),
-                            colorScheme.background,
+                            colorScheme.surfaceBright.copy(alpha = 0.74f),
+                            colorScheme.surface.copy(alpha = 0.58f),
+                            colorScheme.background.copy(alpha = 0.82f),
                         ),
                     ),
                 ),
@@ -677,6 +671,47 @@ private fun ConversationMarkdownPreviewBackground(
                     ),
                 ),
         )
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.14f),
+                            Color.White.copy(alpha = 0.05f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+    }
+}
+
+@Composable
+private fun ConversationMarkdownPreviewGlassChip(
+    shape: RoundedCornerShape,
+    content: @Composable () -> Unit,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Surface(
+        shape = shape,
+        color = colorScheme.surface.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, colorScheme.onSurface.copy(alpha = 0.10f)),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Box(
+            modifier = Modifier.background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        colorScheme.surfaceContainerHigh.copy(alpha = 0.58f),
+                        colorScheme.surface.copy(alpha = 0.42f),
+                    ),
+                ),
+            ),
+        ) {
+            content()
+        }
     }
 }
 
