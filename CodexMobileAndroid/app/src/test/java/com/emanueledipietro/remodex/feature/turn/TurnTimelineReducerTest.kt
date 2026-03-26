@@ -87,6 +87,39 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `system text deltas keep command status and append streaming output`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "command-1",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.COMMAND_EXECUTION,
+                        text = "running pwd",
+                        turnId = "turn-1",
+                        itemId = "command-item",
+                        isStreaming = true,
+                        orderIndex = 1,
+                    ),
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "command-1",
+                    turnId = "turn-1",
+                    itemId = "command-item",
+                    delta = "/tmp/remodex\n",
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals(1, projected.size)
+        assertTrue(projected.first().text.contains("running pwd"))
+        assertTrue(projected.first().text.contains("/tmp/remodex"))
+        assertTrue(projected.first().isStreaming)
+    }
+
+    @Test
     fun `assistant revert metadata survives later deltas and completion`() {
         val projected = TurnTimelineReducer.reduce(
             listOf(

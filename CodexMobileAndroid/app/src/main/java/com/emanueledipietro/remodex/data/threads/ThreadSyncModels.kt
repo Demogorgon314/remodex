@@ -168,6 +168,15 @@ sealed interface TimelineMutation {
         val orderIndex: Long,
     ) : TimelineMutation
 
+    data class SystemTextDelta(
+        val messageId: String,
+        val turnId: String,
+        val itemId: String? = null,
+        val delta: String,
+        val kind: ConversationItemKind,
+        val orderIndex: Long,
+    ) : TimelineMutation
+
     data class Complete(
         val messageId: String,
     ) : TimelineMutation

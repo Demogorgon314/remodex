@@ -315,4 +315,5 @@ class BridgeThreadSyncServiceTest {
         }
         fail("Expected $expectedCount threads but found ${service.threads.value.size}")
     }
+
 }

@@ -53,6 +53,7 @@ import com.emanueledipietro.remodex.model.RemodexSubagentRef
 import com.emanueledipietro.remodex.model.RemodexSubagentState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
+import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,6 +66,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import java.time.Instant
 import java.util.Locale
@@ -80,6 +82,7 @@ class BridgeThreadSyncService(
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val activeTurnIdByThread = mutableMapOf<String, String>()
+    private val threadIdByTurnId = mutableMapOf<String, String>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
 
@@ -101,6 +104,7 @@ class BridgeThreadSyncService(
                     initializedAttempt = null
                     supportsServiceTier = true
                     activeTurnIdByThread.clear()
+                    threadIdByTurnId.clear()
                 }
             }
         }
@@ -142,6 +146,7 @@ class BridgeThreadSyncService(
         val response = runThreadRead(threadId) ?: return
         val resultObject = response.result?.jsonObjectOrNull ?: return
         val threadObject = resultObject.firstObject("thread") ?: return
+        indexTurnIds(threadId = threadId, threadObject = threadObject)
         val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
         val refreshedSnapshot = parseThreadSnapshot(
             threadObject = threadObject,
@@ -308,6 +313,7 @@ class BridgeThreadSyncService(
         val turnId = extractTurnId(response.result)
         if (turnId != null) {
             activeTurnIdByThread[threadId] = turnId
+            threadIdByTurnId[turnId] = threadId
         }
         refreshThreads()
         hydrateThread(threadId)
@@ -362,6 +368,7 @@ class BridgeThreadSyncService(
         )
         extractTurnId(response.result)?.let { turnId ->
             activeTurnIdByThread[threadId] = turnId
+            threadIdByTurnId[turnId] = threadId
         }
         refreshThreads()
         hydrateThread(threadId)
@@ -1056,51 +1063,1215 @@ class BridgeThreadSyncService(
     }
 
     private suspend fun handleNotification(message: RpcMessage) {
-        when (message.method?.trim()) {
+        val method = message.method?.trim().orEmpty()
+        val paramsObject = message.params?.jsonObjectOrNull
+        when (method) {
             "thread/name/updated" -> refreshThreads()
-            "turn/started" -> {
-                val paramsObject = message.params?.jsonObjectOrNull ?: return
-                val threadId = resolveThreadId(paramsObject) ?: return
-                extractTurnId(message.params)?.let { activeTurnIdByThread[threadId] = it }
-                updateThread(threadId) { snapshot -> snapshot.copy(isRunning = true) }
-            }
+            "turn/started" -> paramsObject?.let(::handleTurnStartedNotification)
+            "turn/completed" -> paramsObject?.let(::handleTurnCompletedNotification)
+            "thread/status/changed" -> paramsObject?.let(::handleThreadStatusChangedNotification)
 
-            "turn/completed" -> {
-                val paramsObject = message.params?.jsonObjectOrNull ?: return
-                val threadId = resolveThreadId(paramsObject) ?: return
-                activeTurnIdByThread.remove(threadId)
-                updateThread(threadId) { snapshot -> snapshot.copy(isRunning = false) }
-                refreshThreads()
-                hydrateThread(threadId)
-            }
+            "item/agentMessage/delta",
+            "codex/event/agent_message_content_delta",
+            "codex/event/agent_message_delta" -> paramsObject?.let(::appendAssistantDelta)
 
-            "thread/status/changed" -> {
-                val paramsObject = message.params?.jsonObjectOrNull ?: return
-                val threadId = resolveThreadId(paramsObject) ?: return
-                val normalizedStatus = normalizeStatus(
-                    paramsObject.firstString("status")
-                        ?: paramsObject.firstObject("status")?.firstString("type", "statusType", "status_type")
-                        ?: "",
-                )
-                when {
-                    normalizedStatus.contains("running")
-                        || normalizedStatus.contains("active")
-                        || normalizedStatus.contains("started")
-                        || normalizedStatus.contains("pending") -> {
-                        updateThread(threadId) { snapshot -> snapshot.copy(isRunning = true) }
-                    }
+            "item/reasoning/summaryTextDelta",
+            "item/reasoning/summaryPartAdded",
+            "item/reasoning/textDelta" -> paramsObject?.let(::appendReasoningDelta)
 
-                    normalizedStatus.contains("done")
-                        || normalizedStatus.contains("completed")
-                        || normalizedStatus.contains("stopped")
-                        || normalizedStatus.contains("idle") -> {
-                        activeTurnIdByThread.remove(threadId)
-                        updateThread(threadId) { snapshot -> snapshot.copy(isRunning = false) }
-                    }
+            "item/fileChange/outputDelta" -> paramsObject?.let(::appendFileChangeDelta)
+
+            "item/toolCall/outputDelta",
+            "item/toolCall/output_delta",
+            "item/tool_call/outputDelta",
+            "item/tool_call/output_delta" -> paramsObject?.let(::appendToolCallDelta)
+
+            "item/commandExecution/outputDelta",
+            "item/command_execution/outputDelta" -> paramsObject?.let(::appendCommandExecutionDelta)
+
+            "item/commandExecution/terminalInteraction",
+            "item/command_execution/terminalInteraction" -> paramsObject?.let(::handleCommandExecutionTerminalInteraction)
+
+            "item/completed",
+            "codex/event/item_completed",
+            "codex/event/agent_message" -> paramsObject?.let { handleItemLifecycle(it, isCompleted = true) }
+
+            "item/started",
+            "codex/event/item_started" -> paramsObject?.let { handleItemLifecycle(it, isCompleted = false) }
+
+            else -> {
+                if (paramsObject == null) {
+                    return
+                }
+                if (handleToolCallNotificationFallback(method, paramsObject)) {
+                    return
+                }
+                if (handleFileChangeNotificationFallback(method, paramsObject)) {
+                    return
+                }
+                if (handleDiffNotificationFallback(method, paramsObject)) {
+                    return
                 }
             }
         }
     }
+
+    private fun handleTurnStartedNotification(paramsObject: JsonObject) {
+        val threadId = resolveThreadId(paramsObject)
+        val turnId = extractTurnIdForTurnLifecycleEvent(paramsObject)
+        if (threadId != null && turnId != null) {
+            activeTurnIdByThread[threadId] = turnId
+            threadIdByTurnId[turnId] = threadId
+            confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
+        }
+        threadId?.let { id ->
+            touchThread(threadId = id, isRunning = true)
+        }
+    }
+
+    private fun handleTurnCompletedNotification(paramsObject: JsonObject) {
+        val turnId = extractTurnIdForTurnLifecycleEvent(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        if (turnId != null) {
+            threadIdByTurnId[turnId] = threadId
+        }
+        activeTurnIdByThread.remove(threadId)
+        completeStreamingItemsForThread(threadId = threadId, turnId = turnId)
+        touchThread(threadId = threadId, isRunning = false)
+        scope.launch {
+            refreshThreads()
+            hydrateThread(threadId)
+        }
+    }
+
+    private fun handleThreadStatusChangedNotification(paramsObject: JsonObject) {
+        val threadId = resolveThreadId(paramsObject) ?: return
+        val eventObject = envelopeEventObject(paramsObject)
+        val statusObject = paramsObject.firstObject("status")
+            ?: eventObject?.firstObject("status")
+            ?: paramsObject.firstObject("event")?.firstObject("status")
+        val normalizedStatus = normalizeStatus(
+            statusObject?.firstString("type", "statusType", "status_type")
+                ?: paramsObject.firstString("status")
+                ?: eventObject?.firstString("status")
+                ?: "",
+        )
+        when {
+            normalizedStatus == "running"
+                || normalizedStatus == "active"
+                || normalizedStatus == "processing"
+                || normalizedStatus == "inprogress"
+                || normalizedStatus == "started"
+                || normalizedStatus == "pending" -> {
+                touchThread(threadId = threadId, isRunning = true)
+            }
+
+            normalizedStatus == "idle"
+                || normalizedStatus == "notloaded"
+                || normalizedStatus == "completed"
+                || normalizedStatus == "done"
+                || normalizedStatus == "finished"
+                || normalizedStatus == "stopped"
+                || normalizedStatus == "systemerror" -> {
+                if (activeTurnIdByThread[threadId] != null || hasStreamingMessage(threadId)) {
+                    return
+                }
+                activeTurnIdByThread.remove(threadId)
+                touchThread(threadId = threadId, isRunning = false)
+            }
+        }
+    }
+
+    private fun appendAssistantDelta(paramsObject: JsonObject) {
+        val delta = extractTextDelta(paramsObject)
+        if (delta.isBlank()) {
+            return
+        }
+        val eventObject = envelopeEventObject(paramsObject)
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        val itemId = extractItemId(
+            paramsObject = paramsObject,
+            eventObject = eventObject,
+            itemObject = extractIncomingItemObject(paramsObject, eventObject),
+        )
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = resolvedTurnId,
+            fallbackPrefix = "assistant",
+        )
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.AssistantTextDelta(
+                messageId = messageId,
+                turnId = resolvedTurnId.orEmpty(),
+                itemId = itemId,
+                delta = delta,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                ),
+            ),
+            isRunning = true,
+        )
+    }
+
+    private fun appendReasoningDelta(paramsObject: JsonObject) {
+        val delta = extractTextDelta(paramsObject)
+        if (delta.isBlank()) {
+            return
+        }
+        val eventObject = envelopeEventObject(paramsObject)
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        val itemId = extractItemId(
+            paramsObject = paramsObject,
+            eventObject = eventObject,
+            itemObject = extractIncomingItemObject(paramsObject, eventObject),
+        )
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = resolvedTurnId,
+            fallbackPrefix = "reasoning",
+        )
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.ReasoningTextDelta(
+                messageId = messageId,
+                turnId = resolvedTurnId.orEmpty(),
+                itemId = itemId,
+                delta = delta,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                ),
+            ),
+            isRunning = true,
+        )
+    }
+
+    private fun appendFileChangeDelta(paramsObject: JsonObject) {
+        appendSystemTextDelta(
+            paramsObject = paramsObject,
+            kind = ConversationItemKind.FILE_CHANGE,
+            fallbackPrefix = "filechange",
+        )
+    }
+
+    private fun appendToolCallDelta(paramsObject: JsonObject) {
+        val eventObject = envelopeEventObject(paramsObject)
+        val itemObject = extractIncomingItemObject(paramsObject, eventObject)
+        val delta = extractTextDelta(paramsObject)
+        if (delta.isBlank()) {
+            return
+        }
+        if (isLikelyFileChangeToolCall(itemObject = itemObject, fallbackText = delta)) {
+            appendSystemTextDelta(
+                paramsObject = paramsObject,
+                kind = ConversationItemKind.FILE_CHANGE,
+                fallbackPrefix = "filechange",
+            )
+            return
+        }
+        val activityLines = extractToolCallActivityLines(delta)
+        if (activityLines.isEmpty()) {
+            return
+        }
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject)
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = resolvedTurnId,
+            fallbackPrefix = "toolactivity",
+        )
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.ActivityLine(
+                messageId = messageId,
+                turnId = resolvedTurnId.orEmpty(),
+                itemId = itemId,
+                line = activityLines.joinToString(separator = "\n"),
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                ),
+            ),
+            isRunning = true,
+        )
+    }
+
+    private fun appendCommandExecutionDelta(paramsObject: JsonObject) {
+        val context = resolveNotificationContext(paramsObject) ?: return
+        publishCommandExecutionStatus(
+            context = context,
+            payloadObject = context.payloadObject,
+            isCompleted = false,
+            onlyIfMissing = true,
+        )
+        val delta = extractTextDelta(paramsObject)
+        if (delta.isBlank()) {
+            return
+        }
+        appendSystemTextDelta(
+            paramsObject = paramsObject,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+            fallbackPrefix = "commandexecution",
+        )
+    }
+
+    private fun handleCommandExecutionTerminalInteraction(paramsObject: JsonObject) {
+        val context = resolveNotificationContext(paramsObject) ?: return
+        publishCommandExecutionStatus(
+            context = context,
+            payloadObject = context.payloadObject,
+            isCompleted = false,
+            onlyIfMissing = false,
+        )
+    }
+
+    private fun handleItemLifecycle(
+        paramsObject: JsonObject,
+        isCompleted: Boolean,
+    ) {
+        val eventObject = envelopeEventObject(paramsObject)
+        val itemObject = extractIncomingItemObject(paramsObject, eventObject) ?: return
+        val itemType = normalizeItemType(itemObject.firstString("type").orEmpty())
+        if (itemType.isEmpty()) {
+            return
+        }
+        if (isAssistantHistoryItem(itemType, itemObject)) {
+            handleAssistantLifecycle(
+                paramsObject = paramsObject,
+                itemObject = itemObject,
+                isCompleted = isCompleted,
+            )
+            return
+        }
+        handleStructuredItemLifecycle(
+            itemObject = itemObject,
+            paramsObject = paramsObject,
+            itemType = itemType,
+            isCompleted = isCompleted,
+        )
+    }
+
+    private fun handleAssistantLifecycle(
+        paramsObject: JsonObject,
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ) {
+        val eventObject = envelopeEventObject(paramsObject)
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject)
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = resolvedTurnId,
+            fallbackPrefix = "assistant",
+        )
+        val body = decodeItemText(itemObject)
+        if (!isCompleted) {
+            if (body.isBlank()) {
+                return
+            }
+            upsertStreamingItem(
+                threadId = threadId,
+                item = timelineItem(
+                    id = messageId,
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = body,
+                    kind = ConversationItemKind.CHAT,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    isStreaming = true,
+                    orderIndex = resolveOrderIndex(
+                        threadId = threadId,
+                        messageId = messageId,
+                        turnId = resolvedTurnId,
+                        itemId = itemId,
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        kind = ConversationItemKind.CHAT,
+                    ),
+                ),
+                isRunning = true,
+            )
+            return
+        }
+
+        if (body.isNotBlank()) {
+            upsertStreamingItem(
+                threadId = threadId,
+                item = timelineItem(
+                    id = messageId,
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = body,
+                    kind = ConversationItemKind.CHAT,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    isStreaming = false,
+                    orderIndex = resolveOrderIndex(
+                        threadId = threadId,
+                        messageId = messageId,
+                        turnId = resolvedTurnId,
+                        itemId = itemId,
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        kind = ConversationItemKind.CHAT,
+                    ),
+                    assistantChangeSet = projectedTimelineItem(
+                        threadId = threadId,
+                        messageId = messageId,
+                        turnId = resolvedTurnId,
+                        itemId = itemId,
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        kind = ConversationItemKind.CHAT,
+                    )?.assistantChangeSet,
+                ),
+            )
+        } else {
+            appendTimelineMutation(
+                threadId = threadId,
+                mutation = TimelineMutation.Complete(messageId = messageId),
+            )
+        }
+    }
+
+    private fun handleStructuredItemLifecycle(
+        itemObject: JsonObject,
+        paramsObject: JsonObject,
+        itemType: String,
+        isCompleted: Boolean,
+    ): Boolean {
+        if (!supportsStructuredLifecycleItem(itemType)) {
+            return false
+        }
+        val eventObject = envelopeEventObject(paramsObject)
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return true
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject)
+
+        val kind: ConversationItemKind
+        val body: String
+        val planState: RemodexPlanState?
+        val subagentAction: RemodexSubagentAction?
+        when {
+            itemType == "reasoning" -> {
+                kind = ConversationItemKind.REASONING
+                body = decodeIncomingReasoningBody(itemObject)
+                planState = null
+                subagentAction = null
+            }
+
+            itemType == "filechange" || itemType == "diff" -> {
+                kind = ConversationItemKind.FILE_CHANGE
+                body = decodeStructuredLifecycleBody(
+                    itemObject = itemObject,
+                    inProgressFallback = "Updating files...",
+                    completedFallback = "Updated files.",
+                    isCompleted = isCompleted,
+                )
+                planState = null
+                subagentAction = null
+            }
+
+            itemType == "toolcall" -> {
+                if (isLikelyFileChangeToolCall(itemObject, decodeItemText(itemObject))) {
+                    kind = ConversationItemKind.FILE_CHANGE
+                    body = decodeStructuredLifecycleBody(
+                        itemObject = itemObject,
+                        inProgressFallback = "Updating files...",
+                        completedFallback = "Updated files.",
+                        isCompleted = isCompleted,
+                    )
+                } else {
+                    kind = ConversationItemKind.COMMAND_EXECUTION
+                    body = decodeStructuredLifecycleBody(
+                        itemObject = itemObject,
+                        inProgressFallback = "Running tool activity...",
+                        completedFallback = "Tool activity finished.",
+                        isCompleted = isCompleted,
+                    )
+                }
+                planState = null
+                subagentAction = null
+            }
+
+            itemType == "commandexecution" || itemType == "enteredreviewmode" || itemType == "contextcompaction" -> {
+                kind = ConversationItemKind.COMMAND_EXECUTION
+                body = when (itemType) {
+                    "enteredreviewmode" -> "Reviewing changes..."
+                    "contextcompaction" -> if (isCompleted) "Context compacted" else "Compacting context..."
+                    else -> decodeCommandExecutionStatusText(
+                        payloadObject = itemObject,
+                        isCompleted = isCompleted,
+                    )
+                }
+                planState = null
+                subagentAction = null
+            }
+
+            itemType == "plan" -> {
+                kind = ConversationItemKind.PLAN
+                body = decodePlanItemText(itemObject).ifBlank {
+                    if (isCompleted) "Plan updated." else "Planning..."
+                }
+                planState = decodeHistoryPlanState(itemObject)
+                subagentAction = null
+            }
+
+            else -> {
+                kind = ConversationItemKind.SUBAGENT_ACTION
+                body = ""
+                planState = null
+                subagentAction = decodeSubagentAction(itemObject)
+            }
+        }
+
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = resolvedTurnId,
+            fallbackPrefix = kind.name.lowercase(Locale.ROOT),
+        )
+        val existingItem = projectedTimelineItem(
+            threadId = threadId,
+            messageId = messageId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = kind,
+        )
+        if (kind == ConversationItemKind.COMMAND_EXECUTION && isCompleted && existingItem != null) {
+            appendTimelineMutation(
+                threadId = threadId,
+                mutation = TimelineMutation.Complete(messageId = messageId),
+            )
+            return true
+        }
+        if (subagentAction == null && body.isBlank() && isCompleted) {
+            appendTimelineMutation(
+                threadId = threadId,
+                mutation = TimelineMutation.Complete(messageId = messageId),
+            )
+            return true
+        }
+        upsertStreamingItem(
+            threadId = threadId,
+            item = timelineItem(
+                id = messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = subagentAction?.summaryText ?: body.ifBlank { kind.name.replace('_', ' ') },
+                kind = kind,
+                turnId = resolvedTurnId,
+                itemId = itemId,
+                isStreaming = !isCompleted,
+                planState = planState,
+                subagentAction = subagentAction,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = kind,
+                ),
+                assistantChangeSet = existingItem?.assistantChangeSet,
+            ),
+            isRunning = !isCompleted || activeTurnIdByThread[threadId] != null,
+        )
+        return true
+    }
+
+    private fun appendSystemTextDelta(
+        paramsObject: JsonObject,
+        kind: ConversationItemKind,
+        fallbackPrefix: String,
+    ) {
+        val delta = extractTextDelta(paramsObject)
+        if (delta.isBlank()) {
+            return
+        }
+        val eventObject = envelopeEventObject(paramsObject)
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        val itemId = extractItemId(
+            paramsObject = paramsObject,
+            eventObject = eventObject,
+            itemObject = extractIncomingItemObject(paramsObject, eventObject),
+        )
+        val messageId = streamingMessageId(
+            itemId = itemId,
+            turnId = resolvedTurnId,
+            fallbackPrefix = fallbackPrefix,
+        )
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.SystemTextDelta(
+                messageId = messageId,
+                turnId = resolvedTurnId.orEmpty(),
+                itemId = itemId,
+                delta = delta,
+                kind = kind,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = kind,
+                ),
+            ),
+            isRunning = true,
+        )
+    }
+
+    private fun publishCommandExecutionStatus(
+        context: NotificationContext,
+        payloadObject: JsonObject,
+        isCompleted: Boolean,
+        onlyIfMissing: Boolean,
+    ) {
+        val messageId = streamingMessageId(
+            itemId = context.itemId,
+            turnId = context.turnId,
+            fallbackPrefix = "commandexecution",
+        )
+        val existingItem = projectedTimelineItem(
+            threadId = context.threadId,
+            messageId = messageId,
+            turnId = context.turnId,
+            itemId = context.itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+        )
+        if (onlyIfMissing && existingItem != null) {
+            return
+        }
+        val statusText = decodeCommandExecutionStatusText(
+            payloadObject = payloadObject,
+            isCompleted = isCompleted,
+        )
+        if (statusText.isBlank()) {
+            return
+        }
+        if (isCompleted && existingItem != null && existingItem.text.isNotBlank() && existingItem.text != statusText) {
+            appendTimelineMutation(
+                threadId = context.threadId,
+                mutation = TimelineMutation.Complete(messageId = messageId),
+            )
+            return
+        }
+        upsertStreamingItem(
+            threadId = context.threadId,
+            item = timelineItem(
+                id = messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = existingItem?.text?.takeIf(String::isNotBlank) ?: statusText,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                turnId = context.turnId,
+                itemId = context.itemId,
+                isStreaming = !isCompleted,
+                orderIndex = resolveOrderIndex(
+                    threadId = context.threadId,
+                    messageId = messageId,
+                    turnId = context.turnId,
+                    itemId = context.itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                ),
+            ),
+            isRunning = !isCompleted,
+        )
+    }
+
+    private fun handleToolCallNotificationFallback(
+        method: String,
+        paramsObject: JsonObject,
+    ): Boolean {
+        val normalizedMethod = normalizeMethod(method)
+        if (!normalizedMethod.contains("toolcall")) {
+            return false
+        }
+        return when {
+            normalizedMethod.contains("delta") || normalizedMethod.contains("partadded") -> {
+                appendToolCallDelta(paramsObject)
+                true
+            }
+
+            normalizedMethod.contains("started") -> handleStructuredFallback(paramsObject, itemType = "toolcall", isCompleted = false)
+            normalizedMethod.contains("completed")
+                || normalizedMethod.contains("finished")
+                || normalizedMethod.contains("done") -> handleStructuredFallback(paramsObject, itemType = "toolcall", isCompleted = true)
+
+            else -> handleStructuredFallback(paramsObject, itemType = "toolcall", isCompleted = false)
+        }
+    }
+
+    private fun handleFileChangeNotificationFallback(
+        method: String,
+        paramsObject: JsonObject,
+    ): Boolean {
+        val normalizedMethod = normalizeMethod(method)
+        if (!normalizedMethod.contains("filechange")) {
+            return false
+        }
+        return when {
+            normalizedMethod.contains("delta") || normalizedMethod.contains("partadded") -> {
+                appendFileChangeDelta(paramsObject)
+                true
+            }
+
+            normalizedMethod.contains("started") -> handleStructuredFallback(paramsObject, itemType = "filechange", isCompleted = false)
+            normalizedMethod.contains("completed")
+                || normalizedMethod.contains("finished")
+                || normalizedMethod.contains("done") -> handleStructuredFallback(paramsObject, itemType = "filechange", isCompleted = true)
+
+            else -> handleStructuredFallback(paramsObject, itemType = "filechange", isCompleted = false)
+        }
+    }
+
+    private fun handleDiffNotificationFallback(
+        method: String,
+        paramsObject: JsonObject,
+    ): Boolean {
+        val normalizedMethod = normalizeMethod(method)
+        val isDiffMethod = normalizedMethod.contains("turndiff")
+            || normalizedMethod.contains("/diff/")
+            || normalizedMethod.startsWith("diff/")
+            || normalizedMethod.endsWith("/diff")
+            || normalizedMethod.contains("itemdiff")
+        if (!isDiffMethod) {
+            return false
+        }
+        return handleStructuredFallback(paramsObject, itemType = "diff", isCompleted = true)
+    }
+
+    private fun handleStructuredFallback(
+        paramsObject: JsonObject,
+        itemType: String,
+        isCompleted: Boolean,
+    ): Boolean {
+        val eventObject = envelopeEventObject(paramsObject)
+        val itemObject = extractIncomingItemObject(paramsObject, eventObject) ?: (eventObject ?: paramsObject)
+        return handleStructuredItemLifecycle(
+            itemObject = itemObject,
+            paramsObject = paramsObject,
+            itemType = itemType,
+            isCompleted = isCompleted,
+        )
+    }
+
+    private fun touchThread(
+        threadId: String,
+        isRunning: Boolean? = null,
+    ) {
+        val now = nowEpochMs()
+        backingThreads.value = backingThreads.value.map { snapshot ->
+            if (snapshot.id != threadId) {
+                snapshot
+            } else {
+                snapshot.copy(
+                    lastUpdatedEpochMs = now,
+                    lastUpdatedLabel = relativeUpdatedLabel(now),
+                    isRunning = isRunning ?: snapshot.isRunning,
+                )
+            }
+        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    private fun appendTimelineMutation(
+        threadId: String,
+        mutation: TimelineMutation,
+        isRunning: Boolean? = null,
+    ) {
+        val now = nowEpochMs()
+        backingThreads.value = backingThreads.value.map { snapshot ->
+            if (snapshot.id != threadId) {
+                snapshot
+            } else {
+                val nextMutations = snapshot.timelineMutations + mutation
+                snapshot.copy(
+                    timelineMutations = nextMutations,
+                    preview = derivePreview(snapshot = snapshot, nextMutations = nextMutations),
+                    lastUpdatedEpochMs = now,
+                    lastUpdatedLabel = relativeUpdatedLabel(now),
+                    isRunning = isRunning ?: snapshot.isRunning,
+                )
+            }
+        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    private fun upsertStreamingItem(
+        threadId: String,
+        item: com.emanueledipietro.remodex.model.RemodexConversationItem,
+        isRunning: Boolean? = null,
+    ) {
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.Upsert(item),
+            isRunning = isRunning,
+        )
+    }
+
+    private fun derivePreview(
+        snapshot: ThreadSyncSnapshot,
+        nextMutations: List<TimelineMutation>,
+    ): String {
+        val previewItem = TurnTimelineReducer.reduce(nextMutations)
+            .lastOrNull { item ->
+                item.kind == ConversationItemKind.CHAT
+                    && (item.speaker == ConversationSpeaker.USER || item.speaker == ConversationSpeaker.ASSISTANT)
+            }
+        return previewItem?.text
+            ?.lineSequence()
+            ?.joinToString(separator = " ")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.take(160)
+            ?: snapshot.preview
+    }
+
+    private fun resolveOrderIndex(
+        threadId: String,
+        messageId: String,
+        turnId: String?,
+        itemId: String?,
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): Long {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return 0L
+        return projectedTimelineItem(
+            threadId = threadId,
+            messageId = messageId,
+            turnId = turnId,
+            itemId = itemId,
+            speaker = speaker,
+            kind = kind,
+        )?.orderIndex ?: nextOrderIndex(snapshot)
+    }
+
+    private fun projectedTimelineItem(
+        threadId: String,
+        messageId: String,
+        turnId: String?,
+        itemId: String?,
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        return TurnTimelineReducer.reduce(snapshot.timelineMutations).firstOrNull { item ->
+            item.id == messageId
+                || (item.itemId != null && itemId != null && item.itemId == itemId)
+                || (
+                    item.itemId == null &&
+                        itemId == null &&
+                        item.turnId == turnId &&
+                        item.kind == kind &&
+                        item.speaker == speaker
+                    )
+        }
+    }
+
+    private fun hasStreamingMessage(threadId: String): Boolean {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return false
+        return TurnTimelineReducer.reduce(snapshot.timelineMutations).any { item -> item.isStreaming }
+    }
+
+    private fun confirmLatestPendingUserMessage(
+        threadId: String,
+        turnId: String,
+    ) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val pendingUser = TurnTimelineReducer.reduce(snapshot.timelineMutations)
+            .asReversed()
+            .firstOrNull { item ->
+                item.speaker == ConversationSpeaker.USER &&
+                    item.deliveryState == RemodexMessageDeliveryState.PENDING &&
+                    (item.turnId == null || item.turnId == turnId)
+            } ?: return
+        appendTimelineMutation(
+            threadId = threadId,
+            mutation = TimelineMutation.Upsert(
+                pendingUser.copy(
+                    deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                    turnId = turnId,
+                ),
+            ),
+            isRunning = true,
+        )
+    }
+
+    private fun completeStreamingItemsForThread(
+        threadId: String,
+        turnId: String?,
+    ) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val completionMutations = TurnTimelineReducer.reduce(snapshot.timelineMutations)
+            .filter { item ->
+                item.isStreaming &&
+                    (
+                        turnId == null ||
+                            item.turnId == turnId ||
+                            item.turnId.isNullOrBlank()
+                        )
+            }
+            .map { item -> TimelineMutation.Complete(messageId = item.id) }
+        if (completionMutations.isEmpty()) {
+            return
+        }
+        val now = nowEpochMs()
+        backingThreads.value = backingThreads.value.map { existing ->
+            if (existing.id != threadId) {
+                existing
+            } else {
+                existing.copy(
+                    timelineMutations = existing.timelineMutations + completionMutations,
+                    lastUpdatedEpochMs = now,
+                    lastUpdatedLabel = relativeUpdatedLabel(now),
+                )
+            }
+        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    private fun supportsStructuredLifecycleItem(itemType: String): Boolean {
+        return itemType == "reasoning"
+            || itemType == "filechange"
+            || itemType == "toolcall"
+            || itemType == "commandexecution"
+            || itemType == "diff"
+            || itemType == "plan"
+            || itemType == "enteredreviewmode"
+            || itemType == "contextcompaction"
+            || isSubagentHistoryItemType(itemType)
+    }
+
+    private fun decodeIncomingReasoningBody(itemObject: JsonObject): String {
+        val summary = decodeStringParts(itemObject.firstValue("summary")).joinToString(separator = "\n")
+        val content = decodeStringParts(itemObject.firstValue("content")).joinToString(separator = "\n\n")
+        val inline = decodeItemText(itemObject)
+        return listOf(summary, content, inline)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .joinToString(separator = "\n\n")
+            .ifBlank { "Thinking..." }
+    }
+
+    private fun decodeStructuredLifecycleBody(
+        itemObject: JsonObject,
+        inProgressFallback: String,
+        completedFallback: String,
+        isCompleted: Boolean,
+    ): String {
+        return decodeItemText(itemObject)
+            .ifBlank {
+                decodeStringParts(itemObject.firstValue("output")).joinToString(separator = "\n")
+            }
+            .ifBlank {
+                if (isCompleted) completedFallback else inProgressFallback
+            }
+    }
+
+    private fun decodeStringParts(value: JsonElement?): List<String> {
+        return when (value) {
+            null,
+            JsonNull -> emptyList()
+
+            is JsonPrimitive -> listOfNotNull(value.contentOrNull?.trim()?.takeIf(String::isNotEmpty))
+            is JsonArray -> value.flatMap(::decodeStringParts)
+            is JsonObject -> {
+                listOfNotNull(
+                    value.firstString("text", "summary", "part", "message", "description"),
+                ) + listOf(
+                    value.firstValue("content"),
+                    value.firstValue("output"),
+                    value.firstValue("delta"),
+                ).flatMap(::decodeStringParts)
+            }
+        }
+    }
+
+    private fun extractToolCallActivityLines(delta: String): List<String> {
+        val acceptedPrefixes = listOf(
+            "running ",
+            "read ",
+            "search ",
+            "searched ",
+            "exploring ",
+            "list ",
+            "listing ",
+            "open ",
+            "opened ",
+            "find ",
+            "finding ",
+            "edit ",
+            "edited ",
+            "write ",
+            "wrote ",
+            "apply ",
+            "applied ",
+        )
+        val seen = linkedSetOf<String>()
+        return delta.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .filter { line -> line.length <= 140 }
+            .filterNot { line -> line.contains("```") || line.startsWith("{") || line.startsWith("[") }
+            .filterNot(RemodexUnifiedPatchParser::looksLikePatchText)
+            .filter { line ->
+                val normalized = line.lowercase(Locale.ROOT)
+                acceptedPrefixes.any { prefix -> normalized.startsWith(prefix) } && seen.add(normalized)
+            }
+            .toList()
+    }
+
+    private fun isLikelyFileChangeToolCall(
+        itemObject: JsonObject?,
+        fallbackText: String,
+    ): Boolean {
+        if (itemObject == null) {
+            return RemodexUnifiedPatchParser.looksLikePatchText(fallbackText)
+        }
+        if (itemObject.firstValue(
+                "changes",
+                "file_changes",
+                "fileChanges",
+                "files",
+                "diff",
+                "patch",
+            ) != null
+        ) {
+            return true
+        }
+        val toolLabel = normalizeStatus(
+            itemObject.firstString("tool", "name", "call", "callName", "call_name").orEmpty(),
+        )
+        if (toolLabel.contains("patch")
+            || toolLabel.contains("edit")
+            || toolLabel.contains("write")
+            || toolLabel.contains("file")
+        ) {
+            return true
+        }
+        return RemodexUnifiedPatchParser.looksLikePatchText(fallbackText)
+    }
+
+    private fun decodeCommandExecutionStatusText(
+        payloadObject: JsonObject,
+        isCompleted: Boolean,
+    ): String {
+        val rawStatus = normalizeStatus(
+            payloadObject.firstString("status")
+                ?: payloadObject.firstObject("status")?.firstString("type", "statusType", "status_type")
+                ?: "",
+        )
+        val label = when {
+            rawStatus.contains("fail") || rawStatus.contains("error") -> "failed"
+            rawStatus.contains("stop") || rawStatus.contains("cancel") || rawStatus.contains("interrupt") -> "stopped"
+            isCompleted || rawStatus.contains("done") || rawStatus.contains("complete") || rawStatus.contains("finish") -> "completed"
+            else -> "running"
+        }
+        val command = extractCommandExecutionCommand(payloadObject).orEmpty().ifBlank { "command" }
+        return "$label $command"
+    }
+
+    private fun extractCommandExecutionCommand(payloadObject: JsonObject): String? {
+        payloadObject.firstString("command", "cmd")?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        payloadObject.firstArray("argv", "args")?.mapNotNull(JsonElement::stringOrNull)
+            ?.joinToString(separator = " ")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { return it }
+        val eventObject = envelopeEventObject(payloadObject)
+        eventObject?.firstString("command", "cmd")?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        return eventObject?.firstArray("argv", "args")?.mapNotNull(JsonElement::stringOrNull)
+            ?.joinToString(separator = " ")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+    }
+
+    private fun indexTurnIds(
+        threadId: String,
+        threadObject: JsonObject,
+    ) {
+        threadObject.firstArray("turns").orEmpty().forEach { turnValue ->
+            val turnObject = turnValue.jsonObjectOrNull ?: return@forEach
+            turnObject.firstString("id", "turnId", "turn_id")?.let { turnId ->
+                threadIdByTurnId[turnId] = threadId
+            }
+        }
+    }
+
+    private fun envelopeEventObject(paramsObject: JsonObject?): JsonObject? {
+        return paramsObject?.firstObject("msg", "event")
+    }
+
+    private fun extractIncomingItemObject(
+        paramsObject: JsonObject,
+        eventObject: JsonObject?,
+    ): JsonObject? {
+        return paramsObject.firstObject("item")
+            ?: eventObject?.firstObject("item")
+            ?: paramsObject.firstObject("event")?.firstObject("item")
+            ?: paramsObject.takeIf(::isLikelyIncomingItemPayload)
+            ?: eventObject?.takeIf(::isLikelyIncomingItemPayload)
+            ?: paramsObject.firstObject("event")?.takeIf(::isLikelyIncomingItemPayload)
+    }
+
+    private fun isLikelyIncomingItemPayload(objectValue: JsonObject): Boolean {
+        val normalizedType = normalizeItemType(objectValue.firstString("type").orEmpty())
+        if (normalizedType.isEmpty()) {
+            return false
+        }
+        return objectValue.firstValue("content", "status", "output") != null
+            || objectValue.firstValue("changes", "files", "diff", "patch") != null
+            || objectValue.firstValue("result", "payload", "data") != null
+    }
+
+    private fun extractItemId(
+        paramsObject: JsonObject?,
+        eventObject: JsonObject?,
+        itemObject: JsonObject? = null,
+    ): String? {
+        return itemObject?.firstString("id", "call_id", "callId")
+            ?: paramsObject?.firstString("itemId", "item_id", "call_id", "callId", "id")
+            ?: paramsObject?.firstObject("item")?.firstString("id")
+            ?: eventObject?.firstString("itemId", "item_id", "call_id", "callId")
+            ?: eventObject?.firstObject("item")?.firstString("id")
+    }
+
+    private fun extractTextDelta(paramsObject: JsonObject): String {
+        val eventObject = envelopeEventObject(paramsObject)
+        return paramsObject.firstString("delta", "textDelta", "text_delta", "text", "summary", "part")
+            ?: eventObject?.firstString("delta", "text", "summary", "part")
+            ?: paramsObject.firstObject("event")?.firstString("delta", "text", "summary", "part")
+            ?: ""
+    }
+
+    private fun extractTurnIdForTurnLifecycleEvent(paramsObject: JsonObject): String? {
+        return extractTurnId(paramsObject)
+            ?: envelopeEventObject(paramsObject)?.firstString("id")
+            ?: paramsObject.firstObject("event")?.firstString("id")
+            ?: paramsObject.firstString("id")
+    }
+
+    private fun resolveThreadId(
+        paramsObject: JsonObject?,
+        turnIdHint: String? = null,
+    ): String? {
+        if (paramsObject == null) {
+            return null
+        }
+        extractThreadId(paramsObject)?.let { threadId ->
+            (turnIdHint ?: extractTurnId(paramsObject))?.let { turnId ->
+                threadIdByTurnId[turnId] = threadId
+            }
+            return threadId
+        }
+        val resolvedTurnId = turnIdHint ?: extractTurnId(paramsObject)
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId]?.let { return it }
+        }
+        if (activeTurnIdByThread.size == 1) {
+            return activeTurnIdByThread.keys.firstOrNull()
+        }
+        if (backingThreads.value.size == 1) {
+            return backingThreads.value.first().id
+        }
+        return null
+    }
+
+    private fun extractThreadId(paramsObject: JsonObject): String? {
+        val eventObject = envelopeEventObject(paramsObject)
+        return paramsObject.firstString("threadId", "thread_id")
+            ?: paramsObject.firstObject("thread")?.firstString("id", "threadId", "thread_id")
+            ?: paramsObject.firstObject("turn")?.firstString("threadId", "thread_id")
+            ?: paramsObject.firstObject("item")?.firstString("threadId", "thread_id")
+            ?: eventObject?.firstString("threadId", "thread_id")
+            ?: eventObject?.firstObject("thread")?.firstString("id", "threadId", "thread_id")
+            ?: eventObject?.firstObject("turn")?.firstString("threadId", "thread_id")
+            ?: eventObject?.firstObject("item")?.firstString("threadId", "thread_id")
+            ?: paramsObject.firstObject("event")?.firstString("threadId", "thread_id")
+            ?: paramsObject.firstObject("event")?.firstObject("thread")?.firstString("id", "threadId", "thread_id")
+            ?: paramsObject.firstObject("event")?.firstObject("turn")?.firstString("threadId", "thread_id")
+    }
+
+    private fun resolveNotificationContext(paramsObject: JsonObject): NotificationContext? {
+        val eventObject = envelopeEventObject(paramsObject)
+        val itemObject = extractIncomingItemObject(paramsObject, eventObject)
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return null
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        return NotificationContext(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject),
+            payloadObject = itemObject ?: eventObject ?: paramsObject,
+        )
+    }
+
+    private fun streamingMessageId(
+        itemId: String?,
+        turnId: String?,
+        fallbackPrefix: String,
+    ): String {
+        return itemId?.takeIf(String::isNotBlank)
+            ?: turnId?.takeIf(String::isNotBlank)?.let { resolvedTurnId -> "$fallbackPrefix-$resolvedTurnId" }
+            ?: "$fallbackPrefix-${UUID.randomUUID()}"
+    }
+
+    private fun normalizeMethod(value: String): String {
+        return value
+            .trim()
+            .replace("_", "")
+            .replace("-", "")
+            .lowercase(Locale.ROOT)
+    }
+
+    private data class NotificationContext(
+        val threadId: String,
+        val turnId: String?,
+        val itemId: String?,
+        val payloadObject: JsonObject,
+    )
 
     private fun parseThreadSnapshot(
         threadObject: JsonObject,
@@ -1915,21 +3086,23 @@ class BridgeThreadSyncService(
                     is TimelineMutation.AssistantTextDelta -> mutation.orderIndex
                     is TimelineMutation.ReasoningTextDelta -> mutation.orderIndex
                     is TimelineMutation.ActivityLine -> mutation.orderIndex
+                    is TimelineMutation.SystemTextDelta -> mutation.orderIndex
                     is TimelineMutation.Complete -> null
                 }
             }.maxOrNull() ?: -1L) + 1L
     }
 
-    private fun resolveThreadId(paramsObject: JsonObject): String? {
-        val turnObject = paramsObject.firstObject("turn")
-        return paramsObject.firstString("threadId", "thread_id")
-            ?: turnObject?.firstString("threadId", "thread_id")
-    }
-
     private fun extractTurnId(value: JsonElement?): String? {
         val objectValue = value?.jsonObjectOrNull ?: return null
+        val eventObject = envelopeEventObject(objectValue)
         return objectValue.firstString("turnId", "turn_id")
             ?: objectValue.firstObject("turn")?.firstString("id", "turnId", "turn_id")
+            ?: objectValue.firstObject("item")?.firstString("turnId", "turn_id")
+            ?: eventObject?.firstString("turnId", "turn_id")
+            ?: eventObject?.firstObject("turn")?.firstString("id", "turnId", "turn_id")
+            ?: eventObject?.firstObject("item")?.firstString("turnId", "turn_id")
+            ?: objectValue.firstObject("event")?.firstString("turnId", "turn_id")
+            ?: objectValue.firstObject("event")?.firstObject("turn")?.firstString("id", "turnId", "turn_id")
     }
 
     private fun decodeTimestampMillis(raw: Double?): Long? {

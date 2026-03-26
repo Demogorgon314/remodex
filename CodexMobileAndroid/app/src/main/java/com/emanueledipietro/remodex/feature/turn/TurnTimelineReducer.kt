@@ -49,6 +49,17 @@ object TurnTimelineReducer {
                 orderIndex = mutation.orderIndex,
             )
 
+            is TimelineMutation.SystemTextDelta -> mergeTextDelta(
+                items = items,
+                messageId = mutation.messageId,
+                turnId = mutation.turnId,
+                itemId = mutation.itemId,
+                delta = mutation.delta,
+                orderIndex = mutation.orderIndex,
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = mutation.kind,
+            )
+
             is TimelineMutation.Complete -> markComplete(
                 items = items,
                 messageId = mutation.messageId,
@@ -102,7 +113,12 @@ object TurnTimelineReducer {
         } else {
             val existing = items[existingIndex]
             existing.copy(
-                text = mergeText(existing.text, trimmedDelta),
+                text = mergeDeltaText(
+                    existing = existing.text,
+                    incoming = trimmedDelta,
+                    speaker = speaker,
+                    kind = kind,
+                ),
                 turnId = turnId,
                 itemId = itemId ?: existing.itemId,
                 isStreaming = true,
@@ -117,6 +133,42 @@ object TurnTimelineReducer {
                 this[existingIndex] = nextItem
             }
         }
+    }
+
+    private fun mergeDeltaText(
+        existing: String,
+        incoming: String,
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): String {
+        if (speaker == ConversationSpeaker.ASSISTANT || kind == ConversationItemKind.REASONING) {
+            return mergeText(existing, incoming)
+        }
+        return mergeSystemText(existing, incoming)
+    }
+
+    private fun mergeSystemText(
+        existing: String,
+        incoming: String,
+    ): String {
+        val existingTrimmed = existing.trim()
+        val incomingTrimmed = incoming.trim()
+        if (incomingTrimmed.isEmpty()) {
+            return existingTrimmed
+        }
+        if (existingTrimmed.isEmpty()) {
+            return incomingTrimmed
+        }
+        if (incomingTrimmed in existingTrimmed) {
+            return existingTrimmed
+        }
+        if (existingTrimmed in incomingTrimmed) {
+            return incomingTrimmed
+        }
+        if (!existing.contains('\n') && !incoming.startsWith('\n')) {
+            return "$existingTrimmed\n$incoming"
+        }
+        return existing + incoming
     }
 
     private fun mergeActivityLine(
@@ -150,7 +202,7 @@ object TurnTimelineReducer {
         } else {
             val existing = items[existingIndex]
             existing.copy(
-                text = mergeText(existing.text, trimmedLine),
+                text = mergeActivityText(existing.text, trimmedLine),
                 supportingText = existing.supportingText ?: "Activity",
                 turnId = turnId,
                 itemId = itemId ?: existing.itemId,
@@ -166,6 +218,27 @@ object TurnTimelineReducer {
                 this[existingIndex] = nextItem
             }
         }
+    }
+
+    private fun mergeActivityText(
+        existing: String,
+        incoming: String,
+    ): String {
+        val existingTrimmed = existing.trim()
+        val incomingTrimmed = incoming.trim()
+        if (incomingTrimmed.isEmpty()) {
+            return existingTrimmed
+        }
+        if (existingTrimmed.isEmpty()) {
+            return incomingTrimmed
+        }
+        if (incomingTrimmed in existingTrimmed) {
+            return existingTrimmed
+        }
+        if (existingTrimmed in incomingTrimmed) {
+            return incomingTrimmed
+        }
+        return "$existingTrimmed\n$incomingTrimmed"
     }
 
     private fun markComplete(
@@ -185,36 +258,52 @@ object TurnTimelineReducer {
         existing: String,
         incoming: String,
     ): String {
-        val existingTrimmed = existing.trim()
-        val incomingTrimmed = incoming.trim()
-        if (incomingTrimmed.isEmpty()) {
-            return existingTrimmed
+        if (incoming.isBlank()) {
+            return existing
         }
-        if (existingTrimmed.isEmpty()) {
-            return incomingTrimmed
+        if (existing.isEmpty()) {
+            return incoming
         }
 
         val placeholderValues = setOf("thinking...")
+        val existingTrimmed = existing.trim()
+        val incomingTrimmed = incoming.trim()
         val existingLower = existingTrimmed.lowercase()
         val incomingLower = incomingTrimmed.lowercase()
         if (placeholderValues.contains(incomingLower)) {
-            return existingTrimmed
+            return existing
         }
         if (placeholderValues.contains(existingLower)) {
-            return incomingTrimmed
+            return incoming
         }
-        if (incomingTrimmed in existingTrimmed) {
-            return existingTrimmed
+        if (incoming == existing) {
+            return existing
+        }
+        if (existing.endsWith(incoming)) {
+            return existing
+        }
+        if (incoming.length > existing.length && incoming.startsWith(existing)) {
+            return incoming
+        }
+        if (existing.length > incoming.length && existing.startsWith(incoming)) {
+            return existing
+        }
+        if (existingLower == incomingLower || incomingTrimmed in existingTrimmed) {
+            return existing
         }
         if (existingTrimmed in incomingTrimmed) {
-            return incomingTrimmed
+            return incoming
         }
-        if (existingLower == incomingLower) {
-            return existingTrimmed
+
+        val maxOverlap = minOf(existing.length, incoming.length)
+        if (maxOverlap > 0) {
+            for (overlap in maxOverlap downTo 1) {
+                if (existing.takeLast(overlap) == incoming.take(overlap)) {
+                    return existing + incoming.drop(overlap)
+                }
+            }
         }
-        if (existingTrimmed.endsWith(incomingTrimmed)) {
-            return existingTrimmed
-        }
-        return "$existingTrimmed\n$incomingTrimmed"
+
+        return existing + incoming
     }
 }
