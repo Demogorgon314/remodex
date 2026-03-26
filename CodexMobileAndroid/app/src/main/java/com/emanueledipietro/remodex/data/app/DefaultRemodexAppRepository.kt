@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
 import com.emanueledipietro.remodex.data.connection.statusLabel
 import com.emanueledipietro.remodex.data.preferences.AppPreferences
 import com.emanueledipietro.remodex.data.preferences.AppPreferencesRepository
@@ -19,6 +20,8 @@ import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValu
 import com.emanueledipietro.remodex.data.threads.toCachedThreadRecord
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -26,11 +29,13 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
+import com.emanueledipietro.remodex.model.RemodexGptAccountStatus
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -41,6 +46,8 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
+import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.remodexInitialGptAccountSnapshot
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -52,6 +59,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import java.util.UUID
 
 class DefaultRemodexAppRepository(
@@ -84,10 +94,18 @@ class DefaultRemodexAppRepository(
             selectedThreadId = initialBaseThreads.firstOrNull()?.id,
         ),
     )
+    private val gptAccountSnapshotState = MutableStateFlow(remodexInitialGptAccountSnapshot())
+    private val gptAccountErrorMessageState = MutableStateFlow<String?>(null)
+    private val bridgeVersionStatusState = MutableStateFlow(RemodexBridgeVersionStatus())
+    private val usageStatusState = MutableStateFlow(RemodexUsageStatus())
 
     override val session: StateFlow<RemodexSessionSnapshot> = sessionState
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
         threadSyncService.commandExecutionDetails
+    override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotState
+    override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageState
+    override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusState
+    override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusState
 
     init {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -150,7 +168,8 @@ class DefaultRemodexAppRepository(
                         runtimeDefaults = preferences.runtimeDefaults,
                         availableModels = resolvedAvailableModels,
                         appearanceMode = preferences.appearanceMode,
-                        trustedMac = secureConnection.toTrustedMacPresentation(),
+                        appFontStyle = preferences.appFontStyle,
+                        trustedMac = secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
                         threads = threads,
                         selectedThreadId = selectedThreadId,
                         notificationRegistration = inputs.notificationRegistration,
@@ -194,6 +213,31 @@ class DefaultRemodexAppRepository(
             }
         }
     }
+
+    private suspend fun fetchBridgeManagedAccountState() =
+        runCatching {
+            secureConnectionCoordinator.sendRequest(method = "account/status/read", params = null)
+        }.getOrElse {
+            secureConnectionCoordinator.sendRequest(method = "getAuthStatus", params = null)
+        }
+
+    private suspend fun fetchRateLimitsWithCompatRetry() =
+        runCatching {
+            secureConnectionCoordinator.sendRequest(method = "account/rateLimits/read", params = null)
+        }.getOrElse {
+            secureConnectionCoordinator.sendRequest(
+                method = "account/rateLimits/read",
+                params = buildJsonObject {},
+            )
+        }
+
+    private suspend fun readContextWindowUsage(threadId: String) =
+        secureConnectionCoordinator.sendRequest(
+            method = "thread/contextWindow/read",
+            params = buildJsonObject {
+                put("threadId", JsonPrimitive(threadId))
+            },
+        ).result?.jsonObjectOrNull?.let(::decodeContextWindowUsage)
 
     private fun hydrationService(): ThreadHydrationService? {
         return threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
@@ -616,6 +660,113 @@ class DefaultRemodexAppRepository(
         applyPreferencesLocally(updatedPreferences)
     }
 
+    override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {
+        val updatedPreferences = preferencesState.value.copy(appFontStyle = style)
+        appPreferencesRepository.setAppFontStyle(style)
+        applyPreferencesLocally(updatedPreferences)
+    }
+
+    override suspend fun setMacNickname(
+        deviceId: String,
+        nickname: String?,
+    ) {
+        val normalizedDeviceId = deviceId.trim()
+        if (normalizedDeviceId.isEmpty()) {
+            return
+        }
+        val updatedNicknames = preferencesState.value.macNicknamesByDeviceId.toMutableMap().apply {
+            val trimmedNickname = nickname?.trim().orEmpty()
+            if (trimmedNickname.isEmpty()) {
+                remove(normalizedDeviceId)
+            } else {
+                this[normalizedDeviceId] = trimmedNickname
+            }
+        }
+        val updatedPreferences = preferencesState.value.copy(macNicknamesByDeviceId = updatedNicknames)
+        appPreferencesRepository.setMacNickname(normalizedDeviceId, nickname)
+        applyPreferencesLocally(updatedPreferences)
+    }
+
+    override suspend fun refreshGptAccountState() {
+        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+            gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
+            gptAccountErrorMessageState.value = null
+            bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
+            return
+        }
+
+        try {
+            val response = fetchBridgeManagedAccountState()
+            val payloadObject = response.result?.jsonObjectOrNull
+                ?: throw IllegalStateException("Bridge account status response missing payload.")
+            val nextSnapshot = decodeBridgeGptAccountSnapshot(
+                payloadObject = payloadObject,
+                previousSnapshot = gptAccountSnapshotState.value,
+            )
+            gptAccountSnapshotState.value = nextSnapshot
+            bridgeVersionStatusState.value = decodeBridgeVersionStatus(payloadObject)
+            if (nextSnapshot.isAuthenticated || nextSnapshot.status == RemodexGptAccountStatus.NOT_LOGGED_IN) {
+                gptAccountErrorMessageState.value = null
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (gptAccountSnapshotState.value.status == RemodexGptAccountStatus.UNKNOWN) {
+                gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
+            }
+            gptAccountErrorMessageState.value = error.message?.trim().takeUnless(String?::isNullOrEmpty)
+                ?: "Unable to load ChatGPT account status."
+            bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
+        }
+    }
+
+    override suspend fun logoutGptAccount() {
+        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+            gptAccountSnapshotState.value = loggedOutGptAccountSnapshot(gptAccountSnapshotState.value)
+            gptAccountErrorMessageState.value = null
+            return
+        }
+        secureConnectionCoordinator.sendRequest(method = "account/logout", params = null)
+        gptAccountSnapshotState.value = loggedOutGptAccountSnapshot(gptAccountSnapshotState.value)
+        gptAccountErrorMessageState.value = null
+        refreshGptAccountState()
+    }
+
+    override suspend fun refreshUsageStatus(threadId: String?) {
+        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+            usageStatusState.value = usageStatusState.value.copy(
+                rateLimitBuckets = emptyList(),
+                rateLimitsErrorMessage = "Connect to a Mac bridge to load usage.",
+            )
+            return
+        }
+
+        val normalizedThreadId = threadId?.trim().takeUnless { it.isNullOrEmpty() }
+        val contextWindowUsage = normalizedThreadId?.let { resolvedThreadId ->
+            runCatching { readContextWindowUsage(resolvedThreadId) }
+                .getOrNull()
+        }
+        val rateLimitResponse = runCatching { fetchRateLimitsWithCompatRetry() }
+        usageStatusState.value = if (rateLimitResponse.isSuccess) {
+            val rateLimitsObject = rateLimitResponse.getOrThrow().result?.jsonObjectOrNull
+                ?: JsonObject(emptyMap())
+            RemodexUsageStatus(
+                contextWindowUsage = contextWindowUsage,
+                rateLimitBuckets = decodeRateLimitBuckets(rateLimitsObject),
+                rateLimitsErrorMessage = null,
+            )
+        } else {
+            RemodexUsageStatus(
+                contextWindowUsage = contextWindowUsage,
+                rateLimitBuckets = emptyList(),
+                rateLimitsErrorMessage = rateLimitResponse.exceptionOrNull()?.message?.trim()
+                    ?.takeUnless(String::isEmpty)
+                    ?: "Unable to load rate limits",
+            )
+        }
+    }
+
     override suspend fun fuzzyFileSearch(
         threadId: String,
         query: String,
@@ -787,10 +938,18 @@ class DefaultRemodexAppRepository(
 
     override suspend fun disconnect() {
         secureConnectionCoordinator.disconnect()
+        gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
+        gptAccountErrorMessageState.value = null
+        bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
+        usageStatusState.value = RemodexUsageStatus()
     }
 
     override suspend fun forgetTrustedMac() {
         secureConnectionCoordinator.forgetTrustedMac()
+        gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
+        gptAccountErrorMessageState.value = null
+        bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
+        usageStatusState.value = RemodexUsageStatus()
     }
 
     private suspend fun syncThreads(snapshots: List<ThreadSyncSnapshot>) {
@@ -876,7 +1035,8 @@ class DefaultRemodexAppRepository(
                 runtimeDefaults = preferences.runtimeDefaults,
                 availableModels = resolvedAvailableModels,
                 appearanceMode = preferences.appearanceMode,
-                trustedMac = snapshot.secureConnection.toTrustedMacPresentation(),
+                appFontStyle = preferences.appFontStyle,
+                trustedMac = snapshot.secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
                 threads = threads,
                 selectedThreadId = resolveSelectedThreadId(
                     preferredThreadId = preferences.selectedThreadId ?: snapshot.selectedThreadId,
@@ -898,7 +1058,7 @@ class DefaultRemodexAppRepository(
             snapshot.copy(
                 availableModels = resolvedAvailableModels,
                 threads = threads,
-                trustedMac = snapshot.secureConnection.toTrustedMacPresentation(),
+                trustedMac = snapshot.secureConnection.toTrustedMacPresentation(preferencesState.value.macNicknamesByDeviceId),
                 selectedThreadId = resolveSelectedThreadId(
                     preferredThreadId = preferencesState.value.selectedThreadId ?: snapshot.selectedThreadId,
                     threads = threads,
@@ -1031,7 +1191,9 @@ private fun SecureConnectionSnapshot.toConnectionStatus(): RemodexConnectionStat
     )
 }
 
-private fun SecureConnectionSnapshot.toTrustedMacPresentation(): RemodexTrustedMacPresentation? {
+private fun SecureConnectionSnapshot.toTrustedMacPresentation(
+    nicknamesByDeviceId: Map<String, String> = emptyMap(),
+): RemodexTrustedMacPresentation? {
     val fingerprint = macFingerprint?.trim().takeUnless { it.isNullOrEmpty() }
     val systemName = macDisplayName?.trim().takeUnless { it.isNullOrEmpty() }
     val title = when (secureState) {
@@ -1047,6 +1209,11 @@ private fun SecureConnectionSnapshot.toTrustedMacPresentation(): RemodexTrustedM
     val fallbackName = listOfNotNull(systemName, fingerprint?.let { "Mac $it" })
         .firstOrNull()
         ?: return null
+    val nickname = macDeviceId
+        ?.let(nicknamesByDeviceId::get)
+        ?.trim()
+        .takeUnless { it.isNullOrEmpty() }
+    val displayName = nickname ?: fallbackName
     val detail = buildList {
         add(secureState.statusLabel)
         fingerprint?.let(::add)
@@ -1054,8 +1221,8 @@ private fun SecureConnectionSnapshot.toTrustedMacPresentation(): RemodexTrustedM
     return RemodexTrustedMacPresentation(
         deviceId = macDeviceId,
         title = title,
-        name = fallbackName,
-        systemName = null,
+        name = displayName,
+        systemName = if (nickname != null) fallbackName else null,
         detail = detail.ifBlank { null },
     )
 }

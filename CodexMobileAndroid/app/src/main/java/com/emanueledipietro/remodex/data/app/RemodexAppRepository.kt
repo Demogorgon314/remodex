@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
@@ -15,11 +16,18 @@ import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
+import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexUsageStatus
 
 interface RemodexAppRepository {
     val session: StateFlow<RemodexSessionSnapshot>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
+    val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot>
+    val gptAccountErrorMessage: StateFlow<String?>
+    val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus>
+    val usageStatus: StateFlow<RemodexUsageStatus>
 
     suspend fun completeOnboarding()
 
@@ -90,6 +98,19 @@ interface RemodexAppRepository {
     suspend fun setDefaultServiceTier(serviceTier: RemodexServiceTier?)
 
     suspend fun setAppearanceMode(mode: RemodexAppearanceMode)
+
+    suspend fun setAppFontStyle(style: RemodexAppFontStyle)
+
+    suspend fun setMacNickname(
+        deviceId: String,
+        nickname: String?,
+    )
+
+    suspend fun refreshGptAccountState()
+
+    suspend fun logoutGptAccount()
+
+    suspend fun refreshUsageStatus(threadId: String?)
 
     suspend fun fuzzyFileSearch(
         threadId: String,

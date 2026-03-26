@@ -9,10 +9,12 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -21,6 +23,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -33,6 +36,7 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -579,6 +583,10 @@ class AppViewModelTest {
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+        val gptAccountSnapshotFlow = MutableStateFlow(RemodexGptAccountSnapshot())
+        val gptAccountErrorMessageFlow = MutableStateFlow<String?>(null)
+        val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
+        val usageStatusFlow = MutableStateFlow(RemodexUsageStatus())
         val hydrateRequests = mutableListOf<String>()
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
@@ -611,6 +619,10 @@ class AppViewModelTest {
 
         override val session: StateFlow<RemodexSessionSnapshot> = snapshot
         override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = commandDetails
+        override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotFlow
+        override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageFlow
+        override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusFlow
+        override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusFlow
 
         override suspend fun completeOnboarding() {
             snapshot.value = snapshot.value.copy(onboardingCompleted = true)
@@ -683,6 +695,16 @@ class AppViewModelTest {
         override suspend fun setDefaultServiceTier(serviceTier: RemodexServiceTier?) = Unit
 
         override suspend fun setAppearanceMode(mode: RemodexAppearanceMode) = Unit
+
+        override suspend fun setAppFontStyle(style: RemodexAppFontStyle) = Unit
+
+        override suspend fun setMacNickname(deviceId: String, nickname: String?) = Unit
+
+        override suspend fun refreshGptAccountState() = Unit
+
+        override suspend fun logoutGptAccount() = Unit
+
+        override suspend fun refreshUsageStatus(threadId: String?) = Unit
 
         override suspend fun fuzzyFileSearch(
             threadId: String,

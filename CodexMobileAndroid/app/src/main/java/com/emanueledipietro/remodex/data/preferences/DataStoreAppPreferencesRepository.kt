@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
@@ -23,6 +24,8 @@ private val QueuedDraftsJsonKey = stringPreferencesKey("queued_drafts_json")
 private val RuntimeOverridesJsonKey = stringPreferencesKey("runtime_overrides_json")
 private val RuntimeDefaultsJsonKey = stringPreferencesKey("runtime_defaults_json")
 private val AppearanceModeKey = stringPreferencesKey("appearance_mode")
+private val AppFontStyleKey = stringPreferencesKey("app_font_style")
+private val MacNicknamesJsonKey = stringPreferencesKey("mac_nicknames_json")
 private val Context.remodexDataStore by preferencesDataStore(name = RemodexPreferencesName)
 
 class DataStoreAppPreferencesRepository(
@@ -44,6 +47,9 @@ class DataStoreAppPreferencesRepository(
             val runtimeDefaults = preferences[RuntimeDefaultsJsonKey]
                 ?.let { raw -> json.decodeFromString<RemodexRuntimeDefaults>(raw) }
                 ?: RemodexRuntimeDefaults()
+            val macNicknames = preferences[MacNicknamesJsonKey]
+                ?.let { raw -> json.decodeFromString<MacNicknamesEnvelope>(raw).nicknames }
+                ?: emptyMap()
             AppPreferences(
                 onboardingCompleted = preferences[OnboardingCompletedKey] ?: false,
                 selectedThreadId = preferences[SelectedThreadIdKey],
@@ -53,6 +59,10 @@ class DataStoreAppPreferencesRepository(
                 appearanceMode = preferences[AppearanceModeKey]
                     ?.let(RemodexAppearanceMode::valueOf)
                     ?: RemodexAppearanceMode.SYSTEM,
+                appFontStyle = preferences[AppFontStyleKey]
+                    ?.let(RemodexAppFontStyle::valueOf)
+                    ?: RemodexAppFontStyle.SYSTEM,
+                macNicknamesByDeviceId = macNicknames,
             )
         }
 
@@ -119,6 +129,35 @@ class DataStoreAppPreferencesRepository(
             preferences[AppearanceModeKey] = mode.name
         }
     }
+
+    override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            preferences[AppFontStyleKey] = style.name
+        }
+    }
+
+    override suspend fun setMacNickname(
+        deviceId: String,
+        nickname: String?,
+    ) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            val current = preferences[MacNicknamesJsonKey]
+                ?.let { raw -> json.decodeFromString<MacNicknamesEnvelope>(raw).nicknames }
+                ?.toMutableMap()
+                ?: mutableMapOf()
+            val normalizedDeviceId = deviceId.trim()
+            if (normalizedDeviceId.isEmpty()) {
+                return@edit
+            }
+            val normalizedNickname = nickname?.trim().orEmpty()
+            if (normalizedNickname.isEmpty()) {
+                current.remove(normalizedDeviceId)
+            } else {
+                current[normalizedDeviceId] = normalizedNickname
+            }
+            preferences[MacNicknamesJsonKey] = json.encodeToString(MacNicknamesEnvelope(current))
+        }
+    }
 }
 
 @Serializable
@@ -129,4 +168,9 @@ private data class QueuedDraftsEnvelope(
 @Serializable
 private data class RuntimeOverridesEnvelope(
     val threads: Map<String, RemodexRuntimeOverrides> = emptyMap(),
+)
+
+@Serializable
+private data class MacNicknamesEnvelope(
+    val nicknames: Map<String, String> = emptyMap(),
 )

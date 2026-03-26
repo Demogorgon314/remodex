@@ -12,7 +12,7 @@ class RemodexShellBackActionTest {
             resolveShellBackAction(
                 isScannerPresented = true,
                 isCompactSidebarOpen = true,
-                isSecondaryRouteVisible = true,
+                shellRoute = ShellRoute.ABOUT_REMODEX,
             ),
         )
     }
@@ -24,19 +24,31 @@ class RemodexShellBackActionTest {
             resolveShellBackAction(
                 isScannerPresented = false,
                 isCompactSidebarOpen = true,
-                isSecondaryRouteVisible = true,
+                shellRoute = ShellRoute.SETTINGS,
             ),
         )
     }
 
     @Test
-    fun `secondary routes fall back to content before exiting`() {
+    fun `about route falls back to settings before content`() {
+        assertEquals(
+            ShellBackAction.NAVIGATE_TO_SETTINGS,
+            resolveShellBackAction(
+                isScannerPresented = false,
+                isCompactSidebarOpen = false,
+                shellRoute = ShellRoute.ABOUT_REMODEX,
+            ),
+        )
+    }
+
+    @Test
+    fun `settings route falls back to content before exiting`() {
         assertEquals(
             ShellBackAction.NAVIGATE_TO_CONTENT,
             resolveShellBackAction(
                 isScannerPresented = false,
                 isCompactSidebarOpen = false,
-                isSecondaryRouteVisible = true,
+                shellRoute = ShellRoute.SETTINGS,
             ),
         )
     }
@@ -47,7 +59,7 @@ class RemodexShellBackActionTest {
             resolveShellBackAction(
                 isScannerPresented = false,
                 isCompactSidebarOpen = false,
-                isSecondaryRouteVisible = false,
+                shellRoute = ShellRoute.CONTENT,
             ),
         )
     }

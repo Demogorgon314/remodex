@@ -14,6 +14,8 @@ import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertSheetState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState
@@ -27,6 +29,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
+import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexModelOption
@@ -40,6 +43,7 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
+import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -83,8 +87,14 @@ data class AppUiState(
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
     val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
+    val appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val isRefreshingThreads: Boolean = false,
+    val isRefreshingUsage: Boolean = false,
+    val gptAccountSnapshot: RemodexGptAccountSnapshot = RemodexGptAccountSnapshot(),
+    val gptAccountErrorMessage: String? = null,
+    val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
+    val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
     val composer: ComposerUiState = ComposerUiState(),
     val conversationBanner: String? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
@@ -123,6 +133,13 @@ private data class SessionRenderState(
     val commandExecutionDetails: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
 )
 
+private data class SettingsRenderState(
+    val gptAccountSnapshot: RemodexGptAccountSnapshot = RemodexGptAccountSnapshot(),
+    val gptAccountErrorMessage: String? = null,
+    val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
+    val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
+)
+
 private data class PendingComposerSendState(
     val draftText: String,
     val attachments: List<RemodexComposerAttachment>,
@@ -150,6 +167,7 @@ class AppViewModel(
     private val assistantRevertSheetState = MutableStateFlow<RemodexAssistantRevertSheetState?>(null)
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val isRefreshingThreadsState = MutableStateFlow(false)
+    private val isRefreshingUsageState = MutableStateFlow(false)
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
     private var lastObservedThreadId: String? = null
@@ -226,6 +244,21 @@ class AppViewModel(
             )
         }
 
+    private val settingsRenderState =
+        combine(
+            repository.gptAccountSnapshot,
+            repository.gptAccountErrorMessage,
+            repository.bridgeVersionStatus,
+            repository.usageStatus,
+        ) { gptAccountSnapshot, gptAccountErrorMessage, bridgeVersionStatus, usageStatus ->
+            SettingsRenderState(
+                gptAccountSnapshot = gptAccountSnapshot,
+                gptAccountErrorMessage = gptAccountErrorMessage,
+                bridgeVersionStatus = bridgeVersionStatus,
+                usageStatus = usageStatus,
+            )
+        }
+
     private val baseUiState =
         combine(
             sessionRenderState,
@@ -260,6 +293,7 @@ class AppViewModel(
                 runtimeDefaults = snapshot.runtimeDefaults,
                 availableModels = snapshot.availableModels,
                 appearanceMode = snapshot.appearanceMode,
+                appFontStyle = snapshot.appFontStyle,
                 trustedMac = snapshot.trustedMac,
                 composer = composerState(
                     draftText = draftText,
@@ -302,14 +336,27 @@ class AppViewModel(
     }
 
     val uiState: StateFlow<AppUiState> =
-        combine(baseUiState, threadCompletionBannerState, isRefreshingThreadsState) {
+        combine(
+            baseUiState,
+            threadCompletionBannerState,
+            isRefreshingThreadsState,
+            isRefreshingUsageState,
+            settingsRenderState,
+        ) {
             baseState,
             threadCompletionBanner,
             isRefreshingThreads,
+            isRefreshingUsage,
+            settingsState,
             ->
             baseState.copy(
                 threadCompletionBanner = threadCompletionBanner,
                 isRefreshingThreads = isRefreshingThreads,
+                isRefreshingUsage = isRefreshingUsage,
+                gptAccountSnapshot = settingsState.gptAccountSnapshot,
+                gptAccountErrorMessage = settingsState.gptAccountErrorMessage,
+                bridgeVersionStatus = settingsState.bridgeVersionStatus,
+                usageStatus = settingsState.usageStatus,
             )
         }.stateIn(
             scope = viewModelScope,
@@ -1056,6 +1103,53 @@ class AppViewModel(
     fun setAppearanceMode(mode: RemodexAppearanceMode) {
         viewModelScope.launch {
             repository.setAppearanceMode(mode)
+        }
+    }
+
+    fun setAppFontStyle(style: RemodexAppFontStyle) {
+        viewModelScope.launch {
+            repository.setAppFontStyle(style)
+        }
+    }
+
+    fun setMacNickname(
+        deviceId: String,
+        nickname: String?,
+    ) {
+        viewModelScope.launch {
+            repository.setMacNickname(deviceId, nickname)
+        }
+    }
+
+    fun refreshSettingsStatus() {
+        refreshGptAccountState()
+        refreshUsageStatus()
+    }
+
+    fun refreshGptAccountState() {
+        viewModelScope.launch {
+            repository.refreshGptAccountState()
+        }
+    }
+
+    fun refreshUsageStatus() {
+        val selectedThreadId = uiState.value.selectedThread?.id
+        if (isRefreshingUsageState.value) {
+            return
+        }
+        viewModelScope.launch {
+            isRefreshingUsageState.value = true
+            try {
+                repository.refreshUsageStatus(selectedThreadId)
+            } finally {
+                isRefreshingUsageState.value = false
+            }
+        }
+    }
+
+    fun logoutGptAccount() {
+        viewModelScope.launch {
+            repository.logoutGptAccount()
         }
     }
 

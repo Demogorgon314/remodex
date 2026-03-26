@@ -6,6 +6,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 
 private val LightScheme = lightColorScheme(
@@ -73,6 +74,7 @@ private val DarkScheme = darkColorScheme(
 @Composable
 fun RemodexTheme(
     appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
+    appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     content: @Composable () -> Unit,
 ) {
     val darkTheme = when (appearanceMode) {
@@ -82,7 +84,7 @@ fun RemodexTheme(
     }
     MaterialTheme(
         colorScheme = if (darkTheme) DarkScheme else LightScheme,
-        typography = RemodexTypography,
+        typography = remodexTypography(appFontStyle),
         content = content,
     )
 }

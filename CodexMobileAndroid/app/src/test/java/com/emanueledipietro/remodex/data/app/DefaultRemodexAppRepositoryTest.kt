@@ -21,6 +21,7 @@ import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.threads.ThreadCommandService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -531,6 +532,22 @@ class DefaultRemodexAppRepositoryTest {
 
         override suspend fun setAppearanceMode(mode: RemodexAppearanceMode) {
             backingState.value = backingState.value.copy(appearanceMode = mode)
+        }
+
+        override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {
+            backingState.value = backingState.value.copy(appFontStyle = style)
+        }
+
+        override suspend fun setMacNickname(deviceId: String, nickname: String?) {
+            val updatedNicknames = backingState.value.macNicknamesByDeviceId.toMutableMap().apply {
+                val normalizedNickname = nickname?.trim().orEmpty()
+                if (normalizedNickname.isEmpty()) {
+                    remove(deviceId)
+                } else {
+                    this[deviceId] = normalizedNickname
+                }
+            }
+            backingState.value = backingState.value.copy(macNicknamesByDeviceId = updatedNicknames)
         }
     }
 

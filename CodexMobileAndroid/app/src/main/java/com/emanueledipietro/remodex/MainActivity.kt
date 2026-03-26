@@ -33,7 +33,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-            RemodexTheme(appearanceMode = uiState.appearanceMode) {
+            RemodexTheme(
+                appearanceMode = uiState.appearanceMode,
+                appFontStyle = uiState.appFontStyle,
+            ) {
                 RemodexApp(
                     viewModel = viewModel,
                     notificationManager = appContainer.notificationManager,

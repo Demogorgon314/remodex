@@ -75,6 +75,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.feature.onboarding.OnboardingScreen
 import com.emanueledipietro.remodex.feature.recovery.PairingScannerScreen
+import com.emanueledipietro.remodex.feature.settings.AboutRemodexScreen
 import com.emanueledipietro.remodex.feature.settings.ArchivedChatsScreen
 import com.emanueledipietro.remodex.feature.settings.SettingsScreen
 import com.emanueledipietro.remodex.feature.threads.ThreadsScreen
@@ -97,27 +98,31 @@ import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import kotlinx.coroutines.delay
 
-private enum class ShellRoute(val title: String) {
+internal enum class ShellRoute(val title: String) {
     CONTENT("Remodex"),
     SETTINGS("Settings"),
+    ABOUT_REMODEX("About Remodex"),
     ARCHIVED_CHATS("Archived Chats"),
 }
 
 internal enum class ShellBackAction {
     DISMISS_SCANNER,
     CLOSE_SIDEBAR,
+    NAVIGATE_TO_SETTINGS,
     NAVIGATE_TO_CONTENT,
 }
 
 internal fun resolveShellBackAction(
     isScannerPresented: Boolean,
     isCompactSidebarOpen: Boolean,
-    isSecondaryRouteVisible: Boolean,
+    shellRoute: ShellRoute,
 ): ShellBackAction? {
     return when {
         isScannerPresented -> ShellBackAction.DISMISS_SCANNER
         isCompactSidebarOpen -> ShellBackAction.CLOSE_SIDEBAR
-        isSecondaryRouteVisible -> ShellBackAction.NAVIGATE_TO_CONTENT
+        shellRoute == ShellRoute.ABOUT_REMODEX || shellRoute == ShellRoute.ARCHIVED_CHATS ->
+            ShellBackAction.NAVIGATE_TO_SETTINGS
+        shellRoute == ShellRoute.SETTINGS -> ShellBackAction.NAVIGATE_TO_CONTENT
         else -> null
     }
 }
@@ -200,18 +205,19 @@ fun RemodexApp(
     val shellBackAction = resolveShellBackAction(
         isScannerPresented = isScannerPresented,
         isCompactSidebarOpen = windowLayout == RemodexWindowLayout.COMPACT && isSidebarOpen,
-        isSecondaryRouteVisible = shellRoute != ShellRoute.CONTENT,
+        shellRoute = shellRoute,
     )
     val handleShellBack = {
         when (
             resolveShellBackAction(
                 isScannerPresented = isScannerPresented,
                 isCompactSidebarOpen = windowLayout == RemodexWindowLayout.COMPACT && isSidebarOpen,
-                isSecondaryRouteVisible = shellRoute != ShellRoute.CONTENT,
+                shellRoute = shellRoute,
             )
         ) {
             ShellBackAction.DISMISS_SCANNER -> isScannerPresented = false
             ShellBackAction.CLOSE_SIDEBAR -> isSidebarOpen = false
+            ShellBackAction.NAVIGATE_TO_SETTINGS -> shellRoute = ShellRoute.SETTINGS
             ShellBackAction.NAVIGATE_TO_CONTENT -> shellRoute = ShellRoute.CONTENT
             null -> Unit
         }
@@ -352,6 +358,7 @@ private fun RemodexShell(
                         onBack = onShellBack,
                         onOpenScanner = onOpenScanner,
                         onOpenArchivedChats = { onShellRouteChange(ShellRoute.ARCHIVED_CHATS) },
+                        onOpenAboutRemodex = { onShellRouteChange(ShellRoute.ABOUT_REMODEX) },
                         onNotificationAction = onNotificationAction,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onOpenAttachmentPicker = onOpenAttachmentPicker,
@@ -421,6 +428,7 @@ private fun RemodexShell(
                         onBack = onShellBack,
                         onOpenScanner = onOpenScanner,
                         onOpenArchivedChats = { onShellRouteChange(ShellRoute.ARCHIVED_CHATS) },
+                        onOpenAboutRemodex = { onShellRouteChange(ShellRoute.ABOUT_REMODEX) },
                         onNotificationAction = onNotificationAction,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onOpenAttachmentPicker = onOpenAttachmentPicker,
@@ -456,6 +464,7 @@ private fun MainPane(
     onBack: () -> Unit,
     onOpenScanner: () -> Unit,
     onOpenArchivedChats: () -> Unit,
+    onOpenAboutRemodex: () -> Unit,
     onNotificationAction: () -> Unit,
     notificationPermissionUiState: RemodexNotificationPermissionUiState,
     onOpenAttachmentPicker: () -> Unit,
@@ -582,16 +591,24 @@ private fun MainPane(
                         uiState = uiState,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onNotificationAction = onNotificationAction,
-                        onSelectAppearanceMode = viewModel::setAppearanceMode,
+                        onSelectAppFontStyle = viewModel::setAppFontStyle,
                         onSelectDefaultModelId = viewModel::setDefaultModelId,
                         onSelectDefaultReasoningEffort = viewModel::setDefaultReasoningEffort,
                         onSelectDefaultAccessMode = viewModel::setDefaultAccessMode,
                         onSelectDefaultServiceTier = viewModel::setDefaultServiceTier,
+                        onRefreshSettingsStatus = viewModel::refreshSettingsStatus,
+                        onRefreshUsageStatus = viewModel::refreshUsageStatus,
+                        onLogoutGptAccount = viewModel::logoutGptAccount,
                         onDisconnect = viewModel::disconnect,
                         onForgetTrustedMac = viewModel::forgetTrustedMac,
+                        onSetMacNickname = viewModel::setMacNickname,
                         onOpenArchivedChats = onOpenArchivedChats,
-                        onOpenScanner = onOpenScanner,
+                        onOpenAboutRemodex = onOpenAboutRemodex,
                     )
+                }
+
+                ShellRoute.ABOUT_REMODEX -> {
+                    AboutRemodexScreen()
                 }
 
                 ShellRoute.ARCHIVED_CHATS -> {
@@ -634,11 +651,13 @@ private fun ShellTopBar(
     val title = when (shellRoute) {
         ShellRoute.CONTENT -> selectedThreadTitle ?: "Remodex"
         ShellRoute.SETTINGS -> shellRoute.title
+        ShellRoute.ABOUT_REMODEX -> shellRoute.title
         ShellRoute.ARCHIVED_CHATS -> shellRoute.title
     }
     val subtitle = when (shellRoute) {
         ShellRoute.CONTENT -> condensedProjectPath(selectedThreadProjectPath)
         ShellRoute.SETTINGS,
+        ShellRoute.ABOUT_REMODEX,
         ShellRoute.ARCHIVED_CHATS,
         -> null
     }
