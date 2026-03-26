@@ -147,17 +147,32 @@ import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
-import kotlinx.coroutines.flow.drop
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.flow.drop
 
-private val ComposerFollowBottomThreshold = 156.dp
+private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
 private val FileAutocompleteRowHeight = 50.dp
+private val ConversationBottomAnchorHeight = 1.dp
+
+private data class TimelineBottomAnchorRequest(
+    val targetIndex: Int,
+    val lastItemId: String,
+    val lastItemTextLength: Int,
+    val lastItemSupportingTextLength: Int,
+    val lastItemStreaming: Boolean,
+    val latestRunningIndicatorMessageId: String?,
+    val composerFocused: Boolean,
+    val imeBottomPx: Int,
+    val autocompleteVisible: Boolean,
+    val queuedDraftCount: Int,
+    val pinnedPlanItemId: String?,
+)
 private val SkillAutocompleteRowHeight = 50.dp
 private val SlashAutocompleteRowHeight = 50.dp
 private const val MaxAutocompleteVisibleRows = 6
@@ -230,16 +245,59 @@ fun ConversationScreen(
     }
     val timelineState = rememberLazyListState()
     val density = LocalDensity.current
-    val lastTimelineItemId = timelineItems.lastOrNull()?.id
-    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val lastTimelineItem = timelineItems.lastOrNull()
+    val lastTimelineItemId = lastTimelineItem?.id
+    val bottomAnchorIndex = timelineItems.size
     val followBottomThresholdPx = with(density) { ComposerFollowBottomThreshold.roundToPx() }
     var initialScrollApplied by rememberSaveable(thread.id) { mutableStateOf(false) }
     var keepTimelinePinnedToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
+    val latestRunningIndicatorMessageId = remember(timelineItems, blockAccessories) {
+        timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
+    }
+    val bottomAnchorRequest = remember(
+        initialScrollApplied,
+        keepTimelinePinnedToBottom,
+        timelineItems.size,
+        lastTimelineItemId,
+        lastTimelineItem?.text?.length,
+        lastTimelineItem?.supportingText?.length,
+        lastTimelineItem?.isStreaming,
+        latestRunningIndicatorMessageId,
+        composerFocused,
+        imeBottomPx,
+        autocompleteVisible,
+        uiState.composer.queuedDrafts.size,
+        pinnedPlanItem?.id,
+    ) {
+        if (
+            !initialScrollApplied ||
+            !keepTimelinePinnedToBottom ||
+            timelineItems.isEmpty() ||
+            lastTimelineItem == null
+        ) {
+            null
+        } else {
+            TimelineBottomAnchorRequest(
+                targetIndex = bottomAnchorIndex,
+                lastItemId = lastTimelineItem.id,
+                lastItemTextLength = lastTimelineItem.text.length,
+                lastItemSupportingTextLength = lastTimelineItem.supportingText?.length ?: 0,
+                lastItemStreaming = lastTimelineItem.isStreaming,
+                latestRunningIndicatorMessageId = latestRunningIndicatorMessageId,
+                composerFocused = composerFocused,
+                imeBottomPx = imeBottomPx,
+                autocompleteVisible = autocompleteVisible,
+                queuedDraftCount = uiState.composer.queuedDrafts.size,
+                pinnedPlanItemId = pinnedPlanItem?.id,
+            )
+        }
+    }
 
     LaunchedEffect(thread.id, lastTimelineItemId) {
         if (!initialScrollApplied && timelineItems.isNotEmpty()) {
             withFrameNanos { }
-            timelineState.scrollToItem(timelineItems.lastIndex)
+            timelineState.scrollToItem(bottomAnchorIndex)
             keepTimelinePinnedToBottom = true
             initialScrollApplied = true
         }
@@ -258,37 +316,17 @@ fun ConversationScreen(
             }
     }
 
-    LaunchedEffect(
-        thread.id,
-        lastTimelineItemId,
-        thread.isRunning,
-        initialScrollApplied,
-        keepTimelinePinnedToBottom,
-    ) {
+    LaunchedEffect(thread.id, bottomAnchorRequest) {
+        val request = bottomAnchorRequest ?: return@LaunchedEffect
+        withFrameNanos { }
+        timelineState.scrollToItem(request.targetIndex)
         if (
-            initialScrollApplied &&
-            timelineItems.isNotEmpty() &&
-            thread.isRunning &&
-            keepTimelinePinnedToBottom
+            request.imeBottomPx > 0 ||
+            request.composerFocused ||
+            request.autocompleteVisible
         ) {
-            timelineState.animateScrollToItem(timelineItems.lastIndex)
-        }
-    }
-
-    LaunchedEffect(
-        thread.id,
-        composerFocused,
-        imeVisible,
-        keepTimelinePinnedToBottom,
-        lastTimelineItemId,
-    ) {
-        if (
-            timelineItems.isNotEmpty() &&
-            composerFocused &&
-            imeVisible &&
-            keepTimelinePinnedToBottom
-        ) {
-            timelineState.animateScrollToItem(timelineItems.lastIndex)
+            withFrameNanos { }
+            timelineState.scrollToItem(request.targetIndex)
         }
     }
 
@@ -345,6 +383,13 @@ fun ConversationScreen(
                                     accessoryState = blockAccessories[message.id],
                                     assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
                                     onTapAssistantRevert = onStartAssistantRevertPreview,
+                                )
+                            }
+                            item(key = "conversation-bottom-anchor") {
+                                Spacer(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(ConversationBottomAnchorHeight),
                                 )
                             }
                         }
