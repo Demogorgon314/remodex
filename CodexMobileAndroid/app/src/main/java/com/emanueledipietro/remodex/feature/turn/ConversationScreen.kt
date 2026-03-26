@@ -96,10 +96,17 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
@@ -3223,11 +3230,13 @@ private fun ThinkingConversationRow(
     ) {
         when {
             activityPreview != null -> {
-                ThinkingTitle(isStreaming = item.isStreaming)
-                ThinkingActivityPreviewText(
-                    preview = activityPreview,
-                    chrome = chrome,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    ThinkingTitle(isStreaming = item.isStreaming)
+                    ThinkingActivityPreviewText(
+                        preview = activityPreview,
+                        chrome = chrome,
+                    )
+                }
             }
 
             thinkingText.isEmpty() -> {
@@ -3235,20 +3244,24 @@ private fun ThinkingConversationRow(
             }
 
             item.isStreaming -> {
-                ThinkingTitle(isStreaming = true)
-                StreamingThinkingPreviewText(
-                    text = thinkingText,
-                    chrome = chrome,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ThinkingTitle(isStreaming = true)
+                    StreamingThinkingPreviewText(
+                        text = thinkingText,
+                        chrome = chrome,
+                    )
+                }
             }
 
             else -> {
-                ThinkingTitle(isStreaming = item.isStreaming)
-                ThinkingDisclosureContentView(
-                    messageId = item.id,
-                    content = thinkingContent,
-                    chrome = chrome,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ThinkingTitle(isStreaming = item.isStreaming)
+                    ThinkingDisclosureContentView(
+                        messageId = item.id,
+                        content = thinkingContent,
+                        chrome = chrome,
+                    )
+                }
             }
         }
         item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
@@ -3272,7 +3285,7 @@ private fun StreamingThinkingPreviewText(
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
-        color = chrome.secondaryText,
+        color = chrome.secondaryText.copy(alpha = 0.86f),
         maxLines = 6,
         overflow = TextOverflow.Ellipsis,
     )
@@ -3285,8 +3298,16 @@ private fun ThinkingTitle(
     val chrome = remodexConversationChrome()
     Text(
         text = "Thinking...",
-        style = MaterialTheme.typography.labelMedium,
+        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
         color = chrome.secondaryText.copy(alpha = if (isStreaming) 0.92f else 1f),
+        modifier = Modifier.remodexLabelShimmer(
+            enabled = isStreaming,
+            durationMillis = 1600,
+            highlightAlpha = 0.45f,
+            bandCoverage = 0.6f,
+            startPhase = -0.6f,
+            endPhase = 1.4f,
+        ),
     )
 }
 
@@ -3321,7 +3342,7 @@ private fun ThinkingActivityPreviewText(
                 append(remainder)
             }
         },
-        style = MaterialTheme.typography.labelMedium,
+        style = MaterialTheme.typography.labelSmall,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )
@@ -3818,25 +3839,20 @@ private fun CommandExecutionConversationRow(
     onOpenDetails: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    val commandRows = remember(item.text) {
-        item.text
-            .lineSequence()
-            .map(String::trim)
-            .filter(String::isNotEmpty)
-            .toList()
-    }
-    val parsedRows = remember(commandRows) {
-        commandRows.map { line -> parseCommandExecutionStatus(line) }
+    val resolvedRows = remember(item.text, item.isStreaming, details) {
+        resolvedCommandExecutionStatusPresentations(
+            item = item,
+            details = details,
+        )
     }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (parsedRows.all { it != null } && parsedRows.isNotEmpty()) {
-            parsedRows.filterNotNull().forEachIndexed { index, status ->
+        if (resolvedRows.isNotEmpty()) {
+            resolvedRows.forEachIndexed { index, status ->
                 CommandExecutionStatusCard(
                     status = status,
-                    details = details,
                     onClick = if (index == 0) {
                         onOpenDetails
                     } else {
@@ -4034,19 +4050,19 @@ private fun SubagentActionRow(
     }
 }
 
-private enum class CommandExecutionStatusAccent {
+internal enum class CommandExecutionStatusAccent {
     RUNNING,
     COMPLETED,
     FAILED,
 }
 
-private data class CommandExecutionStatusPresentation(
+internal data class CommandExecutionStatusPresentation(
     val command: String,
     val statusLabel: String,
     val accent: CommandExecutionStatusAccent,
 )
 
-private data class HumanizedCommandInfo(
+internal data class HumanizedCommandInfo(
     val verb: String,
     val target: String,
 )
@@ -4054,37 +4070,23 @@ private data class HumanizedCommandInfo(
 @Composable
 private fun CommandExecutionStatusCard(
     status: CommandExecutionStatusPresentation,
-    details: RemodexCommandExecutionDetails?,
     onClick: (() -> Unit)?,
 ) {
-    val chrome = remodexConversationChrome()
     val clickableModifier = if (onClick != null) {
         Modifier.clickable(onClick = onClick)
     } else {
         Modifier
     }
-    Surface(
-        color = chrome.panelSurface,
-        shape = RemodexConversationShapes.card,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
-    ) {
-        CommandExecutionCardBody(
-            status = status,
-            details = details,
-            modifier = clickableModifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            showsChevron = onClick != null,
-        )
-    }
+    CommandExecutionCardBody(
+        status = status,
+        modifier = clickableModifier.fillMaxWidth(),
+        showsChevron = onClick != null,
+    )
 }
 
 @Composable
 private fun CommandExecutionCardBody(
     status: CommandExecutionStatusPresentation,
-    details: RemodexCommandExecutionDetails?,
     modifier: Modifier = Modifier,
     showsChevron: Boolean,
 ) {
@@ -4096,37 +4098,37 @@ private fun CommandExecutionCardBody(
         )
     }
     val accentColor = when (status.accent) {
-        CommandExecutionStatusAccent.RUNNING -> chrome.secondaryText.copy(alpha = 0.72f)
-        CommandExecutionStatusAccent.COMPLETED -> chrome.secondaryText.copy(alpha = 0.72f)
+        CommandExecutionStatusAccent.RUNNING -> chrome.secondaryText.copy(alpha = 0.5f)
+        CommandExecutionStatusAccent.COMPLETED -> chrome.secondaryText.copy(alpha = 0.5f)
         CommandExecutionStatusAccent.FAILED -> chrome.destructive
     }
 
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        Column(
+        Text(
+            text = buildAnnotatedString {
+                withStyle(
+                    SpanStyle(
+                        color = chrome.secondaryText,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                ) {
+                    append(humanized.verb)
+                }
+                withStyle(SpanStyle(color = chrome.tertiaryText)) {
+                    append(" ")
+                    append(humanized.target)
+                }
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(
-                text = "${humanized.verb} ${humanized.target}",
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.bodyText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (details?.cwd?.isNotBlank() == true) {
-                Text(
-                    text = details.cwd,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = chrome.tertiaryText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
+        )
+        Spacer(modifier = Modifier.width(6.dp))
         Text(
             text = status.statusLabel,
             style = MaterialTheme.typography.labelSmall,
@@ -4138,7 +4140,8 @@ private fun CommandExecutionCardBody(
                 contentDescription = null,
                 tint = chrome.tertiaryText,
                 modifier = Modifier
-                    .size(14.dp)
+                    .padding(start = 4.dp)
+                    .size(10.dp)
                     .graphicsLayer { rotationZ = -90f },
             )
         }
@@ -4368,7 +4371,7 @@ private fun TerminalRunningIndicator() {
             .testTag(ConversationRunningIndicatorTag)
             .padding(top = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Surface(
             shape = CircleShape,
@@ -4403,6 +4406,14 @@ private fun TerminalRunningIndicator() {
             text = "Remodex is thinking...",
             style = MaterialTheme.typography.labelSmall,
             color = chrome.secondaryText,
+            modifier = Modifier.remodexLabelShimmer(
+                enabled = true,
+                durationMillis = 4000,
+                highlightAlpha = 0.35f,
+                bandCoverage = 0.5f,
+                startPhase = -0.5f,
+                endPhase = 5f,
+            ),
         )
     }
 }
@@ -4490,7 +4501,7 @@ private fun buildConversationBlockAccessories(
     return accessories
 }
 
-private fun parseCommandExecutionStatus(text: String): CommandExecutionStatusPresentation? {
+internal fun parseCommandExecutionStatus(text: String): CommandExecutionStatusPresentation? {
     val parts = text.trim().split(Regex("\\s+"), limit = 2)
     val first = parts.firstOrNull()?.lowercase() ?: return null
     val commandLabel = parts.getOrNull(1)?.trim().orEmpty().ifBlank { "command" }
@@ -4515,7 +4526,82 @@ private fun parseCommandExecutionStatus(text: String): CommandExecutionStatusPre
     }
 }
 
-private fun humanizeCommand(
+internal fun resolvedCommandExecutionStatusPresentations(
+    item: RemodexConversationItem,
+    details: RemodexCommandExecutionDetails?,
+): List<CommandExecutionStatusPresentation> {
+    val parsedRows = item.text
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .mapNotNull(::parseCommandExecutionStatus)
+        .toList()
+    if (parsedRows.isNotEmpty()) {
+        return parsedRows.mapIndexed { index, status ->
+            resolveCommandExecutionStatusPresentation(
+                status = status,
+                item = item,
+                details = if (index == 0) details else null,
+            )
+        }
+    }
+    val fallbackStatus = fallbackCommandExecutionStatusPresentation(
+        item = item,
+        details = details,
+    ) ?: return emptyList()
+    return listOf(fallbackStatus)
+}
+
+internal fun resolveCommandExecutionStatusPresentation(
+    status: CommandExecutionStatusPresentation,
+    item: RemodexConversationItem,
+    details: RemodexCommandExecutionDetails?,
+): CommandExecutionStatusPresentation {
+    val resolvedAccent = when {
+        details?.exitCode?.let { it != 0 } == true -> CommandExecutionStatusAccent.FAILED
+        details?.exitCode == 0 -> CommandExecutionStatusAccent.COMPLETED
+        !item.isStreaming && status.accent == CommandExecutionStatusAccent.RUNNING -> CommandExecutionStatusAccent.COMPLETED
+        !item.isStreaming && details != null -> CommandExecutionStatusAccent.COMPLETED
+        else -> status.accent
+    }
+    val resolvedStatusLabel = when {
+        resolvedAccent == CommandExecutionStatusAccent.FAILED && status.statusLabel == "stopped" -> "stopped"
+        resolvedAccent == CommandExecutionStatusAccent.FAILED -> "failed"
+        resolvedAccent == CommandExecutionStatusAccent.COMPLETED -> "completed"
+        else -> "running"
+    }
+    return status.copy(
+        command = details?.fullCommand?.takeIf(String::isNotBlank) ?: status.command,
+        statusLabel = resolvedStatusLabel,
+        accent = resolvedAccent,
+    )
+}
+
+private fun fallbackCommandExecutionStatusPresentation(
+    item: RemodexConversationItem,
+    details: RemodexCommandExecutionDetails?,
+): CommandExecutionStatusPresentation? {
+    val fullCommand = details?.fullCommand?.trim().orEmpty()
+    if (fullCommand.isEmpty()) {
+        return null
+    }
+    val accent = when {
+        details?.exitCode?.let { it != 0 } == true -> CommandExecutionStatusAccent.FAILED
+        !item.isStreaming || details?.exitCode == 0 || details?.durationMs != null -> CommandExecutionStatusAccent.COMPLETED
+        else -> CommandExecutionStatusAccent.RUNNING
+    }
+    return CommandExecutionStatusPresentation(
+        command = fullCommand,
+        statusLabel = when (accent) {
+            CommandExecutionStatusAccent.RUNNING -> "running"
+            CommandExecutionStatusAccent.COMPLETED -> "completed"
+            CommandExecutionStatusAccent.FAILED -> "failed"
+        },
+        accent = accent,
+    )
+}
+
+internal fun humanizeCommand(
     raw: String,
     isRunning: Boolean,
 ): HumanizedCommandInfo {
@@ -4565,6 +4651,51 @@ private fun humanizeCommand(
             target = command.ifBlank { "command" },
         )
     }
+}
+
+private fun Modifier.remodexLabelShimmer(
+    enabled: Boolean,
+    durationMillis: Int,
+    highlightAlpha: Float,
+    bandCoverage: Float,
+    startPhase: Float,
+    endPhase: Float,
+): Modifier = composed {
+    if (!enabled) {
+        return@composed this
+    }
+    val transition = rememberInfiniteTransition(label = "remodex_label_shimmer")
+    val phase by transition.animateFloat(
+        initialValue = startPhase,
+        targetValue = endPhase,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = durationMillis, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "remodex_label_shimmer_phase",
+    )
+    graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+        .drawWithContent {
+            drawContent()
+            if (size.width <= 0f || size.height <= 0f) {
+                return@drawWithContent
+            }
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.White.copy(alpha = highlightAlpha),
+                        Color.White.copy(alpha = highlightAlpha),
+                        Color.Transparent,
+                    ),
+                    startX = phase * size.width,
+                    endX = phase * size.width + size.width * bandCoverage,
+                ),
+                topLeft = Offset.Zero,
+                size = Size(size.width, size.height),
+                blendMode = BlendMode.SrcAtop,
+            )
+        }
 }
 
 private fun unwrapShellCommand(raw: String): String {

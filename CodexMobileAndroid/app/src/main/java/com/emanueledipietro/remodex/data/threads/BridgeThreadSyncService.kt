@@ -1686,6 +1686,17 @@ class BridgeThreadSyncService(
             )
         }
         if (kind == ConversationItemKind.COMMAND_EXECUTION && isCompleted && existingItem != null) {
+            publishCommandExecutionStatus(
+                context = NotificationContext(
+                    threadId = threadId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    payloadObject = itemObject,
+                ),
+                payloadObject = itemObject,
+                isCompleted = true,
+                onlyIfMissing = false,
+            )
             appendTimelineMutation(
                 threadId = threadId,
                 mutation = TimelineMutation.Complete(messageId = messageId),
