@@ -61,6 +61,7 @@ import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Speed
@@ -147,6 +148,8 @@ import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
+import com.emanueledipietro.remodex.model.RemodexSubagentThreadPresentation
+import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
@@ -253,6 +256,8 @@ fun ConversationScreen(
     onPushGitChanges: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
     onForkThread: (RemodexComposerForkDestination) -> Unit,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
     onStartAssistantRevertPreview: (String) -> Unit,
     onConfirmAssistantRevert: () -> Unit,
     onDismissAssistantRevertSheet: () -> Unit,
@@ -444,6 +449,11 @@ fun ConversationScreen(
                                     onOpenCommandExecutionDetails = { messageId ->
                                         commandDetailsMessageId = messageId
                                     },
+                                    parentThreadId = thread.id,
+                                    threads = uiState.threads,
+                                    parentThreadMessages = thread.messages,
+                                    onOpenSubagentThread = onOpenSubagentThread,
+                                    onHydrateSubagentThread = onHydrateSubagentThread,
                                 )
                             }
                             item(key = "conversation-bottom-anchor") {
@@ -2946,6 +2956,11 @@ private fun ConversationBubble(
     commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
+    parentThreadId: String,
+    threads: List<RemodexThreadSummary>,
+    parentThreadMessages: List<RemodexConversationItem>,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
 ) {
     when (item.speaker) {
         ConversationSpeaker.USER -> UserConversationRow(item = item)
@@ -2962,6 +2977,11 @@ private fun ConversationBubble(
             commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
             onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
+            parentThreadId = parentThreadId,
+            threads = threads,
+            parentThreadMessages = parentThreadMessages,
+            onOpenSubagentThread = onOpenSubagentThread,
+            onHydrateSubagentThread = onHydrateSubagentThread,
         )
     }
 }
@@ -3089,6 +3109,11 @@ private fun SystemConversationRow(
     commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
+    parentThreadId: String,
+    threads: List<RemodexThreadSummary>,
+    parentThreadMessages: List<RemodexConversationItem>,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
 ) {
     when (item.kind) {
         ConversationItemKind.REASONING -> ThinkingConversationRow(
@@ -3113,6 +3138,11 @@ private fun SystemConversationRow(
         ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(
             item = item,
             accessoryState = accessoryState,
+            parentThreadId = parentThreadId,
+            threads = threads,
+            parentThreadMessages = parentThreadMessages,
+            onOpenSubagentThread = onOpenSubagentThread,
+            onHydrateSubagentThread = onHydrateSubagentThread,
         )
         ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(item.structuredUserInputRequest)
         ConversationItemKind.PLAN -> Unit
@@ -3840,10 +3870,37 @@ private fun CommandExecutionConversationRow(
 private fun SubagentActionRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
+    parentThreadId: String,
+    threads: List<RemodexThreadSummary>,
+    parentThreadMessages: List<RemodexConversationItem>,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
 ) {
-    val chrome = remodexConversationChrome()
     val action = item.subagentAction
+    if (action == null) {
+        DefaultSystemRow(item = item, accessoryState = accessoryState)
+        return
+    }
+    val chrome = remodexConversationChrome()
     var expanded by rememberSaveable(item.id) { mutableStateOf(true) }
+    var selectedAgentDetails by remember(item.id) { mutableStateOf<RemodexSubagentThreadPresentation?>(null) }
+    val resolvedRows = remember(action, threads, parentThreadId, parentThreadMessages) {
+        action.agentRows.map { presentation ->
+            resolveSubagentPresentation(
+                presentation = presentation,
+                parentThreadId = parentThreadId,
+                threads = threads,
+                parentThreadMessages = parentThreadMessages,
+            )
+        }
+    }
+    LaunchedEffect(resolvedRows.map(RemodexSubagentThreadPresentation::threadId)) {
+        resolvedRows
+            .map(RemodexSubagentThreadPresentation::threadId)
+            .filter(String::isNotBlank)
+            .distinct()
+            .forEach(onHydrateSubagentThread)
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -3856,7 +3913,7 @@ private fun SubagentActionRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = action?.summaryText ?: item.text,
+                text = action.summaryText,
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
                 modifier = Modifier.weight(1f),
@@ -3870,49 +3927,56 @@ private fun SubagentActionRow(
                     .graphicsLayer { rotationZ = if (expanded) 0f else -90f },
             )
         }
-        if (expanded) {
-            action?.agentRows?.forEach { row ->
-                Surface(
-                    color = chrome.nestedSurface,
-                    shape = RemodexConversationShapes.nestedCard,
-                    border = BorderStroke(1.dp, chrome.subtleBorder),
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            text = row.displayLabel,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = chrome.titleText,
+        if (expanded && resolvedRows.isNotEmpty()) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(subagentAgentRowSpacing(action.normalizedTool)),
+                modifier = Modifier.padding(top = subagentAgentRowsTopPadding(action.normalizedTool)),
+            ) {
+                resolvedRows.forEach { row ->
+                    val observedThread = remember(row.threadId, threads) {
+                        observedSubagentThread(
+                            presentation = row,
+                            threads = threads,
                         )
-                        readableSubagentStatus(
-                            action = action,
-                            rawStatus = row.fallbackStatus,
-                        )?.let { status ->
-                            Text(
-                                text = status,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = subagentStatusColor(
-                                    chrome = chrome,
-                                    action = action,
-                                    rawStatus = row.fallbackStatus,
-                                ),
-                            )
-                        }
-                        row.fallbackMessage?.takeIf(String::isNotBlank)?.let { message ->
-                            Text(
-                                text = message,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = chrome.secondaryText,
-                            )
-                        }
                     }
+                    val status = remember(action, row, observedThread) {
+                        resolvedSubagentStatusPresentation(
+                            action = action,
+                            presentation = row,
+                            observedThread = observedThread,
+                        )
+                    }
+                    val statusText = remember(action.normalizedTool, status.label) {
+                        readableSubagentStatus(
+                            normalizedTool = action.normalizedTool,
+                            label = status.label,
+                        )
+                    }
+                    val detailModelLabel = remember(row, observedThread) {
+                        resolvedSubagentModelLabel(
+                            presentation = row,
+                            observedThread = observedThread,
+                        )
+                    }
+                    val detailText = remember(action.prompt, row.prompt, row.fallbackMessage) {
+                        detailSubagentText(
+                            action = action,
+                            presentation = row,
+                        )
+                    }
+                    SubagentAgentRowView(
+                        title = resolvedSubagentTitle(row),
+                        statusText = statusText,
+                        modelLabel = if (action.normalizedTool == "spawnagent") null else detailModelLabel,
+                        showsDetails = detailText != null || detailModelLabel != null,
+                        onShowDetails = {
+                            selectedAgentDetails = row
+                        },
+                        onOpen = {
+                            selectedAgentDetails = null
+                            onOpenSubagentThread(row.threadId)
+                        },
+                    )
                 }
             }
         }
@@ -3922,6 +3986,51 @@ private fun SubagentActionRow(
         if (accessoryState?.showsRunningIndicator == true) {
             TerminalRunningIndicator()
         }
+    }
+    selectedAgentDetails?.let { selected ->
+        val observedThread = remember(selected.threadId, threads) {
+            observedSubagentThread(
+                presentation = selected,
+                threads = threads,
+            )
+        }
+        val status = remember(action, selected, observedThread) {
+            resolvedSubagentStatusPresentation(
+                action = action,
+                presentation = selected,
+                observedThread = observedThread,
+            )
+        }
+        val modelLabel = remember(selected, observedThread) {
+            resolvedSubagentModelLabel(
+                presentation = selected,
+                observedThread = observedThread,
+                prefixRequested = false,
+            )
+        }
+        val detailText = remember(action.prompt, selected.prompt, selected.fallbackMessage) {
+            detailSubagentText(
+                action = action,
+                presentation = selected,
+            )
+        }
+        SubagentAgentDetailSheet(
+            title = resolvedSubagentTitle(selected),
+            accentColor = subagentNicknameColorForTitle(resolvedSubagentTitle(selected)),
+            statusText = readableSubagentStatus(
+                normalizedTool = action.normalizedTool,
+                label = status.label,
+            ),
+            modelTitle = if (selected.modelIsRequestedHint) "Requested model" else "Model",
+            modelLabel = modelLabel,
+            instructionText = trimmedSubagentValue(selected.prompt) ?: trimmedSubagentValue(action.prompt),
+            latestUpdateText = trimmedSubagentValue(selected.fallbackMessage),
+            onDismiss = { selectedAgentDetails = null },
+            onOpen = {
+                selectedAgentDetails = null
+                onOpenSubagentThread(selected.threadId)
+            },
+        )
     }
 }
 
@@ -4600,12 +4709,264 @@ private fun gitHumanizedCommand(
     }
 }
 
+@Composable
+private fun SubagentAgentRowView(
+    title: String,
+    statusText: String,
+    modelLabel: String?,
+    showsDetails: Boolean,
+    onShowDetails: (() -> Unit)?,
+    onOpen: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Surface(
+            color = chrome.nestedSurface,
+            shape = RemodexConversationShapes.nestedCard,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+            modifier = Modifier.weight(1f),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = onOpen != null) { onOpen?.invoke() }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = styledSubagentTitleAndStatus(
+                        title = title,
+                        statusText = statusText,
+                        statusColor = chrome.secondaryText,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!modelLabel.isNullOrBlank()) {
+                    Text(
+                        text = modelLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = chrome.secondaryText,
+                        maxLines = 1,
+                    )
+                }
+                if (onOpen != null) {
+                    Icon(
+                        imageVector = Icons.Outlined.ExpandMore,
+                        contentDescription = null,
+                        tint = chrome.tertiaryText,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .graphicsLayer { rotationZ = -90f },
+                    )
+                }
+            }
+        }
+        if (showsDetails && onShowDetails != null) {
+            IconButton(onClick = onShowDetails) {
+                Icon(
+                    imageVector = Icons.Outlined.Info,
+                    contentDescription = "Subagent details",
+                    tint = chrome.secondaryText,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SubagentAgentDetailSheet(
+    title: String,
+    accentColor: Color,
+    statusText: String,
+    modelTitle: String,
+    modelLabel: String?,
+    instructionText: String?,
+    latestUpdateText: String?,
+    onDismiss: () -> Unit,
+    onOpen: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = styledSubagentTitle(title),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TextButton(onClick = onDismiss) {
+                    Text("Done")
+                }
+            }
+
+            Surface(
+                color = chrome.panelSurface,
+                shape = RemodexConversationShapes.card,
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Surface(
+                        color = accentColor.copy(alpha = 0.18f),
+                        shape = CircleShape,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(color = accentColor, shape = CircleShape),
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = "Status",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = chrome.secondaryText,
+                        )
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
+                        )
+                    }
+                }
+            }
+
+            if (!modelLabel.isNullOrBlank()) {
+                SubagentDetailSection(
+                    title = modelTitle,
+                    value = modelLabel,
+                    monospace = true,
+                )
+            }
+
+            if (!instructionText.isNullOrBlank()) {
+                SubagentDetailSection(
+                    title = "Instructions",
+                    value = instructionText,
+                )
+            }
+
+            if (!latestUpdateText.isNullOrBlank()) {
+                SubagentDetailSection(
+                    title = "Latest update",
+                    value = latestUpdateText,
+                )
+            }
+
+            if (instructionText.isNullOrBlank() && latestUpdateText.isNullOrBlank()) {
+                Text(
+                    text = "No extra details yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+
+            onOpen?.let { openChildThread ->
+                Button(
+                    onClick = {
+                        onDismiss()
+                        openChildThread()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Open child thread")
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.graphicsLayer { rotationZ = -90f },
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun SubagentDetailSection(
+    title: String,
+    value: String,
+    monospace: Boolean = false,
+) {
+    val chrome = remodexConversationChrome()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelSmall,
+            color = chrome.secondaryText,
+        )
+        Text(
+            text = value,
+            style = if (monospace) {
+                MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+            } else {
+                MaterialTheme.typography.bodySmall
+            },
+            color = chrome.bodyText,
+        )
+    }
+}
+
+private fun resolvedSubagentStatusPresentation(
+    action: RemodexSubagentAction,
+    presentation: RemodexSubagentThreadPresentation,
+    observedThread: RemodexThreadSummary?,
+): SubagentStatusPresentation {
+    if (observedThread?.isRunning == true) {
+        return SubagentStatusPresentation(rawStatus = "running")
+    }
+    if (presentation.fallbackStatus == null) {
+        return SubagentStatusPresentation(rawStatus = action.status)
+    }
+    return SubagentStatusPresentation(rawStatus = presentation.fallbackStatus)
+}
+
 private fun readableSubagentStatus(
-    action: RemodexSubagentAction?,
-    rawStatus: String?,
-): String? {
-    val label = normalizedSubagentStatus(rawStatus ?: action?.status)
-    return when (action?.normalizedTool) {
+    normalizedTool: String,
+    label: String,
+): String {
+    return when (normalizedTool) {
         "spawnagent" -> when (label) {
             "running" -> "Starting child thread"
             "completed" -> "Child thread created"
@@ -4657,26 +5018,291 @@ private fun readableSubagentStatus(
     }
 }
 
-private fun normalizedSubagentStatus(rawStatus: String?): String {
-    return rawStatus?.trim()
-        ?.lowercase()
-        ?.replace("_", "")
-        ?.replace("-", "")
-        ?.ifBlank { null }
-        ?: "idle"
+private fun resolveSubagentPresentation(
+    presentation: RemodexSubagentThreadPresentation,
+    parentThreadId: String,
+    threads: List<RemodexThreadSummary>,
+    parentThreadMessages: List<RemodexConversationItem>,
+): RemodexSubagentThreadPresentation {
+    val normalizedThreadId = normalizedSubagentIdentifier(presentation.threadId)
+    val normalizedAgentId = normalizedSubagentIdentifier(presentation.agentId)
+    var resolvedThreadId = normalizedThreadId
+    var resolvedAgentId = normalizedAgentId
+    var resolvedNickname = normalizedSubagentIdentifier(presentation.nickname)
+    var resolvedRole = normalizedSubagentIdentifier(presentation.role)
+    var resolvedModel = normalizedSubagentModelLabel(presentation.model)
+    var resolvedModelIsRequestedHint = presentation.modelIsRequestedHint
+    var resolvedPrompt = normalizedSubagentIdentifier(presentation.prompt)
+
+    fun mergeThreadMetadata(thread: RemodexThreadSummary?) {
+        if (thread == null) {
+            return
+        }
+        if (resolvedThreadId == null) {
+            resolvedThreadId = normalizedSubagentIdentifier(thread.id)
+        }
+        normalizedSubagentIdentifier(thread.agentNickname)?.let { resolvedNickname = it }
+        normalizedSubagentIdentifier(thread.agentRole)?.let { resolvedRole = it }
+        normalizedSubagentModelLabel(thread.runtimeConfig.selectedModelId)?.let {
+            resolvedModel = it
+            resolvedModelIsRequestedHint = false
+        }
+    }
+
+    threads.firstOrNull { thread ->
+        normalizedSubagentIdentifier(thread.id) == normalizedThreadId
+    }?.let(::mergeThreadMetadata)
+
+    val lookupIdentifiers = setOfNotNull(normalizedThreadId, normalizedAgentId)
+    if (lookupIdentifiers.isNotEmpty()) {
+        outer@for (message in parentThreadMessages.asReversed()) {
+            val action = message.subagentAction ?: continue
+            for (candidate in action.agentRows.asReversed()) {
+                val candidateThreadId = normalizedSubagentIdentifier(candidate.threadId)
+                val candidateAgentId = normalizedSubagentIdentifier(candidate.agentId)
+                val matchedIdentifiers = setOfNotNull(candidateThreadId, candidateAgentId)
+                if (lookupIdentifiers.intersect(matchedIdentifiers).isEmpty()) {
+                    continue
+                }
+
+                if (resolvedThreadId == null) {
+                    resolvedThreadId = candidateThreadId
+                }
+                if (resolvedAgentId == null) {
+                    resolvedAgentId = candidateAgentId
+                }
+                if (resolvedNickname == null) {
+                    resolvedNickname = normalizedSubagentIdentifier(candidate.nickname)
+                }
+                if (resolvedRole == null) {
+                    resolvedRole = normalizedSubagentIdentifier(candidate.role)
+                }
+                if (resolvedModel == null) {
+                    resolvedModel = normalizedSubagentModelLabel(candidate.model)
+                    resolvedModelIsRequestedHint = candidate.modelIsRequestedHint
+                }
+                if (resolvedPrompt == null) {
+                    resolvedPrompt = normalizedSubagentIdentifier(candidate.prompt)
+                }
+                threads.firstOrNull { thread ->
+                    normalizedSubagentIdentifier(thread.id) == candidateThreadId
+                }?.let(::mergeThreadMetadata)
+                break@outer
+            }
+        }
+    }
+
+    val finalThreadId = resolvedThreadId ?: normalizedThreadId ?: presentation.threadId
+    return RemodexSubagentThreadPresentation(
+        threadId = finalThreadId,
+        agentId = resolvedAgentId,
+        nickname = resolvedNickname,
+        role = resolvedRole,
+        model = resolvedModel,
+        modelIsRequestedHint = resolvedModelIsRequestedHint,
+        prompt = resolvedPrompt,
+        fallbackStatus = presentation.fallbackStatus,
+        fallbackMessage = presentation.fallbackMessage,
+    )
 }
 
-private fun subagentStatusColor(
-    chrome: RemodexConversationChrome,
-    action: RemodexSubagentAction?,
-    rawStatus: String?,
-): Color {
-    return when (normalizedSubagentStatus(rawStatus ?: action?.status)) {
-        "failed" -> chrome.destructive
-        "completed" -> chrome.secondaryText
-        "running" -> chrome.warning
-        else -> chrome.secondaryText
+private fun observedSubagentThread(
+    presentation: RemodexSubagentThreadPresentation,
+    threads: List<RemodexThreadSummary>,
+): RemodexThreadSummary? {
+    val normalizedThreadId = normalizedSubagentIdentifier(presentation.threadId)
+    return threads.firstOrNull { thread ->
+        normalizedSubagentIdentifier(thread.id) == normalizedThreadId
     }
+}
+
+private fun resolvedSubagentTitle(
+    presentation: RemodexSubagentThreadPresentation,
+): String = presentation.displayLabel
+
+private fun resolvedSubagentModelLabel(
+    presentation: RemodexSubagentThreadPresentation,
+    observedThread: RemodexThreadSummary?,
+    prefixRequested: Boolean = true,
+): String? {
+    normalizedSubagentModelLabel(presentation.model)?.let { model ->
+        return if (presentation.modelIsRequestedHint && prefixRequested) {
+            "requested: $model"
+        } else {
+            model
+        }
+    }
+    return normalizedSubagentModelLabel(observedThread?.runtimeConfig?.selectedModelId)
+}
+
+private fun detailSubagentText(
+    action: RemodexSubagentAction,
+    presentation: RemodexSubagentThreadPresentation,
+): String? {
+    val sections = mutableListOf<String>()
+    trimmedSubagentValue(presentation.prompt)
+        ?: trimmedSubagentValue(action.prompt)
+    ?.let(sections::add)
+    val latestUpdate = trimmedSubagentValue(presentation.fallbackMessage)
+    if (latestUpdate != null && latestUpdate !in sections) {
+        sections += if (sections.isEmpty()) latestUpdate else "Latest update: $latestUpdate"
+    }
+    return sections.filter(String::isNotBlank).takeIf(List<String>::isNotEmpty)?.joinToString("\n\n")
+}
+
+private fun subagentAgentRowSpacing(normalizedTool: String): androidx.compose.ui.unit.Dp {
+    return when (normalizedTool) {
+        "wait", "waitagent", "resumeagent" -> 9.dp
+        "spawnagent" -> 2.dp
+        else -> 4.dp
+    }
+}
+
+private fun subagentAgentRowsTopPadding(normalizedTool: String): androidx.compose.ui.unit.Dp {
+    return when (normalizedTool) {
+        "wait", "waitagent", "resumeagent" -> 3.dp
+        else -> 2.dp
+    }
+}
+
+private fun trimmedSubagentValue(value: String?): String? {
+    val trimmed = value?.trim().orEmpty()
+    return trimmed.takeIf(String::isNotEmpty)
+}
+
+private fun normalizedSubagentModelLabel(value: String?): String? {
+    val trimmed = trimmedSubagentValue(value) ?: return null
+    return if (trimmed.lowercase() == "openai") {
+        null
+    } else {
+        trimmed
+    }
+}
+
+private fun normalizedSubagentIdentifier(value: String?): String? {
+    val trimmed = value?.trim().orEmpty()
+    if (trimmed.isEmpty()) {
+        return null
+    }
+    return when (trimmed.lowercase()) {
+        "collabagenttoolcall", "collabtoolcall" -> null
+        else -> trimmed
+    }
+}
+
+private fun styledSubagentTitleAndStatus(
+    title: String,
+    statusText: String,
+    statusColor: Color,
+): AnnotatedString {
+    val parts = parseSubagentTitle(title)
+    return buildAnnotatedString {
+        withStyle(
+            style = SpanStyle(
+                color = subagentColorForName(parts.nickname),
+                fontWeight = FontWeight.SemiBold,
+            ),
+        ) {
+            append(parts.nickname)
+        }
+        if (parts.roleSuffix.isNotEmpty()) {
+            withStyle(style = SpanStyle(color = Color.Unspecified)) {
+                append(parts.roleSuffix)
+            }
+        }
+        withStyle(style = SpanStyle(color = statusColor)) {
+            append(" $statusText")
+        }
+    }
+}
+
+private fun styledSubagentTitle(title: String): AnnotatedString {
+    val parts = parseSubagentTitle(title)
+    return buildAnnotatedString {
+        withStyle(
+            style = SpanStyle(
+                color = subagentColorForName(parts.nickname),
+                fontWeight = FontWeight.SemiBold,
+            ),
+        ) {
+            append(parts.nickname)
+        }
+        if (parts.roleSuffix.isNotEmpty()) {
+            withStyle(style = SpanStyle(color = Color.Unspecified)) {
+                append(parts.roleSuffix)
+            }
+        }
+    }
+}
+
+private data class ParsedSubagentTitle(
+    val nickname: String,
+    val roleSuffix: String,
+)
+
+private fun parseSubagentTitle(title: String): ParsedSubagentTitle {
+    if (!title.endsWith("]")) {
+        return ParsedSubagentTitle(nickname = title, roleSuffix = "")
+    }
+    val openBracket = title.lastIndexOf('[')
+    if (openBracket == -1) {
+        return ParsedSubagentTitle(nickname = title, roleSuffix = "")
+    }
+    val nickname = title.substring(0, openBracket).trim()
+    val role = title.substring(openBracket + 1, title.length - 1).trim()
+    if (role.isEmpty()) {
+        return ParsedSubagentTitle(nickname = nickname.ifBlank { title }, roleSuffix = "")
+    }
+    val resolvedName = nickname.ifBlank { role.replaceFirstChar(Char::titlecase) }
+    return ParsedSubagentTitle(
+        nickname = resolvedName,
+        roleSuffix = " ($role)",
+    )
+}
+
+private fun subagentNicknameColorForTitle(title: String): Color {
+    return subagentColorForName(parseSubagentTitle(title).nickname)
+}
+
+private fun subagentColorForName(name: String): Color {
+    val palette = listOf(
+        Color(0xFFE64D4D),
+        Color(0xFF4DBF8C),
+        Color(0xFF668CF2),
+        Color(0xFFD99940),
+        Color(0xFFB373D9),
+        Color(0xFF40C7D1),
+        Color(0xFFE68099),
+        Color(0xFFA6BF4D),
+    )
+    var hash = 5381L
+    name.forEach { char ->
+        hash = ((hash shl 5) + hash) + char.code
+    }
+    return palette[(hash % palette.size).toInt().let { if (it < 0) it + palette.size else it }]
+}
+
+private data class SubagentStatusPresentation(
+    val rawStatus: String?,
+) {
+    val normalized: String
+        get() = rawStatus
+            ?.trim()
+            ?.lowercase()
+            ?.replace("_", "")
+            ?.replace("-", "")
+            .orEmpty()
+            .ifBlank { "unknown" }
+
+    val label: String
+        get() = when (normalized) {
+            "running", "inprogress" -> "running"
+            "completed", "done", "finished", "success" -> "completed"
+            "failed", "error", "errored" -> "failed"
+            "stopped", "cancelled", "canceled", "interrupted" -> "stopped"
+            "queued", "pending" -> "queued"
+            else -> "idle"
+        }
 }
 
 @Composable

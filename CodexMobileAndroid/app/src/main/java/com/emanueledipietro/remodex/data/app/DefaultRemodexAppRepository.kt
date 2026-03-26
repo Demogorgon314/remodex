@@ -188,6 +188,11 @@ class DefaultRemodexAppRepository(
         hydrationService?.refreshThreads()
     }
 
+    override suspend fun hydrateThread(threadId: String) {
+        val hydrationService = threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
+        hydrationService?.hydrateThread(threadId)
+    }
+
     override suspend fun selectThread(threadId: String) {
         val threadExists = session.value.threads.any { it.id == threadId } ||
             threadSyncService.threads.value.any { it.id == threadId }

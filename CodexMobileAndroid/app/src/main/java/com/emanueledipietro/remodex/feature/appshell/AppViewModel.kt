@@ -362,6 +362,15 @@ class AppViewModel(
         }
     }
 
+    fun hydrateThreadMetadata(threadId: String) {
+        if (threadId.isBlank()) {
+            return
+        }
+        viewModelScope.launch {
+            repository.hydrateThread(threadId)
+        }
+    }
+
     fun createThread(preferredProjectPath: String? = null) {
         viewModelScope.launch {
             repository.createThread(preferredProjectPath)

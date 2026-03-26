@@ -25,6 +25,8 @@ interface RemodexAppRepository {
 
     suspend fun refreshThreads()
 
+    suspend fun hydrateThread(threadId: String) = Unit
+
     suspend fun selectThread(threadId: String)
 
     suspend fun createThread(preferredProjectPath: String? = null)

@@ -576,6 +576,8 @@ private fun MainPane(
                             onPushGitChanges = viewModel::pushGitChanges,
                             onDiscardRuntimeChangesAndSync = viewModel::discardRuntimeChangesAndSync,
                             onForkThread = viewModel::forkThread,
+                            onOpenSubagentThread = viewModel::selectThread,
+                            onHydrateSubagentThread = viewModel::hydrateThreadMetadata,
                             onStartAssistantRevertPreview = viewModel::startAssistantRevertPreview,
                             onConfirmAssistantRevert = viewModel::confirmAssistantRevert,
                             onDismissAssistantRevertSheet = viewModel::dismissAssistantRevertSheet,
