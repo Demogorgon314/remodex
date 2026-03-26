@@ -83,6 +83,12 @@ class BridgeThreadSyncService(
     private val appVersionName: String = "1.0",
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) : ThreadSyncService, ThreadCommandService, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService {
+    private data class DecodedHistoryItem(
+        val timestampMs: Long,
+        val sequence: Long,
+        val item: com.emanueledipietro.remodex.model.RemodexConversationItem,
+    )
+
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
@@ -140,7 +146,7 @@ class BridgeThreadSyncService(
             .map { incoming ->
                 val existing = existingById[incoming.id]
                 incoming.copy(
-                    isRunning = threadHasKnownRunningState(incoming.id) || existing?.isRunning == true,
+                    isRunning = threadHasKnownRunningState(incoming.id),
                     timelineMutations = existing?.timelineMutations ?: incoming.timelineMutations,
                     runtimeConfig = mergeRuntimeConfig(
                         existing = existing?.runtimeConfig,
@@ -233,7 +239,7 @@ class BridgeThreadSyncService(
             existing = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty(),
             history = TurnTimelineReducer.reduce(historyItems),
             threadIsActive = threadHasKnownRunningState(threadId),
-            threadIsRunning = threadHasKnownRunningState(threadId) || existingSnapshot?.isRunning == true,
+            threadIsRunning = threadHasKnownRunningState(threadId),
         )
         val refreshedSnapshot = parseThreadSnapshot(
             threadObject = threadObject,
@@ -241,7 +247,7 @@ class BridgeThreadSyncService(
             existing = existingSnapshot,
         )?.copy(
             timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
-            isRunning = threadHasKnownRunningState(threadId) || existingSnapshot?.isRunning == true,
+            isRunning = threadHasKnownRunningState(threadId),
         ) ?: return null
         return refreshedSnapshot
     }
@@ -2966,7 +2972,7 @@ class BridgeThreadSyncService(
             projectPath = projectPath,
             lastUpdatedLabel = relativeUpdatedLabel(updatedEpochMs),
             lastUpdatedEpochMs = updatedEpochMs,
-            isRunning = threadHasKnownRunningState(id) || existing?.isRunning == true,
+            isRunning = threadHasKnownRunningState(id),
             syncState = syncState,
             parentThreadId = threadObject.firstString("parentThreadId", "parent_thread_id") ?: existing?.parentThreadId,
             agentNickname = threadObject.firstString("agentNickname", "agent_nickname") ?: existing?.agentNickname,
@@ -2986,12 +2992,14 @@ class BridgeThreadSyncService(
             "current_working_directory",
             "working_directory",
         )
-        val mutations = mutableListOf<TimelineMutation>()
-        var orderIndex = 0L
+        val decodedItems = mutableListOf<DecodedHistoryItem>()
+        val baseTimestampMs = decodeHistoryBaseTimestampMillis(threadObject) ?: 0L
+        var syntheticOffsetMs = 0L
 
         turns.forEach { turnValue ->
             val turnObject = turnValue.jsonObjectOrNull ?: return@forEach
             val turnId = turnObject.firstString("id", "turnId", "turn_id")
+            val turnTimestampMs = decodeHistoryTimestampMillis(turnObject)
             val items = turnObject.firstArray("items").orEmpty()
             val assistantMessageId = items.mapNotNull { itemValue ->
                 val itemObject = itemValue.jsonObjectOrNull ?: return@mapNotNull null
@@ -3014,6 +3022,10 @@ class BridgeThreadSyncService(
                 val itemObject = itemValue.jsonObjectOrNull ?: return@forEach
                 val itemType = normalizeItemType(itemObject.firstString("type").orEmpty())
                 val itemId = itemObject.firstString("id")
+                val syntheticTimestampMs = (turnTimestampMs ?: baseTimestampMs) + syntheticOffsetMs
+                val resolvedTimestampMs = decodeHistoryTimestampMillis(itemObject) ?: syntheticTimestampMs
+                val sequence = syntheticOffsetMs
+                syntheticOffsetMs += 1L
                 val text = decodeItemText(itemObject)
                 val speaker = when (itemType) {
                     "usermessage" -> ConversationSpeaker.USER
@@ -3103,9 +3115,11 @@ class BridgeThreadSyncService(
                     || structuredUserInputRequest != null
                     || subagentAction != null
                 ) {
-                    mutations += TimelineMutation.Upsert(
-                        timelineItem(
-                            id = itemId ?: "$threadId-history-$orderIndex",
+                    decodedItems += DecodedHistoryItem(
+                        timestampMs = resolvedTimestampMs,
+                        sequence = sequence,
+                        item = timelineItem(
+                            id = itemId ?: "$threadId-history-$sequence",
                             speaker = speaker,
                             text = resolvedText.ifBlank { itemType.replaceFirstChar { char -> char.titlecase(Locale.ROOT) } },
                             kind = kind,
@@ -3115,7 +3129,7 @@ class BridgeThreadSyncService(
                             planState = planState,
                             subagentAction = subagentAction,
                             structuredUserInputRequest = structuredUserInputRequest,
-                            orderIndex = orderIndex,
+                            orderIndex = 0L,
                             assistantChangeSet = if (
                                 speaker == ConversationSpeaker.ASSISTANT &&
                                 itemId != null &&
@@ -3127,12 +3141,52 @@ class BridgeThreadSyncService(
                             },
                         ),
                     )
-                    orderIndex += 1L
                 }
             }
         }
 
-        return mutations
+        return decodedItems
+            .sortedWith(compareBy<DecodedHistoryItem>({ it.timestampMs }, { it.sequence }))
+            .mapIndexed { index, decoded ->
+                TimelineMutation.Upsert(
+                    decoded.item.copy(orderIndex = index.toLong()),
+                )
+            }
+    }
+
+    private fun decodeHistoryBaseTimestampMillis(threadObject: JsonObject): Long? {
+        return decodeHistoryTimestampMillis(threadObject, "createdAt", "created_at")
+            ?: decodeHistoryTimestampMillis(threadObject, "updatedAt", "updated_at")
+    }
+
+    private fun decodeHistoryTimestampMillis(objectValue: JsonObject): Long? {
+        return decodeHistoryTimestampMillis(
+            objectValue,
+            "createdAt",
+            "created_at",
+            "timestamp",
+            "time",
+            "updatedAt",
+            "updated_at",
+        )
+    }
+
+    private fun decodeHistoryTimestampMillis(
+        objectValue: JsonObject,
+        vararg keys: String,
+    ): Long? {
+        keys.forEach { key ->
+            objectValue.firstDouble(key)?.let(::decodeTimestampMillis)?.let { return it }
+            objectValue.firstInt(key)?.toDouble()?.let(::decodeTimestampMillis)?.let { return it }
+            objectValue.firstString(key)
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let { raw ->
+                    raw.toDoubleOrNull()?.let(::decodeTimestampMillis)?.let { return it }
+                    runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()?.let { return it }
+                }
+        }
+        return null
     }
 
     private fun decodeHistoryReasoningBody(itemObject: JsonObject): String {

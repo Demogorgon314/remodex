@@ -357,6 +357,123 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `hydrate thread clears stale running state when latest thread read is idle`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-running-clear",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var threadReadCount = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-running-clear"))
+                                        put("title", JsonPrimitive("Thread that just finished"))
+                                        put("cwd", JsonPrimitive("/tmp/project-running-clear"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_334))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    threadReadCount += 1
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-running-clear"))
+                                put("title", JsonPrimitive("Thread that just finished"))
+                                put("cwd", JsonPrimitive("/tmp/project-running-clear"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                if (threadReadCount == 1) {
+                                                    put("status", JsonPrimitive("running"))
+                                                } else {
+                                                    put("status", JsonPrimitive("completed"))
+                                                }
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-live"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put(
+                                                                    "text",
+                                                                    JsonPrimitive(
+                                                                        if (threadReadCount == 1) {
+                                                                            "Still streaming without a stable turn id yet."
+                                                                        } else {
+                                                                            "Run has completed."
+                                                                        },
+                                                                    ),
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.hydrateThread("thread-running-clear")
+            advanceUntilIdle()
+            assertTrue(service.threads.value.first { it.id == "thread-running-clear" }.isRunning)
+
+            service.hydrateThread("thread-running-clear")
+            advanceUntilIdle()
+            assertFalse(service.threads.value.first { it.id == "thread-running-clear" }.isRunning)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `resume thread uses thread resume and refreshes snapshot history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -709,6 +826,122 @@ class BridgeThreadSyncServiceTest {
             assertEquals(0, details?.exitCode)
             assertEquals(1450, details?.durationMs)
             assertEquals("M app/src/Main.kt", details?.outputTail)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread orders command items before assistant replies when timestamps say they came first`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-command-order",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-command-order"))
+                                            put("title", JsonPrimitive("Command ordering thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-command-order"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_230))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-command-order"))
+                                put("title", JsonPrimitive("Command ordering thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-command-order"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-command-order"))
+                                                put("createdAt", JsonPrimitive(1_713_222_220))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-1"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("createdAt", JsonPrimitive(1_713_222_225))
+                                                                put("text", JsonPrimitive("The command finished successfully."))
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("command-item-1"))
+                                                                put("type", JsonPrimitive("command_execution"))
+                                                                put("createdAt", JsonPrimitive(1_713_222_223))
+                                                                put("summary", JsonPrimitive("completed git status --short"))
+                                                                put("command", JsonPrimitive("git status --short"))
+                                                                put("output", JsonPrimitive("M app/src/Main.kt"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+            service.hydrateThread("thread-command-order")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-command-order" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+            assertEquals(
+                listOf("command-item-1", "assistant-item-1"),
+                projected.map { it.id },
+            )
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

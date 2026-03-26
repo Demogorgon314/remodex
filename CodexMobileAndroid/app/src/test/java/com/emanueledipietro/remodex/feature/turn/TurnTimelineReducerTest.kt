@@ -227,6 +227,31 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project filters hidden push reset markers`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "visible-diff",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "Edited src/App.kt +2 -1",
+                    orderIndex = 0,
+                ),
+                RemodexConversationItem(
+                    id = "hidden-push-reset",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Reset per-chat diff totals after manual push",
+                    itemId = "git.push.reset.marker",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("visible-diff"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
     fun `project collapses repeated thinking rows inside the same system segment`() {
         val projected = TurnTimelineReducer.project(
             listOf(

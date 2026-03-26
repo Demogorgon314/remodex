@@ -6,6 +6,8 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 
 object TurnTimelineReducer {
+    private const val ManualPushResetMarkerItemId = "git.push.reset.marker"
+
     fun reduce(mutations: List<TimelineMutation>): List<RemodexConversationItem> {
         return mutations.fold(emptyList<RemodexConversationItem>()) { items, mutation ->
             reduce(items, mutation)
@@ -20,13 +22,23 @@ object TurnTimelineReducer {
         if (items.isEmpty()) {
             return emptyList()
         }
-        val reordered = enforceIntraTurnOrder(items)
+        val visibleItems = removeHiddenSystemMarkers(items)
+        val reordered = enforceIntraTurnOrder(visibleItems)
         val collapsedThinking = collapseThinkingMessages(reordered)
         val withoutCompletedThinkingPlaceholders = removeCompletedThinkingPlaceholders(collapsedThinking)
         val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(withoutCompletedThinkingPlaceholders)
         val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutCommandThinkingEchoes)
         val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
         return removeDuplicateAssistantMessages(dedupedSubagentActions)
+    }
+
+    private fun removeHiddenSystemMarkers(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        return items.filterNot { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.itemId == ManualPushResetMarkerItemId
+        }
     }
 
     fun reduce(
