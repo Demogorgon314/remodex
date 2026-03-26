@@ -9,6 +9,7 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -38,12 +39,14 @@ class FakeThreadSyncService(
 ) : ThreadSyncService, ThreadCommandService {
     private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
+    private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
     }.toMutableMap()
 
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
+    override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = backingCommandExecutionDetails
 
     fun updateThreads(threads: List<ThreadSyncSnapshot>) {
         backingThreads.value = threads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)

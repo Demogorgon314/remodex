@@ -19,6 +19,7 @@ import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -80,6 +81,8 @@ class DefaultRemodexAppRepository(
     )
 
     override val session: StateFlow<RemodexSessionSnapshot> = sessionState
+    override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
+        threadSyncService.commandExecutionDetails
 
     init {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {

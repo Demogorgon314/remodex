@@ -25,6 +25,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -344,6 +345,114 @@ class BridgeThreadSyncServiceTest {
             advanceUntilIdle()
 
             assertEquals(listOf(null), turnStartServiceTiers)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread restores command execution details`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-command-details",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-command"))
+                                            put("title", JsonPrimitive("Command thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-command"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_222))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-command"))
+                                put("title", JsonPrimitive("Command thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-command"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-command"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("command-item-1"))
+                                                                put("type", JsonPrimitive("command_execution"))
+                                                                put("command", JsonPrimitive("git status --short"))
+                                                                put("cwd", JsonPrimitive("/tmp/project-command"))
+                                                                put("exitCode", JsonPrimitive(0))
+                                                                put("durationMs", JsonPrimitive(1450))
+                                                                put("output", JsonPrimitive("M app/src/Main.kt"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+            service.hydrateThread("thread-command")
+            advanceUntilIdle()
+
+            val details = service.commandExecutionDetails.value["command-item-1"]
+            assertNotNull(details)
+            assertEquals("git status --short", details?.fullCommand)
+            assertEquals("/tmp/project-command", details?.cwd)
+            assertEquals(0, details?.exitCode)
+            assertEquals(1450, details?.durationMs)
+            assertEquals("M app/src/Main.kt", details?.outputTail)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

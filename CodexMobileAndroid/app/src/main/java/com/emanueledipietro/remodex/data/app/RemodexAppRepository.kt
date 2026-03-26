@@ -13,10 +13,12 @@ import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import kotlinx.coroutines.flow.StateFlow
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitState
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 
 interface RemodexAppRepository {
     val session: StateFlow<RemodexSessionSnapshot>
+    val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
 
     suspend fun completeOnboarding()
 

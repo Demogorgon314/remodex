@@ -49,6 +49,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -129,6 +130,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -151,6 +153,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import kotlinx.coroutines.flow.drop
+import java.util.Locale
 
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
@@ -234,6 +237,7 @@ fun ConversationScreen(
 
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var planSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     val pinnedPlanItem = thread.messages.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
     val timelineItems = thread.messages.filterNot { item -> item.id == pinnedPlanItem?.id }
@@ -292,6 +296,20 @@ fun ConversationScreen(
                 pinnedPlanItemId = pinnedPlanItem?.id,
             )
         }
+    }
+    val selectedCommandExecutionItem = remember(thread.messages, commandDetailsMessageId) {
+        commandDetailsMessageId?.let { messageId ->
+            thread.messages.firstOrNull { item -> item.id == messageId && item.kind == ConversationItemKind.COMMAND_EXECUTION }
+        }
+    }
+    val selectedCommandExecutionStatus = remember(selectedCommandExecutionItem?.text) {
+        selectedCommandExecutionItem
+            ?.text
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.map(::parseCommandExecutionStatus)
+            ?.firstOrNull { status -> status != null }
     }
 
     LaunchedEffect(thread.id, lastTimelineItemId) {
@@ -383,6 +401,10 @@ fun ConversationScreen(
                                     accessoryState = blockAccessories[message.id],
                                     assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
                                     onTapAssistantRevert = onStartAssistantRevertPreview,
+                                    commandExecutionDetailsByItemId = uiState.commandExecutionDetailsByItemId,
+                                    onOpenCommandExecutionDetails = { messageId ->
+                                        commandDetailsMessageId = messageId
+                                    },
                                 )
                             }
                             item(key = "conversation-bottom-anchor") {
@@ -532,6 +554,14 @@ fun ConversationScreen(
             PlanDetailsSheet(
                 planItem = pinnedPlanItem,
                 onDismiss = { planSheetExpanded = false },
+            )
+        }
+
+        if (selectedCommandExecutionItem != null && selectedCommandExecutionStatus != null) {
+            CommandExecutionDetailSheet(
+                status = selectedCommandExecutionStatus,
+                details = selectedCommandExecutionItem.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
+                onDismiss = { commandDetailsMessageId = null },
             )
         }
 
@@ -2864,6 +2894,8 @@ private fun ConversationBubble(
     accessoryState: ConversationBlockAccessoryState?,
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
     onTapAssistantRevert: (String) -> Unit,
+    commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    onOpenCommandExecutionDetails: (String) -> Unit,
 ) {
     when (item.speaker) {
         ConversationSpeaker.USER -> UserConversationRow(item = item)
@@ -2876,6 +2908,8 @@ private fun ConversationBubble(
         ConversationSpeaker.SYSTEM -> SystemConversationRow(
             item = item,
             accessoryState = accessoryState,
+            commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+            onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
         )
     }
 }
@@ -2961,6 +2995,8 @@ private fun AssistantConversationRow(
 private fun SystemConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
+    commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    onOpenCommandExecutionDetails: (String) -> Unit,
 ) {
     when (item.kind) {
         ConversationItemKind.REASONING -> ThinkingConversationRow(
@@ -2978,6 +3014,8 @@ private fun SystemConversationRow(
         ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
             item = item,
             accessoryState = accessoryState,
+            details = item.itemId?.let(commandExecutionDetailsByItemId::get),
+            onOpenDetails = { onOpenCommandExecutionDetails(item.id) },
         )
         ConversationItemKind.SUBAGENT_ACTION -> SubagentActionRow(
             item = item,
@@ -3285,6 +3323,8 @@ private fun FileChangeConversationRow(
 private fun CommandExecutionConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
+    details: RemodexCommandExecutionDetails?,
+    onOpenDetails: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val commandRows = remember(item.text) {
@@ -3302,8 +3342,16 @@ private fun CommandExecutionConversationRow(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (parsedRows.all { it != null } && parsedRows.isNotEmpty()) {
-            parsedRows.filterNotNull().forEach { status ->
-                CommandExecutionStatusLine(status = status)
+            parsedRows.filterNotNull().forEachIndexed { index, status ->
+                CommandExecutionStatusCard(
+                    status = status,
+                    details = details,
+                    onClick = if (index == 0) {
+                        onOpenDetails
+                    } else {
+                        null
+                    },
+                )
             }
         } else {
             item.text.takeIf(String::isNotBlank)?.let { text ->
@@ -3434,7 +3482,42 @@ private data class HumanizedCommandInfo(
 )
 
 @Composable
-private fun CommandExecutionStatusLine(status: CommandExecutionStatusPresentation) {
+private fun CommandExecutionStatusCard(
+    status: CommandExecutionStatusPresentation,
+    details: RemodexCommandExecutionDetails?,
+    onClick: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    val clickableModifier = if (onClick != null) {
+        Modifier.clickable(onClick = onClick)
+    } else {
+        Modifier
+    }
+    Surface(
+        color = chrome.panelSurface,
+        shape = RemodexConversationShapes.card,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        CommandExecutionCardBody(
+            status = status,
+            details = details,
+            modifier = clickableModifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            showsChevron = onClick != null,
+        )
+    }
+}
+
+@Composable
+private fun CommandExecutionCardBody(
+    status: CommandExecutionStatusPresentation,
+    details: RemodexCommandExecutionDetails?,
+    modifier: Modifier = Modifier,
+    showsChevron: Boolean,
+) {
     val chrome = remodexConversationChrome()
     val humanized = remember(status.command, status.accent) {
         humanizeCommand(
@@ -3443,30 +3526,224 @@ private fun CommandExecutionStatusLine(status: CommandExecutionStatusPresentatio
         )
     }
     val accentColor = when (status.accent) {
-        CommandExecutionStatusAccent.RUNNING -> chrome.warning
-        CommandExecutionStatusAccent.COMPLETED -> chrome.secondaryText.copy(alpha = 0.7f)
+        CommandExecutionStatusAccent.RUNNING -> chrome.secondaryText.copy(alpha = 0.72f)
+        CommandExecutionStatusAccent.COMPLETED -> chrome.secondaryText.copy(alpha = 0.72f)
         CommandExecutionStatusAccent.FAILED -> chrome.destructive
     }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            text = "${humanized.verb} ${humanized.target}",
+        Column(
             modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodySmall,
-            color = chrome.bodyText,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "${humanized.verb} ${humanized.target}",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.bodyText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (details?.cwd?.isNotBlank() == true) {
+                Text(
+                    text = details.cwd,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = chrome.tertiaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Text(
             text = status.statusLabel,
             style = MaterialTheme.typography.labelSmall,
             color = accentColor,
         )
+        if (showsChevron) {
+            Icon(
+                imageVector = Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = chrome.tertiaryText,
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer { rotationZ = -90f },
+            )
+        }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommandExecutionDetailSheet(
+    status: CommandExecutionStatusPresentation,
+    details: RemodexCommandExecutionDetails?,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
+    var outputExpanded by rememberSaveable(status.command) { mutableStateOf(false) }
+    val statusColor = when (status.accent) {
+        CommandExecutionStatusAccent.RUNNING -> chrome.accent
+        CommandExecutionStatusAccent.COMPLETED -> chrome.secondaryText
+        CommandExecutionStatusAccent.FAILED -> chrome.destructive
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Command",
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                    color = chrome.accent,
+                )
+                Surface(
+                    color = chrome.mutedSurface,
+                    shape = RemodexConversationShapes.card,
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = details?.fullCommand ?: status.command,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                            color = chrome.bodyText,
+                        )
+                    }
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                details?.cwd?.takeIf(String::isNotBlank)?.let { cwd ->
+                    CommandExecutionMetadataRow(
+                        label = "Directory",
+                        value = cwd,
+                    )
+                }
+                details?.exitCode?.let { exitCode ->
+                    CommandExecutionMetadataRow(
+                        label = "Exit code",
+                        value = exitCode.toString(),
+                        valueColor = if (exitCode == 0) chrome.accent else chrome.destructive,
+                    )
+                }
+                details?.durationMs?.let { durationMs ->
+                    CommandExecutionMetadataRow(
+                        label = "Duration",
+                        value = formatCommandExecutionDuration(durationMs),
+                    )
+                }
+                CommandExecutionMetadataRow(
+                    label = "Status",
+                    value = status.statusLabel,
+                    valueColor = statusColor,
+                )
+            }
+
+            details?.outputTail?.takeIf(String::isNotBlank)?.let { outputTail ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { outputExpanded = !outputExpanded },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = null,
+                            tint = chrome.secondaryText,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .graphicsLayer { rotationZ = if (outputExpanded) 0f else -90f },
+                        )
+                        Text(
+                            text = "Output (last ${RemodexCommandExecutionDetails.MaxOutputLines} lines)",
+                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                            color = chrome.secondaryText,
+                        )
+                    }
+                    if (outputExpanded) {
+                        Surface(
+                            color = chrome.mutedSurface,
+                            shape = RemodexConversationShapes.card,
+                            border = BorderStroke(1.dp, chrome.subtleBorder),
+                            shadowElevation = 0.dp,
+                            tonalElevation = 0.dp,
+                        ) {
+                            SelectionContainer {
+                                Text(
+                                    text = outputTail,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                                    color = chrome.bodyText,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun CommandExecutionMetadataRow(
+    label: String,
+    value: String,
+    valueColor: Color = remodexConversationChrome().bodyText,
+) {
+    val chrome = remodexConversationChrome()
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily ?: FontFamily.Monospace
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+            color = chrome.secondaryText,
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        SelectionContainer {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                color = valueColor,
+            )
+        }
+    }
+}
+
+private fun formatCommandExecutionDuration(durationMs: Int): String {
+    if (durationMs < 1_000) {
+        return "${durationMs}ms"
+    }
+    val seconds = durationMs / 1_000.0
+    if (seconds < 60) {
+        return String.format(Locale.US, "%.1fs", seconds)
+    }
+    val wholeSeconds = seconds.toInt()
+    val minutes = wholeSeconds / 60
+    val remainingSeconds = wholeSeconds % 60
+    return "${minutes}m ${remainingSeconds}s"
 }
 
 @Composable

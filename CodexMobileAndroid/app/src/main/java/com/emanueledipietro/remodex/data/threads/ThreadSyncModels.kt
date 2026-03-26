@@ -3,6 +3,7 @@ package com.emanueledipietro.remodex.data.threads
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -42,6 +43,7 @@ data class ThreadSyncSnapshot(
 interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
     val availableModels: StateFlow<List<RemodexModelOption>>
+    val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
 }
 
 interface ThreadCommandService {

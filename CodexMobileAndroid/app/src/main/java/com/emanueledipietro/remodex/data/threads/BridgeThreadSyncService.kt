@@ -21,6 +21,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -81,6 +82,8 @@ class BridgeThreadSyncService(
 ) : ThreadSyncService, ThreadCommandService, ThreadHydrationService {
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
+    private val backingCommandExecutionDetails =
+        MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
     private var initializedAttempt: Int? = null
@@ -88,6 +91,8 @@ class BridgeThreadSyncService(
 
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
+    override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
+        backingCommandExecutionDetails
 
     init {
         scope.launch {
@@ -105,6 +110,7 @@ class BridgeThreadSyncService(
                     supportsServiceTier = true
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
+                    backingCommandExecutionDetails.value = emptyMap()
                 }
             }
         }
@@ -1327,30 +1333,72 @@ class BridgeThreadSyncService(
 
     private fun appendCommandExecutionDelta(paramsObject: JsonObject) {
         val context = resolveNotificationContext(paramsObject) ?: return
+        val existingItem = projectedTimelineItem(
+            threadId = context.threadId,
+            messageId = streamingMessageId(
+                itemId = context.itemId,
+                turnId = context.turnId,
+                fallbackPrefix = "commandexecution",
+            ),
+            turnId = context.turnId,
+            itemId = context.itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+        )
+        val hasCommandHint = extractCommandExecutionCommand(context.payloadObject) != null
+            || context.payloadObject.firstValue("command", "cmd", "raw_command", "rawCommand") != null
+        if (!hasCommandHint && existingItem != null) {
+            appendCommandExecutionOutputToDetails(context = context, paramsObject = paramsObject)
+            return
+        }
+        upsertCommandExecutionDetails(
+            context = context,
+            payloadObject = context.payloadObject,
+            isCompleted = false,
+        )
+        appendCommandExecutionOutputToDetails(context = context, paramsObject = paramsObject)
         publishCommandExecutionStatus(
             context = context,
             payloadObject = context.payloadObject,
             isCompleted = false,
             onlyIfMissing = true,
         )
-        val delta = extractTextDelta(paramsObject)
-        if (delta.isBlank()) {
-            return
-        }
-        appendSystemTextDelta(
-            paramsObject = paramsObject,
-            kind = ConversationItemKind.COMMAND_EXECUTION,
-            fallbackPrefix = "commandexecution",
-        )
     }
 
     private fun handleCommandExecutionTerminalInteraction(paramsObject: JsonObject) {
         val context = resolveNotificationContext(paramsObject) ?: return
+        val existingItem = projectedTimelineItem(
+            threadId = context.threadId,
+            messageId = streamingMessageId(
+                itemId = context.itemId,
+                turnId = context.turnId,
+                fallbackPrefix = "commandexecution",
+            ),
+            turnId = context.turnId,
+            itemId = context.itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+        )
+        val state = decodeCommandExecutionRunState(
+            payloadObject = context.payloadObject,
+            paramsObject = paramsObject,
+            isCompleted = false,
+        )
+        if (existingItem != null && !existingItem.isStreaming && state.phase == CommandExecutionRunPhase.RUNNING) {
+            return
+        }
+        upsertCommandExecutionDetails(
+            context = context,
+            payloadObject = context.payloadObject,
+            isCompleted = state.phase != CommandExecutionRunPhase.RUNNING,
+            paramsObject = paramsObject,
+        )
         publishCommandExecutionStatus(
             context = context,
             payloadObject = context.payloadObject,
-            isCompleted = false,
+            isCompleted = state.phase != CommandExecutionRunPhase.RUNNING,
             onlyIfMissing = false,
+            paramsObject = paramsObject,
         )
     }
 
@@ -1570,6 +1618,18 @@ class BridgeThreadSyncService(
             speaker = ConversationSpeaker.SYSTEM,
             kind = kind,
         )
+        if (kind == ConversationItemKind.COMMAND_EXECUTION) {
+            upsertCommandExecutionDetails(
+                context = NotificationContext(
+                    threadId = threadId,
+                    turnId = resolvedTurnId,
+                    itemId = itemId,
+                    payloadObject = itemObject,
+                ),
+                payloadObject = itemObject,
+                isCompleted = isCompleted,
+            )
+        }
         if (kind == ConversationItemKind.COMMAND_EXECUTION && isCompleted && existingItem != null) {
             appendTimelineMutation(
                 threadId = threadId,
@@ -1663,6 +1723,7 @@ class BridgeThreadSyncService(
         payloadObject: JsonObject,
         isCompleted: Boolean,
         onlyIfMissing: Boolean,
+        paramsObject: JsonObject? = null,
     ) {
         val messageId = streamingMessageId(
             itemId = context.itemId,
@@ -1680,18 +1741,14 @@ class BridgeThreadSyncService(
         if (onlyIfMissing && existingItem != null) {
             return
         }
-        val statusText = decodeCommandExecutionStatusText(
-            payloadObject = payloadObject,
-            isCompleted = isCompleted,
+        val statusText = commandExecutionStatusText(
+            decodeCommandExecutionRunState(
+                payloadObject = payloadObject,
+                paramsObject = paramsObject,
+                isCompleted = isCompleted,
+            ),
         )
         if (statusText.isBlank()) {
-            return
-        }
-        if (isCompleted && existingItem != null && existingItem.text.isNotBlank() && existingItem.text != statusText) {
-            appendTimelineMutation(
-                threadId = context.threadId,
-                mutation = TimelineMutation.Complete(messageId = messageId),
-            )
             return
         }
         upsertStreamingItem(
@@ -1699,7 +1756,7 @@ class BridgeThreadSyncService(
             item = timelineItem(
                 id = messageId,
                 speaker = ConversationSpeaker.SYSTEM,
-                text = existingItem?.text?.takeIf(String::isNotBlank) ?: statusText,
+                text = statusText,
                 kind = ConversationItemKind.COMMAND_EXECUTION,
                 turnId = context.turnId,
                 itemId = context.itemId,
@@ -2118,34 +2175,206 @@ class BridgeThreadSyncService(
         payloadObject: JsonObject,
         isCompleted: Boolean,
     ): String {
-        val rawStatus = normalizeStatus(
-            payloadObject.firstString("status")
-                ?: payloadObject.firstObject("status")?.firstString("type", "statusType", "status_type")
-                ?: "",
+        return commandExecutionStatusText(
+            decodeCommandExecutionRunState(
+                payloadObject = payloadObject,
+                paramsObject = null,
+                isCompleted = isCompleted,
+            ),
         )
-        val label = when {
-            rawStatus.contains("fail") || rawStatus.contains("error") -> "failed"
-            rawStatus.contains("stop") || rawStatus.contains("cancel") || rawStatus.contains("interrupt") -> "stopped"
-            isCompleted || rawStatus.contains("done") || rawStatus.contains("complete") || rawStatus.contains("finish") -> "completed"
-            else -> "running"
-        }
-        val command = extractCommandExecutionCommand(payloadObject).orEmpty().ifBlank { "command" }
-        return "$label $command"
     }
 
     private fun extractCommandExecutionCommand(payloadObject: JsonObject): String? {
-        payloadObject.firstString("command", "cmd")?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        extractLegacyCommandArray(payloadObject.firstValue("command"))?.let { return it }
+        payloadObject.firstString("command", "cmd", "raw_command", "rawCommand", "input", "invocation")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { return it }
         payloadObject.firstArray("argv", "args")?.mapNotNull(JsonElement::stringOrNull)
             ?.joinToString(separator = " ")
             ?.trim()
             ?.takeIf(String::isNotEmpty)
             ?.let { return it }
         val eventObject = envelopeEventObject(payloadObject)
-        eventObject?.firstString("command", "cmd")?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        extractLegacyCommandArray(eventObject?.firstValue("command"))?.let { return it }
+        eventObject?.firstString("command", "cmd", "raw_command", "rawCommand", "input", "invocation")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { return it }
         return eventObject?.firstArray("argv", "args")?.mapNotNull(JsonElement::stringOrNull)
             ?.joinToString(separator = " ")
             ?.trim()
             ?.takeIf(String::isNotEmpty)
+    }
+
+    private fun decodeCommandExecutionRunState(
+        payloadObject: JsonObject,
+        paramsObject: JsonObject?,
+        isCompleted: Boolean,
+    ): CommandExecutionRunState {
+        val rawStatus = normalizeStatus(
+            payloadObject.firstString("status")
+                ?: payloadObject.firstObject("status")?.firstString("type", "statusType", "status_type")
+                ?: payloadObject.firstObject("result")?.firstString("status")
+                ?: payloadObject.firstObject("output")?.firstString("status")
+                ?: paramsObject?.firstString("status")
+                ?: paramsObject?.firstObject("event")?.firstString("status")
+                ?: "",
+        )
+        val phase = commandExecutionRunPhase(
+            rawStatus = rawStatus,
+            isCompleted = isCompleted,
+        )
+        val fullCommand = extractCommandExecutionCommand(payloadObject).orEmpty().ifBlank { "command" }
+        val cwd = payloadObject.firstString("cwd", "working_directory", "workingDirectory")
+            ?: paramsObject?.firstString("cwd", "working_directory", "workingDirectory")
+        val itemId = payloadObject.firstString("id", "call_id", "callId")
+            ?: paramsObject?.firstString("itemId", "item_id")
+        val exitCode = payloadObject.firstInt("exitCode", "exit_code")
+            ?: payloadObject.firstObject("result")?.firstInt("exitCode", "exit_code")
+        val durationMs = payloadObject.firstInt("durationMs", "duration_ms")
+            ?: payloadObject.firstObject("result")?.firstInt("durationMs", "duration_ms")
+        return CommandExecutionRunState(
+            itemId = itemId,
+            phase = phase,
+            shortCommand = shortCommandPreview(fullCommand),
+            fullCommand = fullCommand,
+            cwd = cwd,
+            exitCode = exitCode,
+            durationMs = durationMs,
+        )
+    }
+
+    private fun commandExecutionStatusText(state: CommandExecutionRunState): String {
+        return "${state.phase.label} ${state.shortCommand}"
+    }
+
+    private fun commandExecutionRunPhase(
+        rawStatus: String,
+        isCompleted: Boolean,
+    ): CommandExecutionRunPhase {
+        return when {
+            rawStatus.contains("fail") || rawStatus.contains("error") -> CommandExecutionRunPhase.FAILED
+            rawStatus.contains("cancel")
+                || rawStatus.contains("abort")
+                || rawStatus.contains("interrupt")
+                || rawStatus.contains("stop") -> CommandExecutionRunPhase.STOPPED
+
+            isCompleted || rawStatus.contains("done") || rawStatus.contains("complete") || rawStatus.contains("finish") -> {
+                CommandExecutionRunPhase.COMPLETED
+            }
+
+            else -> CommandExecutionRunPhase.RUNNING
+        }
+    }
+
+    private fun shortCommandPreview(
+        rawCommand: String,
+        maxLength: Int = 92,
+    ): String {
+        val compact = rawCommand
+            .trim()
+            .replace(Regex("\\s+"), " ")
+            .ifBlank { "command" }
+        val unwrapped = unwrapShellCommandPreview(compact)
+        return if (unwrapped.length <= maxLength) {
+            unwrapped
+        } else {
+            unwrapped.take(maxLength - 3) + "..."
+        }
+    }
+
+    private fun unwrapShellCommandPreview(rawCommand: String): String {
+        var result = rawCommand.trim()
+        val normalized = result.lowercase(Locale.ROOT)
+        val shellPrefixes = listOf(
+            "/usr/bin/bash -lc ",
+            "/usr/bin/bash -c ",
+            "/bin/bash -lc ",
+            "/bin/bash -c ",
+            "bash -lc ",
+            "bash -c ",
+            "/bin/sh -c ",
+            "sh -c ",
+        )
+        shellPrefixes.firstOrNull { prefix -> normalized.startsWith(prefix) }?.let { prefix ->
+            result = result.drop(prefix.length).trim()
+            if ((result.startsWith('"') && result.endsWith('"')) || (result.startsWith('\'') && result.endsWith('\''))) {
+                result = result.drop(1).dropLast(1)
+            }
+            result.substringAfter("&&", missingDelimiterValue = result).trim().let { stripped ->
+                result = stripped
+            }
+        }
+        return result.substringBefore(" | ").trim()
+    }
+
+    private fun extractLegacyCommandArray(value: JsonElement?): String? {
+        val array = value?.jsonArrayOrNull ?: return null
+        return array.mapNotNull(JsonElement::stringOrNull)
+            .joinToString(separator = " ")
+            .trim()
+            .takeIf(String::isNotEmpty)
+    }
+
+    private fun upsertCommandExecutionDetails(
+        context: NotificationContext,
+        payloadObject: JsonObject,
+        isCompleted: Boolean,
+        paramsObject: JsonObject? = null,
+    ) {
+        val state = decodeCommandExecutionRunState(
+            payloadObject = payloadObject,
+            paramsObject = paramsObject,
+            isCompleted = isCompleted,
+        )
+        val itemId = context.itemId?.takeIf(String::isNotBlank) ?: state.itemId?.takeIf(String::isNotBlank) ?: return
+        backingCommandExecutionDetails.value = backingCommandExecutionDetails.value.toMutableMap().apply {
+            val existing = this[itemId]
+            this[itemId] = if (existing == null) {
+                RemodexCommandExecutionDetails(
+                    fullCommand = state.fullCommand,
+                    cwd = state.cwd,
+                    exitCode = state.exitCode,
+                    durationMs = state.durationMs,
+                    outputTail = "",
+                )
+            } else {
+                existing.copy(
+                    fullCommand = if (state.fullCommand.length > existing.fullCommand.length) {
+                        state.fullCommand
+                    } else {
+                        existing.fullCommand
+                    },
+                    cwd = existing.cwd ?: state.cwd,
+                    exitCode = state.exitCode ?: existing.exitCode,
+                    durationMs = state.durationMs ?: existing.durationMs,
+                )
+            }
+        }
+    }
+
+    private fun appendCommandExecutionOutputToDetails(
+        context: NotificationContext,
+        paramsObject: JsonObject,
+    ) {
+        val itemId = context.itemId?.takeIf(String::isNotBlank) ?: return
+        val chunk = commandExecutionOutputChunk(
+            paramsObject = paramsObject,
+            eventObject = envelopeEventObject(paramsObject),
+        ) ?: return
+        val nextDetails = backingCommandExecutionDetails.value[itemId]?.appendedOutput(chunk) ?: return
+        backingCommandExecutionDetails.value = backingCommandExecutionDetails.value.toMutableMap().apply {
+            this[itemId] = nextDetails
+        }
+    }
+
+    private fun commandExecutionOutputChunk(
+        paramsObject: JsonObject,
+        eventObject: JsonObject?,
+    ): String? {
+        return paramsObject.firstString("delta", "textDelta", "text_delta", "text", "output")
+            ?: eventObject?.firstString("delta", "text", "output")
     }
 
     private fun indexTurnIds(
@@ -2296,6 +2525,25 @@ class BridgeThreadSyncService(
         val payloadObject: JsonObject,
     )
 
+    private data class CommandExecutionRunState(
+        val itemId: String?,
+        val phase: CommandExecutionRunPhase,
+        val shortCommand: String,
+        val fullCommand: String,
+        val cwd: String?,
+        val exitCode: Int?,
+        val durationMs: Int?,
+    )
+
+    private enum class CommandExecutionRunPhase(
+        val label: String,
+    ) {
+        RUNNING("running"),
+        COMPLETED("completed"),
+        FAILED("failed"),
+        STOPPED("stopped"),
+    }
+
     private fun parseThreadSnapshot(
         threadObject: JsonObject,
         syncState: RemodexThreadSyncState,
@@ -2438,6 +2686,31 @@ class BridgeThreadSyncService(
                     )
                     subagentAction != null -> subagentAction.summaryText
                     else -> text
+                }
+                if (kind == ConversationItemKind.COMMAND_EXECUTION) {
+                    upsertCommandExecutionDetails(
+                        context = NotificationContext(
+                            threadId = threadId,
+                            turnId = turnId,
+                            itemId = itemId,
+                            payloadObject = itemObject,
+                        ),
+                        payloadObject = itemObject,
+                        isCompleted = true,
+                    )
+                    decodeStringParts(itemObject.firstValue("output")).joinToString(separator = "\n")
+                        .takeIf(String::isNotBlank)
+                        ?.let { outputChunk ->
+                            if (itemId != null) {
+                                val details = backingCommandExecutionDetails.value[itemId]
+                                if (details != null) {
+                                    backingCommandExecutionDetails.value =
+                                        backingCommandExecutionDetails.value.toMutableMap().apply {
+                                            this[itemId] = details.appendedOutput(outputChunk)
+                                        }
+                                }
+                            }
+                        }
                 }
                 if (
                     resolvedText.isNotBlank()

@@ -21,6 +21,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerCommandLogic
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedFile
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
+import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewSelection
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -88,6 +89,7 @@ data class AppUiState(
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
+    val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
 ) {
     val isConnected: Boolean
         get() = connectionStatus.phase == RemodexConnectionPhase.CONNECTED
@@ -113,6 +115,11 @@ private data class ComposerRenderStateB(
     val gitStatesByThread: Map<String, RemodexGitState> = emptyMap(),
     val baseBranchesByThread: Map<String, String> = emptyMap(),
     val autocomplete: RemodexComposerAutocompleteState = RemodexComposerAutocompleteState(),
+)
+
+private data class SessionRenderState(
+    val snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    val commandExecutionDetails: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
 )
 
 private data class PendingComposerSendState(
@@ -205,14 +212,26 @@ class AppViewModel(
             )
         }
 
-    private val baseUiState =
+    private val sessionRenderState =
         combine(
             repository.session,
+            repository.commandExecutionDetails,
+        ) { snapshot, commandExecutionDetails ->
+            SessionRenderState(
+                snapshot = snapshot,
+                commandExecutionDetails = commandExecutionDetails,
+            )
+        }
+
+    private val baseUiState =
+        combine(
+            sessionRenderState,
             composerRenderStateA,
             composerRenderStateB,
             revertedAssistantMessageIds,
             assistantRevertSheetState,
-        ) { snapshot, renderStateA, renderStateB, revertedMessageIds, revertSheetState ->
+        ) { sessionRenderState, renderStateA, renderStateB, revertedMessageIds, revertSheetState ->
+            val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
             val selectedThread = snapshot.selectedThread
             val draftText = selectedThread?.id?.let(renderStateA.draftsByThread::get).orEmpty()
@@ -275,6 +294,7 @@ class AppViewModel(
                     revertedMessageIds = revertedMessageIds,
                 ),
                 assistantRevertSheet = revertSheetState,
+                commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
             )
     }
 
