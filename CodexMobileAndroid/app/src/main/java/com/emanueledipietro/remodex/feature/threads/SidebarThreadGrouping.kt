@@ -15,6 +15,10 @@ data class SidebarThreadGroup(
     val kind: SidebarThreadGroupKind,
     val projectPath: String? = null,
     val threads: List<RemodexThreadSummary>,
+    val iconSystemName: String = when (kind) {
+        SidebarThreadGroupKind.PROJECT -> projectIconSystemName(projectPath)
+        SidebarThreadGroupKind.ARCHIVED -> "archivebox"
+    },
 )
 
 object SidebarThreadGrouping {
@@ -87,4 +91,23 @@ private fun projectLabel(projectPath: String): String {
     return trimmed
         .substringAfterLast('/')
         .ifBlank { trimmed }
+}
+
+private fun projectIconSystemName(projectPath: String?): String {
+    val normalizedProjectPath = projectPath?.trim()?.takeIf { it.isNotEmpty() } ?: return "cloud"
+    return if (isCodexManagedWorktreeProject(normalizedProjectPath)) {
+        "arrow.triangle.branch"
+    } else {
+        "laptopcomputer"
+    }
+}
+
+private fun isCodexManagedWorktreeProject(projectPath: String): Boolean {
+    val normalized = projectPath.trim().trimEnd('/')
+    if (normalized.isEmpty()) {
+        return false
+    }
+    val components = normalized.split('/').filter { it.isNotBlank() }
+    val worktreesIndex = components.indexOf("worktrees")
+    return worktreesIndex > 0 && components.getOrNull(worktreesIndex - 1) == ".codex"
 }

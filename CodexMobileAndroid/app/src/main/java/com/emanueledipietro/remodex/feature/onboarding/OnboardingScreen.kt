@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.emanueledipietro.remodex.ui.RemodexBrandMark
 
 @Composable
 fun OnboardingScreen(
@@ -66,8 +68,14 @@ fun OnboardingScreen(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
+                RemodexBrandMark(
+                    modifier = Modifier.size(72.dp),
+                    cornerRadius = 18.dp,
+                    borderColor = Color.White.copy(alpha = 0.16f),
+                )
+
                 Surface(
                     shape = RoundedCornerShape(18.dp),
                     color = Color.White.copy(alpha = 0.1f),

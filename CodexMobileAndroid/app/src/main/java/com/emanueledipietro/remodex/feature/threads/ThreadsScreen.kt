@@ -24,14 +24,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Cloud
-import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -57,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -308,20 +311,12 @@ private fun SidebarHeader(
                 shape = RoundedCornerShape(8.dp),
                 color = Color.Transparent,
             ) {
-                Box {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_background),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
-                    )
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
-                    )
-                }
+                Image(
+                    painter = painterResource(id = R.drawable.app_logo),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
             }
             Text(
                 text = "Remodex",
@@ -501,6 +496,7 @@ private fun SidebarNewChatSheet(
                                             projectGroups.forEachIndexed { index, group ->
                                                 SidebarNewChatProjectRow(
                                                     label = group.label,
+                                                    iconSystemName = group.iconSystemName,
                                                     onClick = { onCreateThread(group.projectPath) },
                                                 )
                                                 if (index < projectGroups.lastIndex) {
@@ -539,6 +535,7 @@ private fun SidebarNewChatSheet(
 @Composable
 private fun SidebarNewChatProjectRow(
     label: String,
+    iconSystemName: String,
     onClick: () -> Unit,
 ) {
     Row(
@@ -552,9 +549,8 @@ private fun SidebarNewChatProjectRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Icon(
-            imageVector = Icons.Outlined.Folder,
-            contentDescription = null,
+        SidebarSymbolIcon(
+            symbolName = iconSystemName,
             tint = MaterialTheme.colorScheme.primary,
         )
         Text(
@@ -589,7 +585,7 @@ private fun SidebarNewChatCloudCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Icon(
-                imageVector = Icons.Outlined.Cloud,
+                imageVector = sidebarSymbolImageVector("cloud"),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
             )
@@ -642,7 +638,7 @@ private fun SidebarSearchField(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Search,
+                    imageVector = sidebarSymbolImageVector("magnifyingglass"),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -679,7 +675,7 @@ private fun SidebarSearchField(
                         onClick = { onTextChange("") },
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Close,
+                            imageVector = Icons.Filled.Cancel,
                             contentDescription = "Clear search",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -750,7 +746,7 @@ private fun ProjectGroupSection(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Folder,
+                    imageVector = sidebarSymbolImageVector(group.iconSystemName),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
@@ -894,7 +890,7 @@ private fun ArchivedSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(
-                imageVector = Icons.Outlined.Archive,
+                imageVector = sidebarSymbolImageVector(group.iconSystemName),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurface,
             )
@@ -1280,7 +1276,7 @@ private fun SidebarFooter(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.Settings,
+                        imageVector = sidebarSymbolImageVector("gearshape.fill"),
                         contentDescription = "Settings",
                         tint = MaterialTheme.colorScheme.onSurface,
                     )
@@ -1307,6 +1303,33 @@ private fun SidebarFooter(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SidebarSymbolIcon(
+    symbolName: String,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null,
+) {
+    Icon(
+        imageVector = sidebarSymbolImageVector(symbolName),
+        contentDescription = contentDescription,
+        tint = tint,
+        modifier = modifier,
+    )
+}
+
+private fun sidebarSymbolImageVector(symbolName: String): ImageVector {
+    return when (symbolName) {
+        "laptopcomputer" -> Icons.Outlined.Computer
+        "arrow.triangle.branch" -> Icons.Outlined.AccountTree
+        "archivebox" -> Icons.Outlined.Archive
+        "magnifyingglass" -> Icons.Outlined.Search
+        "gearshape.fill" -> Icons.Filled.Settings
+        "cloud" -> Icons.Outlined.Cloud
+        else -> Icons.Outlined.Folder
     }
 }
 

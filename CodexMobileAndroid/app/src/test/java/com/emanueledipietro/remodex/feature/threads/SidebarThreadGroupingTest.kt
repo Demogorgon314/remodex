@@ -65,6 +65,22 @@ class SidebarThreadGroupingTest {
         assertEquals("1", groups.single().threads.single().id)
     }
 
+    @Test
+    fun `project groups expose iOS aligned icon semantics`() {
+        val groups = SidebarThreadGrouping.makeGroups(
+            threads = listOf(
+                thread(id = "1", title = "Local", projectPath = "/tmp/remodex"),
+                thread(id = "2", title = "Worktree", projectPath = "/tmp/remodex/.codex/worktrees/feature-a"),
+                thread(id = "3", title = "Cloud", projectPath = ""),
+            ),
+            query = "",
+        )
+
+        assertEquals("laptopcomputer", groups[0].iconSystemName)
+        assertEquals("arrow.triangle.branch", groups[1].iconSystemName)
+        assertEquals("cloud", groups[2].iconSystemName)
+    }
+
     private fun thread(
         id: String,
         title: String,

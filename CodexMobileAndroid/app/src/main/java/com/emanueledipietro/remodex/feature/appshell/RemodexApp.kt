@@ -101,6 +101,7 @@ import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotific
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
 import com.emanueledipietro.remodex.platform.window.RemodexWindowLayout
 import com.emanueledipietro.remodex.platform.window.remodexWindowLayout
+import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import kotlinx.coroutines.delay
@@ -899,19 +900,10 @@ private fun HomeEmptyState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Surface(
+        RemodexBrandMark(
             modifier = Modifier.size(88.dp),
-            shape = RoundedCornerShape(22.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = "R",
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
+            cornerRadius = 22.dp,
+        )
 
         Spacer(modifier = Modifier.size(20.dp))
 
