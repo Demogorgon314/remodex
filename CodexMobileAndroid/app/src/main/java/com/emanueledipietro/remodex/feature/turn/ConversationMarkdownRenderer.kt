@@ -7,22 +7,37 @@ import android.os.Handler
 import android.os.Looper
 import android.text.method.LinkMovementMethod
 import android.util.TypedValue
+import android.view.HapticFeedbackConstants
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.ImageView
 import android.widget.TextView
+import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -30,16 +45,26 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import coil.load
+import com.github.chrisbanes.photoview.PhotoView
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 import io.noties.markwon.AbstractMarkwonPlugin
@@ -52,12 +77,31 @@ import org.json.JSONObject
 private sealed interface ConversationMarkdownSegment {
     data class Markdown(val text: String) : ConversationMarkdownSegment
     data class Mermaid(val source: String) : ConversationMarkdownSegment
+    data class Image(
+        val url: String,
+        val altText: String?,
+        val title: String?,
+    ) : ConversationMarkdownSegment
+}
+
+private sealed interface ConversationMarkdownPreview {
+    data class Image(
+        val url: String,
+        val altText: String?,
+        val title: String?,
+    ) : ConversationMarkdownPreview
+
+    data class Mermaid(
+        val source: String,
+        val title: String,
+    ) : ConversationMarkdownPreview
 }
 
 private val mermaidFenceRegex = Regex(
     pattern = "```mermaid[^\\n]*\\n([\\s\\S]*?)```",
     option = RegexOption.IGNORE_CASE,
 )
+private val markdownImageTitleRegex = Regex("""^(.*)\s+(?:"([^"]*)"|'([^']*)')$""")
 
 @Composable
 internal fun ConversationRichMarkdownContent(
@@ -68,6 +112,7 @@ internal fun ConversationRichMarkdownContent(
     enablesSelection: Boolean = false,
 ) {
     val segments = remember(text) { parseConversationMarkdownSegments(text) }
+    var preview by remember(text) { mutableStateOf<ConversationMarkdownPreview?>(null) }
 
     Column(
         modifier = modifier,
@@ -84,9 +129,35 @@ internal fun ConversationRichMarkdownContent(
 
                 is ConversationMarkdownSegment.Mermaid -> ConversationMermaidSegment(
                     source = segment.source,
+                    onPreview = {
+                        preview = ConversationMarkdownPreview.Mermaid(
+                            source = segment.source,
+                            title = "Diagram",
+                        )
+                    },
+                )
+
+                is ConversationMarkdownSegment.Image -> ConversationMarkdownImageSegment(
+                    url = segment.url,
+                    altText = segment.altText,
+                    title = segment.title,
+                    onPreview = {
+                        preview = ConversationMarkdownPreview.Image(
+                            url = segment.url,
+                            altText = segment.altText,
+                            title = segment.title,
+                        )
+                    },
                 )
             }
         }
+    }
+
+    preview?.let { resolvedPreview ->
+        ConversationMarkdownPreviewDialog(
+            preview = resolvedPreview,
+            onDismiss = { preview = null },
+        )
     }
 }
 
@@ -95,7 +166,15 @@ private fun parseConversationMarkdownSegments(text: String): List<ConversationMa
         return emptyList()
     }
     if (!text.contains("```mermaid", ignoreCase = true)) {
-        return listOf(ConversationMarkdownSegment.Markdown(normalizeConversationMarkdown(text)))
+        return buildList {
+            appendMarkdownSegment(
+                source = text,
+                target = this,
+            )
+            if (isEmpty()) {
+                add(ConversationMarkdownSegment.Markdown(normalizeConversationMarkdown(text)))
+            }
+        }
     }
 
     val matches = mermaidFenceRegex.findAll(text).toList()
@@ -146,11 +225,78 @@ private fun appendMarkdownSegment(
     if (normalized.isBlank()) {
         return
     }
-    target += ConversationMarkdownSegment.Markdown(normalized)
+
+    val markdownLines = mutableListOf<String>()
+    var insideCodeFence = false
+
+    fun flushMarkdown() {
+        val markdown = markdownLines.joinToString("\n").trim('\n')
+        if (markdown.isNotBlank()) {
+            target += ConversationMarkdownSegment.Markdown(markdown)
+        }
+        markdownLines.clear()
+    }
+
+    normalized.lines().forEach { rawLine ->
+        val trimmed = rawLine.trim()
+        val isFenceLine = trimmed.startsWith("```")
+
+        if (!insideCodeFence) {
+            parseStandaloneMarkdownImage(trimmed)?.let { image ->
+                flushMarkdown()
+                target += image
+                return@forEach
+            }
+        }
+
+        markdownLines += rawLine
+        if (isFenceLine) {
+            insideCodeFence = !insideCodeFence
+        }
+    }
+
+    flushMarkdown()
 }
 
 private fun normalizeConversationMarkdown(text: String): String =
     text.replace("\r\n", "\n").trim('\n')
+
+private fun parseStandaloneMarkdownImage(line: String): ConversationMarkdownSegment.Image? {
+    if (!line.startsWith("![") || !line.endsWith(")")) {
+        return null
+    }
+    val altTextEnd = line.indexOf("](")
+    if (altTextEnd < 0) {
+        return null
+    }
+
+    val altText = line.substring(startIndex = 2, endIndex = altTextEnd).ifBlank { null }
+    var payload = line.substring(startIndex = altTextEnd + 2, endIndex = line.length - 1).trim()
+    if (payload.isBlank()) {
+        return null
+    }
+
+    var title: String? = null
+    markdownImageTitleRegex.matchEntire(payload)?.let { match ->
+        payload = match.groupValues[1].trim()
+        title = match.groupValues[2].ifBlank {
+            match.groupValues[3].ifBlank { null }
+        }
+    }
+
+    val url = if (payload.startsWith("<") && payload.endsWith(">") && payload.length > 2) {
+        payload.substring(1, payload.length - 1).trim()
+    } else {
+        payload
+    }.takeIf { value -> value.isNotBlank() }
+        ?: return null
+
+    return ConversationMarkdownSegment.Image(
+        url = url,
+        altText = altText,
+        title = title,
+    )
+}
 
 @Composable
 private fun ConversationMarkdownTextSegment(
@@ -236,7 +382,9 @@ private fun ConversationMarkdownTextSegment(
 @Composable
 private fun ConversationMermaidSegment(
     source: String,
+    onPreview: () -> Unit,
 ) {
+    val view = LocalView.current
     val chrome = remodexConversationChrome()
     val isDark = isSystemInDarkTheme()
     val density = LocalDensity.current
@@ -270,12 +418,309 @@ private fun ConversationMermaidSegment(
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
-        AndroidView(
+        Box {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(min = 0.dp)
+                    .heightIn(min = minHeight)
+                    .padding(8.dp),
+                factory = { context ->
+                    WebView(context).apply {
+                        setBackgroundColor(AndroidColor.TRANSPARENT)
+                        overScrollMode = WebView.OVER_SCROLL_NEVER
+                        isVerticalScrollBarEnabled = false
+                        isHorizontalScrollBarEnabled = false
+                        settings.javaScriptEnabled = true
+                        settings.allowFileAccess = true
+                        settings.domStorageEnabled = true
+                        addJavascriptInterface(
+                            MermaidHeightBridge { heightPx ->
+                                contentHeightPx = heightPx
+                            },
+                            "AndroidHeight",
+                        )
+                        webChromeClient = WebChromeClient()
+                        webViewClient = object : WebViewClient() {}
+                    }
+                },
+                update = { webView ->
+                    webView.layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        with(density) { resolvedHeight.roundToPx() },
+                    )
+                    webView.loadDataWithBaseURL(
+                        "file:///android_asset/",
+                        mermaidHtml,
+                        "text/html",
+                        "utf-8",
+                        null,
+                    )
+                },
+            )
+
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        onPreview()
+                    },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationMarkdownImageSegment(
+    url: String,
+    altText: String?,
+    title: String?,
+    onPreview: () -> Unit,
+) {
+    val view = LocalView.current
+    val chrome = remodexConversationChrome()
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                onPreview()
+            },
+        color = chrome.panelSurface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AsyncImage(
+                model = url,
+                contentDescription = altText ?: title ?: "Image",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 120.dp, max = 320.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(chrome.nestedSurface),
+                contentScale = ContentScale.Fit,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConversationMarkdownPreviewDialog(
+    preview: ConversationMarkdownPreview,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(min = 0.dp)
-                .heightIn(min = minHeight)
-                .padding(8.dp),
+                .fillMaxSize(),
+        ) {
+            ConversationMarkdownPreviewBackground(
+                modifier = Modifier.matchParentSize(),
+            )
+
+            when (preview) {
+                is ConversationMarkdownPreview.Image -> ZoomableConversationImagePreview(
+                    preview = preview,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                is ConversationMarkdownPreview.Mermaid -> ConversationMermaidPreview(
+                    preview = preview,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Close,
+                            contentDescription = "Close preview",
+                            tint = Color.White,
+                        )
+                    }
+                }
+
+                val title = when (preview) {
+                    is ConversationMarkdownPreview.Image -> preview.title ?: preview.altText
+                    is ConversationMarkdownPreview.Mermaid -> preview.title
+                }
+                if (!title.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Color.White.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                        shadowElevation = 0.dp,
+                        tonalElevation = 0.dp,
+                    ) {
+                        androidx.compose.material3.Text(
+                            text = title,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ZoomableConversationImagePreview(
+    preview: ConversationMarkdownPreview.Image,
+    modifier: Modifier = Modifier,
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            PhotoView(context).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                maximumScale = 5f
+                mediumScale = 2.5f
+                minimumScale = 1f
+                adjustViewBounds = true
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setOnTouchListener { view, _ ->
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    false
+                }
+            }
+        },
+        update = { imageView ->
+            imageView.contentDescription = preview.altText ?: preview.title ?: "Image preview"
+            imageView.load(preview.url)
+        },
+    )
+}
+
+@Composable
+private fun ConversationMermaidPreview(
+    preview: ConversationMarkdownPreview.Mermaid,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        ConversationMermaidPreviewCard(
+            source = preview.source,
+            modifier = Modifier.fillMaxSize(),
+            previewMode = true,
+        )
+    }
+}
+
+@Composable
+private fun ConversationMarkdownPreviewBackground(
+    modifier: Modifier = Modifier,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Box(
+        modifier = modifier.background(colorScheme.background),
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            colorScheme.surfaceVariant.copy(alpha = 0.68f),
+                            colorScheme.background,
+                        ),
+                    ),
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            colorScheme.primary.copy(alpha = 0.10f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+    }
+}
+
+@Composable
+private fun ConversationMermaidPreviewCard(
+    source: String,
+    modifier: Modifier = Modifier,
+    previewMode: Boolean = false,
+) {
+    val chrome = remodexConversationChrome()
+    val isDark = isSystemInDarkTheme()
+    val density = LocalDensity.current
+    var contentHeightPx by remember(source) { mutableStateOf(0) }
+    val minHeight = 220.dp
+    val resolvedHeight = remember(contentHeightPx, density) {
+        if (contentHeightPx <= 0) {
+            minHeight
+        } else {
+            with(density) { contentHeightPx.toDp() }.coerceAtLeast(minHeight)
+        }
+    }
+    val mermaidHtml = remember(source, chrome, isDark) {
+        buildMermaidHtml(
+            source = source,
+            isDark = isDark,
+            accentColor = chrome.accent.toArgb(),
+            textColor = if (previewMode) Color.White.toArgb() else chrome.bodyText.toArgb(),
+            borderColor = if (previewMode) Color.Transparent.toArgb() else chrome.subtleBorder.toArgb(),
+            surfaceColor = if (previewMode) Color.Transparent.toArgb() else chrome.panelSurface.toArgb(),
+            previewMode = previewMode,
+        )
+    }
+    val androidViewModifier = if (previewMode) {
+        Modifier.fillMaxSize()
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = minHeight)
+            .padding(12.dp)
+    }
+
+    val webContent: @Composable () -> Unit = {
+        AndroidView(
+            modifier = androidViewModifier,
             factory = { context ->
                 WebView(context).apply {
                     setBackgroundColor(AndroidColor.TRANSPARENT)
@@ -285,6 +730,11 @@ private fun ConversationMermaidSegment(
                     settings.javaScriptEnabled = true
                     settings.allowFileAccess = true
                     settings.domStorageEnabled = true
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
                     addJavascriptInterface(
                         MermaidHeightBridge { heightPx ->
                             contentHeightPx = heightPx
@@ -298,7 +748,7 @@ private fun ConversationMermaidSegment(
             update = { webView ->
                 webView.layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    with(density) { resolvedHeight.roundToPx() },
+                    if (previewMode) ViewGroup.LayoutParams.MATCH_PARENT else with(density) { resolvedHeight.roundToPx() },
                 )
                 webView.loadDataWithBaseURL(
                     "file:///android_asset/",
@@ -310,6 +760,23 @@ private fun ConversationMermaidSegment(
             },
         )
     }
+
+    if (previewMode) {
+        Box(modifier = modifier.fillMaxSize()) {
+            webContent()
+        }
+    } else {
+        Surface(
+            modifier = modifier.heightIn(min = minHeight),
+            color = chrome.panelSurface,
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+        ) {
+            webContent()
+        }
+    }
 }
 
 private fun buildMermaidHtml(
@@ -319,6 +786,7 @@ private fun buildMermaidHtml(
     textColor: Int,
     borderColor: Int,
     surfaceColor: Int,
+    previewMode: Boolean = false,
 ): String {
     val theme = if (isDark) "dark" else "neutral"
     val escapedSource = JSONObject.quote(source)
@@ -338,19 +806,25 @@ private fun buildMermaidHtml(
                 padding: 0;
                 background: transparent;
                 color: $textCss;
-                overflow: hidden;
+                overflow: ${if (previewMode) "auto" else "hidden"};
+                width: 100%;
+                height: 100%;
               }
               body {
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                ${if (previewMode) "display: flex; align-items: center; justify-content: center;" else ""}
               }
               #root {
                 box-sizing: border-box;
-                width: 100%;
-                min-height: 104px;
-                padding: 10px 12px;
-                border-radius: 14px;
-                background: $surfaceCss;
-                border: 1px solid $borderCss;
+                width: ${if (previewMode) "auto" else "100%"};
+                min-height: ${if (previewMode) "auto" else "104px"};
+                padding: ${if (previewMode) "0" else "10px 12px"};
+                border-radius: ${if (previewMode) "0" else "14px"};
+                background: ${if (previewMode) "transparent" else surfaceCss};
+                border: ${if (previewMode) "none" else "1px solid $borderCss"};
+                display: flex;
+                align-items: center;
+                justify-content: center;
               }
               #fallback {
                 display: none;
@@ -360,7 +834,8 @@ private fun buildMermaidHtml(
                 line-height: 1.45;
               }
               svg {
-                max-width: 100%;
+                max-width: ${if (previewMode) "none" else "100%"};
+                max-height: ${if (previewMode) "none" else "auto"};
                 height: auto;
               }
               a {
