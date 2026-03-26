@@ -1,6 +1,9 @@
 package com.emanueledipietro.remodex.feature.appshell
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -53,6 +56,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,10 +65,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,6 +79,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.view.WindowCompat
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.feature.onboarding.OnboardingScreen
 import com.emanueledipietro.remodex.feature.recovery.PairingScannerScreen
@@ -112,6 +120,13 @@ internal enum class ShellBackAction {
     NAVIGATE_TO_CONTENT,
 }
 
+private data class RemodexSystemBarStyle(
+    val statusBarColor: Color,
+    val navigationBarColor: Color,
+    val useDarkStatusBarIcons: Boolean,
+    val useDarkNavigationBarIcons: Boolean = useDarkStatusBarIcons,
+)
+
 internal fun resolveShellBackAction(
     isScannerPresented: Boolean,
     isCompactSidebarOpen: Boolean,
@@ -139,6 +154,8 @@ fun RemodexApp(
     var isSidebarOpen by rememberSaveable { mutableStateOf(false) }
     var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }
     var isScannerPresented by rememberSaveable { mutableStateOf(false) }
+    val conversationChrome = remodexConversationChrome()
+    val defaultPageColor = MaterialTheme.colorScheme.background
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var notificationPermissionUiState by remember(notificationManager) {
@@ -190,6 +207,42 @@ fun RemodexApp(
             viewModel.dismissThreadCompletionBanner()
         }
     }
+
+    val systemBarStyle = when {
+        !uiState.onboardingCompleted -> {
+            RemodexSystemBarStyle(
+                statusBarColor = Color.Black,
+                navigationBarColor = Color.Black,
+                useDarkStatusBarIcons = false,
+            )
+        }
+
+        isScannerPresented -> {
+            RemodexSystemBarStyle(
+                statusBarColor = Color.Transparent,
+                navigationBarColor = Color.Transparent,
+                useDarkStatusBarIcons = false,
+            )
+        }
+
+        shellRoute == ShellRoute.CONTENT -> {
+            val barColor = conversationChrome.canvas
+            RemodexSystemBarStyle(
+                statusBarColor = barColor,
+                navigationBarColor = barColor,
+                useDarkStatusBarIcons = barColor.luminance() > 0.5f,
+            )
+        }
+
+        else -> {
+            RemodexSystemBarStyle(
+                statusBarColor = defaultPageColor,
+                navigationBarColor = defaultPageColor,
+                useDarkStatusBarIcons = defaultPageColor.luminance() > 0.5f,
+            )
+        }
+    }
+    RemodexSystemBars(style = systemBarStyle)
 
     if (!uiState.onboardingCompleted) {
         OnboardingScreen(
@@ -274,6 +327,27 @@ fun RemodexApp(
 }
 
 @Composable
+private fun RemodexSystemBars(
+    style: RemodexSystemBarStyle,
+) {
+    val view = LocalView.current
+    val activity = view.context.findActivity() ?: return
+
+    SideEffect {
+        val window = activity.window
+        window.statusBarColor = style.statusBarColor.toArgb()
+        window.navigationBarColor = style.navigationBarColor.toArgb()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = style.useDarkStatusBarIcons
+            isAppearanceLightNavigationBars = style.useDarkNavigationBarIcons
+        }
+    }
+}
+
+@Composable
 private fun RemodexShell(
     viewModel: AppViewModel,
     uiState: AppUiState,
@@ -290,10 +364,15 @@ private fun RemodexShell(
     onOpenAttachmentPicker: () -> Unit,
     onOpenScanner: () -> Unit,
 ) {
+    val shellBackground = if (shellRoute == ShellRoute.CONTENT) {
+        remodexConversationChrome().canvas
+    } else {
+        MaterialTheme.colorScheme.background
+    }
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(shellBackground),
     ) {
         val compact = windowLayout == RemodexWindowLayout.COMPACT
         val sidebarWidth = if (compact && isSidebarSearchActive) {
@@ -376,15 +455,14 @@ private fun RemodexShell(
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(
-                        WindowInsets.systemBars.only(
-                            WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
-                        ),
+                        WindowInsets.systemBars.only(WindowInsetsSides.Horizontal),
                     ),
             ) {
                 Surface(
                     modifier = Modifier
                         .width(sidebarWidth)
-                        .fillMaxHeight(),
+                        .fillMaxHeight()
+                        .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top)),
                     color = MaterialTheme.colorScheme.surface,
                 ) {
                     ThreadsScreen(
@@ -825,6 +903,12 @@ private fun condensedProjectPath(projectPath: String?): String? {
     val head = segments.take(2).joinToString("/")
     val tail = segments.takeLast(2).joinToString("/")
     return "/$head/.../$tail"
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable
