@@ -2,7 +2,6 @@ package com.emanueledipietro.remodex.feature.appshell
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -45,13 +44,9 @@ import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -73,17 +68,13 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.emanueledipietro.remodex.data.connection.PairingBridgeUpdatePrompt
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
-import com.emanueledipietro.remodex.data.connection.PairingQrValidationResult
-import com.emanueledipietro.remodex.data.connection.validatePairingQrCode
 import com.emanueledipietro.remodex.feature.onboarding.OnboardingScreen
-import com.emanueledipietro.remodex.feature.recovery.PairingScannerView
+import com.emanueledipietro.remodex.feature.recovery.PairingScannerScreen
 import com.emanueledipietro.remodex.feature.settings.ArchivedChatsScreen
 import com.emanueledipietro.remodex.feature.settings.SettingsScreen
 import com.emanueledipietro.remodex.feature.threads.ThreadsScreen
@@ -266,7 +257,7 @@ fun RemodexApp(
     )
 
     if (isScannerPresented) {
-        PairingScannerSheet(
+        PairingScannerScreen(
             onDismiss = { isScannerPresented = false },
             onPairWithQrPayload = { payload ->
                 isScannerPresented = false
@@ -970,158 +961,6 @@ private fun HomeEmptyState(
             TextButton(onClick = onForgetPair) {
                 Text("Forget Pair")
             }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PairingScannerSheet(
-    onDismiss: () -> Unit,
-    onPairWithQrPayload: (PairingQrPayload) -> Unit,
-) {
-    val context = LocalContext.current
-    var cameraDenied by remember { mutableStateOf(false) }
-    var scanError by remember { mutableStateOf<String?>(null) }
-    var bridgeUpdatePrompt by remember { mutableStateOf<PairingBridgeUpdatePrompt?>(null) }
-    var hasCameraPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA,
-            ) == PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        hasCameraPermission = granted
-        cameraDenied = !granted
-    }
-
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                text = "Scan pairing QR",
-                style = MaterialTheme.typography.headlineSmall,
-            )
-            Text(
-                text = "Point the camera at the QR shown by remodex up on your Mac.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            if (hasCameraPermission) {
-                PairingScannerView(
-                    onScan = { code ->
-                        when (val result = validatePairingQrCode(code)) {
-                            is PairingQrValidationResult.Success -> {
-                                scanError = null
-                                bridgeUpdatePrompt = null
-                                onPairWithQrPayload(result.payload)
-                            }
-
-                            is PairingQrValidationResult.ScanError -> {
-                                scanError = result.message
-                                bridgeUpdatePrompt = null
-                            }
-
-                            is PairingQrValidationResult.BridgeUpdateRequired -> {
-                                bridgeUpdatePrompt = result.prompt
-                                scanError = null
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 480.dp),
-                )
-            } else {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.64f),
-                    shape = RoundedCornerShape(20.dp),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text(
-                            text = if (cameraDenied) {
-                                "Camera access is required to scan the pairing QR."
-                            } else {
-                                "Waiting for camera permission."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            FilledTonalButton(
-                                onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
-                            ) {
-                                Text("Allow camera")
-                            }
-                            if (cameraDenied) {
-                                OutlinedButton(
-                                    onClick = {
-                                        context.startActivity(
-                                            Intent(
-                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                Uri.fromParts("package", context.packageName, null),
-                                            ),
-                                        )
-                                    },
-                                ) {
-                                    Text("Open settings")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            bridgeUpdatePrompt?.let { prompt ->
-                HorizontalDivider()
-                Text(
-                    text = prompt.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "${prompt.message}\n\nRun: ${prompt.command}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            scanError?.let { message ->
-                HorizontalDivider()
-                Text(
-                    text = "QR rejected",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            Spacer(modifier = Modifier.size(8.dp))
         }
     }
 }
