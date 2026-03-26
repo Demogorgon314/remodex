@@ -363,22 +363,37 @@ private fun performRunCompletionHaptic(
     context: Context,
     view: View,
 ) {
+    val didConfirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+    } else {
+        false
+    }
+    if (didConfirm) {
+        return
+    }
+
     val didVibrate = runCatching {
         completionVibrator(context)?.let { vibrator ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                vibrator.vibrate(
-                    VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK),
-                )
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(
-                    VibrationEffect.createWaveform(
-                        longArrayOf(0L, 28L, 44L, 38L),
-                        -1,
-                    ),
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(longArrayOf(0L, 28L, 44L, 38L), -1)
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                    vibrator.vibrate(
+                        VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK),
+                    )
+                }
+
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
+                    vibrator.vibrate(
+                        VibrationEffect.createOneShot(
+                            24L,
+                            VibrationEffect.DEFAULT_AMPLITUDE,
+                        ),
+                    )
+                }
+
+                else -> {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(24L)
+                }
             }
             true
         } ?: false
@@ -386,16 +401,10 @@ private fun performRunCompletionHaptic(
     if (didVibrate) {
         return
     }
-    val didConfirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-    } else {
-        false
-    }
-    if (!didConfirm) {
-        val didContextClick = view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-        if (!didContextClick) {
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-        }
+
+    val didContextClick = view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+    if (!didContextClick) {
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
     }
 }
 
