@@ -166,9 +166,6 @@ class DefaultRemodexAppRepository(
                         hydrationService()?.refreshThreads()
                     }
                     sessionState.value.selectedThreadId
-                        ?.takeIf { selectedThreadId ->
-                            threadSyncService.threads.value.any { thread -> thread.id == selectedThreadId }
-                        }
                         ?.let { selectedThreadId ->
                             runHydrationSafely {
                                 hydrationService()?.hydrateThread(selectedThreadId)

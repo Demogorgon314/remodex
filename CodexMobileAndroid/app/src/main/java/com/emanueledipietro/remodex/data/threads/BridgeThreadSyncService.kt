@@ -166,10 +166,7 @@ class BridgeThreadSyncService(
             syncState = currentSyncState(threadId),
         ) ?: return
 
-        backingThreads.value = backingThreads.value
-            .map { snapshot -> if (snapshot.id == threadId) refreshedSnapshot else snapshot }
-            .ifEmpty { listOf(refreshedSnapshot) }
-            .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        upsertThreadSnapshot(refreshedSnapshot)
     }
 
     override suspend fun resumeThread(
@@ -195,16 +192,29 @@ class BridgeThreadSyncService(
         ) ?: existingSnapshot
         resumedThreadIds.add(threadId)
         if (refreshedSnapshot != null) {
-            backingThreads.value = backingThreads.value
-                .map { snapshot -> if (snapshot.id == threadId) refreshedSnapshot else snapshot }
-                .ifEmpty { listOf(refreshedSnapshot) }
-                .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+            upsertThreadSnapshot(refreshedSnapshot)
         }
         return refreshedSnapshot
     }
 
     override fun isThreadResumedLocally(threadId: String): Boolean {
         return threadId in resumedThreadIds
+    }
+
+    private fun upsertThreadSnapshot(refreshedSnapshot: ThreadSyncSnapshot) {
+        val currentThreads = backingThreads.value
+        val updatedThreads = if (currentThreads.any { snapshot -> snapshot.id == refreshedSnapshot.id }) {
+            currentThreads.map { snapshot ->
+                if (snapshot.id == refreshedSnapshot.id) {
+                    refreshedSnapshot
+                } else {
+                    snapshot
+                }
+            }
+        } else {
+            currentThreads + refreshedSnapshot
+        }
+        backingThreads.value = updatedThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
     }
 
     private fun applyThreadSnapshotResponse(

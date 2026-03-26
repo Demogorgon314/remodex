@@ -105,6 +105,45 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `restored selected thread hydrates immediately`() = runTest {
+        val repository = TestRemodexAppRepository()
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(threadSummary(id = "thread-1", title = "Recovered thread")),
+            selectedThreadId = "thread-1",
+        )
+
+        AppViewModel(repository)
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.hydrateRequests)
+    }
+
+    @Test
+    fun `selected thread hydrates again when connection becomes active`() = runTest {
+        val repository = TestRemodexAppRepository()
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(threadSummary(id = "thread-1", title = "Recovered thread")),
+            selectedThreadId = "thread-1",
+        )
+
+        AppViewModel(repository)
+        advanceUntilIdle()
+        repository.hydrateRequests.clear()
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+            secureConnection = SecureConnectionSnapshot(
+                phaseMessage = "Connected",
+                secureState = SecureConnectionState.ENCRYPTED,
+                attempt = 1,
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.hydrateRequests)
+    }
+
+    @Test
     fun `attachment limit keeps only the allowed images and shows a limit message`() = runTest {
         val repository = TestRemodexAppRepository()
         val viewModel = AppViewModel(repository)
@@ -540,6 +579,7 @@ class AppViewModelTest {
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+        val hydrateRequests = mutableListOf<String>()
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
@@ -579,6 +619,10 @@ class AppViewModelTest {
         override suspend fun refreshThreads() {
             refreshRequests += 1
             delay(refreshDelayMs)
+        }
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateRequests += threadId
         }
 
         override suspend fun selectThread(threadId: String) = Unit

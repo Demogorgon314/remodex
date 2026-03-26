@@ -824,6 +824,111 @@ class BridgeThreadSyncServiceTest {
         }
     }
 
+    @Test
+    fun `hydrate thread upserts restored active thread even when thread list omitted it`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-restored-thread",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-list-only"))
+                                            put("title", JsonPrimitive("Listed thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-listed"))
+                                            put("updatedAt", JsonPrimitive(1_713_444_444))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to { request ->
+                    assertEquals("thread-restored", request.params?.jsonObjectOrNull?.firstString("threadId"))
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-restored"))
+                                put("title", JsonPrimitive("Restored active thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-restored"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-restored"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-restored"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Recovered conversation history for the restored thread."))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.hydrateThread("thread-restored")
+            advanceUntilIdle()
+
+            assertEquals(2, service.threads.value.size)
+            val restoredThread = service.threads.value.first { it.id == "thread-restored" }
+            assertTrue(
+                TurnTimelineReducer.reduceProjected(restoredThread.timelineMutations).any { item ->
+                    item.text.contains("Recovered conversation history for the restored thread.")
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
     private suspend fun TestScope.awaitSecureState(
         coordinator: SecureConnectionCoordinator,
         expectedState: SecureConnectionState,

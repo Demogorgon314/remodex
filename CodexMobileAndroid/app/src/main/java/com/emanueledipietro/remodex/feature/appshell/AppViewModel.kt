@@ -153,6 +153,8 @@ class AppViewModel(
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
     private var lastObservedThreadId: String? = null
+    private var lastHydratedSelectedThreadId: String? = null
+    private var lastHydrationConnected = false
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
 
     private val composerRenderStateA =
@@ -319,11 +321,26 @@ class AppViewModel(
         viewModelScope.launch {
             repository.session.collect { snapshot ->
                 val selectedThreadId = snapshot.selectedThread?.id
+                val isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
                 if (selectedThreadId != null && selectedThreadId != lastObservedThreadId) {
                     lastObservedThreadId = selectedThreadId
                     refreshGitState(selectedThreadId)
                     clearComposerAutocomplete()
                 }
+                if (selectedThreadId == null) {
+                    lastHydratedSelectedThreadId = null
+                } else {
+                    val shouldHydrateSelectedThread =
+                        selectedThreadId != lastHydratedSelectedThreadId ||
+                            (isConnected && !lastHydrationConnected)
+                    if (shouldHydrateSelectedThread) {
+                        lastHydratedSelectedThreadId = selectedThreadId
+                        viewModelScope.launch {
+                            repository.hydrateThread(selectedThreadId)
+                        }
+                    }
+                }
+                lastHydrationConnected = isConnected
                 detectThreadCompletionBanner(snapshot)
             }
         }
