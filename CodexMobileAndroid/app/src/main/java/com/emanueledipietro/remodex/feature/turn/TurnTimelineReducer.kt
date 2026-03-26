@@ -12,6 +12,22 @@ object TurnTimelineReducer {
         }.sortedBy(RemodexConversationItem::orderIndex)
     }
 
+    fun reduceProjected(mutations: List<TimelineMutation>): List<RemodexConversationItem> {
+        return project(reduce(mutations))
+    }
+
+    fun project(items: List<RemodexConversationItem>): List<RemodexConversationItem> {
+        if (items.isEmpty()) {
+            return emptyList()
+        }
+        val reordered = enforceIntraTurnOrder(items)
+        val collapsedThinking = collapseThinkingMessages(reordered)
+        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(collapsedThinking)
+        val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutCommandThinkingEchoes)
+        val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
+        return removeDuplicateAssistantMessages(dedupedSubagentActions)
+    }
+
     fun reduce(
         items: List<RemodexConversationItem>,
         mutation: TimelineMutation,
@@ -306,4 +322,561 @@ object TurnTimelineReducer {
 
         return existing + incoming
     }
+
+    private fun enforceIntraTurnOrder(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val indicesByTurn = mutableMapOf<String, MutableList<Int>>()
+        items.forEachIndexed { index, item ->
+            normalizedIdentifier(item.turnId)?.let { turnId ->
+                indicesByTurn.getOrPut(turnId) { mutableListOf() }.add(index)
+            }
+        }
+
+        if (indicesByTurn.isEmpty()) {
+            return items
+        }
+
+        val result = items.toMutableList()
+        indicesByTurn.values.forEach { indices ->
+            if (indices.size <= 1) {
+                return@forEach
+            }
+
+            val turnItems = indices.map(result::get)
+            val sorted = if (hasInterleavedAssistantActivityFlow(turnItems)) {
+                turnItems.sortedWith(
+                    compareBy<RemodexConversationItem> { it.speaker != ConversationSpeaker.USER }
+                        .thenBy(RemodexConversationItem::orderIndex),
+                )
+            } else {
+                turnItems.sortedWith(
+                    compareBy<RemodexConversationItem>(::intraTurnPriority)
+                        .thenBy(RemodexConversationItem::orderIndex),
+                )
+            }
+
+            indices.forEachIndexed { position, originalIndex ->
+                result[originalIndex] = sorted[position]
+            }
+        }
+
+        return result
+    }
+
+    private fun hasInterleavedAssistantActivityFlow(
+        turnItems: List<RemodexConversationItem>,
+    ): Boolean {
+        val distinctAssistantItemIds = turnItems
+            .asSequence()
+            .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+            .mapNotNull { item -> normalizedIdentifier(item.itemId) }
+            .toSet()
+        if (distinctAssistantItemIds.size > 1) {
+            return true
+        }
+
+        val ordered = turnItems.sortedBy(RemodexConversationItem::orderIndex)
+        var hasActivityBeforeAssistant = false
+        var seenAssistant = false
+        ordered.forEach { item ->
+            when {
+                item.speaker == ConversationSpeaker.ASSISTANT -> seenAssistant = true
+                isInterleavableSystemActivity(item) && !seenAssistant -> hasActivityBeforeAssistant = true
+                isInterleavableSystemActivity(item) && hasActivityBeforeAssistant -> return true
+            }
+        }
+        return false
+    }
+
+    private fun isInterleavableSystemActivity(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (item.speaker != ConversationSpeaker.SYSTEM) {
+            return false
+        }
+        return when (item.kind) {
+            ConversationItemKind.REASONING,
+            ConversationItemKind.COMMAND_EXECUTION,
+            -> true
+
+            ConversationItemKind.CHAT,
+            ConversationItemKind.FILE_CHANGE,
+            ConversationItemKind.SUBAGENT_ACTION,
+            ConversationItemKind.PLAN,
+            ConversationItemKind.USER_INPUT_PROMPT,
+            -> false
+        }
+    }
+
+    private fun intraTurnPriority(item: RemodexConversationItem): Int {
+        return when (item.speaker) {
+            ConversationSpeaker.USER -> 0
+            ConversationSpeaker.SYSTEM -> when (item.kind) {
+                ConversationItemKind.REASONING -> 1
+                ConversationItemKind.COMMAND_EXECUTION -> 2
+                ConversationItemKind.SUBAGENT_ACTION -> 3
+                ConversationItemKind.CHAT,
+                ConversationItemKind.PLAN,
+                -> 4
+
+                ConversationItemKind.FILE_CHANGE -> 5
+                ConversationItemKind.USER_INPUT_PROMPT -> 6
+            }
+
+            ConversationSpeaker.ASSISTANT -> 4
+        }
+    }
+
+    private fun collapseThinkingMessages(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val result = mutableListOf<RemodexConversationItem>()
+        items.forEach { item ->
+            if (item.speaker != ConversationSpeaker.SYSTEM || item.kind != ConversationItemKind.REASONING) {
+                result += item
+                return@forEach
+            }
+
+            val previousIndex = latestReusableThinkingIndex(result, item)
+            if (previousIndex == -1) {
+                result += item
+                return@forEach
+            }
+
+            val previous = result[previousIndex]
+            val incoming = item.text.trim()
+            result[previousIndex] = previous.copy(
+                text = if (incoming.isNotEmpty()) {
+                    mergeThinkingText(existing = previous.text, incoming = incoming)
+                } else {
+                    previous.text
+                },
+                isStreaming = item.isStreaming,
+                turnId = item.turnId ?: previous.turnId,
+                itemId = item.itemId ?: previous.itemId,
+                orderIndex = maxOf(previous.orderIndex, item.orderIndex),
+            )
+        }
+        return result
+    }
+
+    private fun latestReusableThinkingIndex(
+        items: List<RemodexConversationItem>,
+        incoming: RemodexConversationItem,
+    ): Int {
+        for (index in items.indices.reversed()) {
+            val candidate = items[index]
+            if (candidate.speaker == ConversationSpeaker.ASSISTANT || candidate.speaker == ConversationSpeaker.USER) {
+                break
+            }
+            if (candidate.speaker != ConversationSpeaker.SYSTEM || candidate.kind != ConversationItemKind.REASONING) {
+                continue
+            }
+            if (shouldMergeThinkingRows(candidate, incoming)) {
+                return index
+            }
+        }
+        return -1
+    }
+
+    private fun shouldMergeThinkingRows(
+        previous: RemodexConversationItem,
+        incoming: RemodexConversationItem,
+    ): Boolean {
+        val previousItemId = normalizedIdentifier(previous.itemId)
+        val incomingItemId = normalizedIdentifier(incoming.itemId)
+        if (previousItemId != null && incomingItemId != null && previousItemId == incomingItemId) {
+            return true
+        }
+
+        if (!hasCompatibleThinkingTurnScope(previous, incoming)) {
+            return false
+        }
+        if (isPlaceholderThinkingRow(previous)) {
+            return true
+        }
+
+        val previousHasStableIdentity = hasStableThinkingIdentity(previous)
+        val incomingHasStableIdentity = hasStableThinkingIdentity(incoming)
+        if (previousHasStableIdentity && incomingHasStableIdentity && previousItemId != null && incomingItemId != null) {
+            return false
+        }
+        if (isPlaceholderThinkingRow(incoming)) {
+            return !previousHasStableIdentity
+        }
+        if (!previousHasStableIdentity || !incomingHasStableIdentity) {
+            return thinkingSnapshotsOverlap(previous, incoming)
+        }
+        return false
+    }
+
+    private fun hasCompatibleThinkingTurnScope(
+        previous: RemodexConversationItem,
+        incoming: RemodexConversationItem,
+    ): Boolean {
+        val previousTurnId = normalizedIdentifier(previous.turnId)
+        val incomingTurnId = normalizedIdentifier(incoming.turnId)
+        return previousTurnId == null || incomingTurnId == null || previousTurnId == incomingTurnId
+    }
+
+    private fun hasStableThinkingIdentity(item: RemodexConversationItem): Boolean {
+        return normalizedIdentifier(item.itemId) != null
+    }
+
+    private fun isPlaceholderThinkingRow(item: RemodexConversationItem): Boolean {
+        return normalizedThinkingContent(item.text).isEmpty()
+    }
+
+    private fun thinkingSnapshotsOverlap(
+        previous: RemodexConversationItem,
+        incoming: RemodexConversationItem,
+    ): Boolean {
+        val previousText = normalizedThinkingContent(previous.text)
+        val incomingText = normalizedThinkingContent(incoming.text)
+        if (previousText.isEmpty() || incomingText.isEmpty()) {
+            return previousText.isEmpty() || incomingText.isEmpty()
+        }
+        val previousLower = previousText.lowercase()
+        val incomingLower = incomingText.lowercase()
+        return previousLower == incomingLower ||
+            previousLower.contains(incomingLower) ||
+            incomingLower.contains(previousLower)
+    }
+
+    private fun mergeThinkingText(
+        existing: String,
+        incoming: String,
+    ): String {
+        val existingTrimmed = existing.trim()
+        val incomingTrimmed = incoming.trim()
+        if (incomingTrimmed.isEmpty()) {
+            return existingTrimmed
+        }
+        if (existingTrimmed.isEmpty()) {
+            return incomingTrimmed
+        }
+
+        val placeholderValues = setOf("thinking...")
+        val existingLower = existingTrimmed.lowercase()
+        val incomingLower = incomingTrimmed.lowercase()
+        if (incomingLower in placeholderValues) {
+            return existingTrimmed
+        }
+        if (existingLower in placeholderValues) {
+            return incomingTrimmed
+        }
+        if (incomingLower == existingLower) {
+            return incomingTrimmed
+        }
+        if (incomingTrimmed.contains(existingTrimmed)) {
+            return incomingTrimmed
+        }
+        if (existingTrimmed.contains(incomingTrimmed)) {
+            return existingTrimmed
+        }
+        return "$existingTrimmed\n$incomingTrimmed"
+    }
+
+    private fun removeRedundantThinkingCommandActivityMessages(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val commandKeysByTurn = buildMap<String, Set<String>> {
+            items.forEach { item ->
+                val turnId = normalizedIdentifier(item.turnId)
+                val commandKey = commandActivityKey(item.text)
+                if (
+                    item.speaker == ConversationSpeaker.SYSTEM &&
+                    item.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                    turnId != null &&
+                    commandKey != null
+                ) {
+                    put(turnId, (get(turnId).orEmpty() + commandKey))
+                }
+            }
+        }
+        if (commandKeysByTurn.isEmpty()) {
+            return items
+        }
+
+        return items.filter { item ->
+            val turnId = normalizedIdentifier(item.turnId)
+            val commandKeys = turnId?.let(commandKeysByTurn::get)
+            if (
+                item.speaker != ConversationSpeaker.SYSTEM ||
+                item.kind != ConversationItemKind.REASONING ||
+                commandKeys.isNullOrEmpty()
+            ) {
+                return@filter true
+            }
+
+            val lines = normalizedThinkingContent(item.text)
+                .lineSequence()
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+                .toList()
+            if (lines.isEmpty()) {
+                return@filter true
+            }
+
+            !lines.all { line ->
+                commandActivityKey(line)?.let(commandKeys::contains) == true
+            }
+        }
+    }
+
+    private fun commandActivityKey(text: String): String? {
+        val tokens = text.trim()
+            .split(Regex("\\s+"))
+            .filter(String::isNotEmpty)
+        if (tokens.size < 2) {
+            return null
+        }
+        val status = tokens.first().lowercase()
+        if (status !in setOf("running", "completed", "failed", "stopped")) {
+            return null
+        }
+        val command = tokens.drop(1).joinToString(" ").trim().lowercase()
+        return command.ifEmpty { null }
+    }
+
+    private fun removeDuplicateAssistantMessages(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val seenKeys = mutableSetOf<String>()
+        val seenNoTurnByText = mutableMapOf<String, Long>()
+        val seenTurnText = mutableMapOf<String, AssistantTurnTextObservation>()
+        val result = mutableListOf<RemodexConversationItem>()
+
+        items.forEach { item ->
+            if (item.speaker != ConversationSpeaker.ASSISTANT) {
+                result += item
+                return@forEach
+            }
+
+            val normalizedText = item.text.trim()
+            if (normalizedText.isEmpty()) {
+                result += item
+                return@forEach
+            }
+
+            val turnId = normalizedIdentifier(item.turnId)
+            if (turnId != null) {
+                val dedupeScope = normalizedIdentifier(item.itemId)
+                val key = "$turnId|${dedupeScope ?: "no-item"}|$normalizedText"
+                if (seenKeys.contains(key)) {
+                    return@forEach
+                }
+
+                val hasStableIdentity = dedupeScope != null
+                val turnTextKey = "$turnId|$normalizedText"
+                val previous = seenTurnText[turnTextKey]
+                if (
+                    previous != null &&
+                    kotlin.math.abs(item.orderIndex - previous.orderIndex) <= 2L &&
+                    (!previous.hasStableIdentity || !hasStableIdentity)
+                ) {
+                    return@forEach
+                }
+
+                seenKeys += key
+                seenTurnText[turnTextKey] = AssistantTurnTextObservation(
+                    orderIndex = item.orderIndex,
+                    hasStableIdentity = hasStableIdentity,
+                )
+                result += item
+                return@forEach
+            }
+
+            val previousOrderIndex = seenNoTurnByText[normalizedText]
+            if (previousOrderIndex != null && kotlin.math.abs(item.orderIndex - previousOrderIndex) <= 2L) {
+                return@forEach
+            }
+            seenNoTurnByText[normalizedText] = item.orderIndex
+            result += item
+        }
+
+        return result
+    }
+
+    private fun removeDuplicateFileChangeMessages(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val signatures = items.map(::fileChangeDedupSignature)
+        val supersededIndices = mutableSetOf<Int>()
+
+        for (olderIndex in items.indices) {
+            val olderSignature = signatures[olderIndex] ?: continue
+            for (newerIndex in items.indices) {
+                if (newerIndex <= olderIndex) {
+                    continue
+                }
+                val newerSignature = signatures[newerIndex] ?: continue
+                if (fileChangeMessage(newerSignature, olderSignature)) {
+                    supersededIndices += olderIndex
+                    break
+                }
+            }
+        }
+
+        return items.filterIndexed { index, _ ->
+            signatures[index] == null || index !in supersededIndices
+        }
+    }
+
+    private fun fileChangeDedupSignature(
+        item: RemodexConversationItem,
+    ): FileChangeDedupSignature? {
+        if (item.speaker != ConversationSpeaker.SYSTEM || item.kind != ConversationItemKind.FILE_CHANGE) {
+            return null
+        }
+        val normalizedText = item.text.trim()
+        val paths = extractFileChangePaths(item.text)
+        val key = normalizedText.takeIf(String::isNotEmpty)
+        if (key == null && paths.isEmpty()) {
+            return null
+        }
+        return FileChangeDedupSignature(
+            turnId = normalizedIdentifier(item.turnId),
+            key = key,
+            paths = paths,
+            isStreaming = item.isStreaming,
+        )
+    }
+
+    private fun extractFileChangePaths(text: String): Set<String> {
+        return filePathRegex.findAll(text)
+            .map { match -> match.value }
+            .filter { value -> value.contains('.') }
+            .toSet()
+    }
+
+    private fun fileChangeMessage(
+        newer: FileChangeDedupSignature,
+        older: FileChangeDedupSignature,
+    ): Boolean {
+        val sameTurn = when {
+            newer.turnId != null && older.turnId != null -> newer.turnId == older.turnId
+            else -> newer.turnId == null || older.turnId == null
+        }
+        if (!sameTurn) {
+            return false
+        }
+        if (newer.key != null && older.key != null && newer.key == older.key) {
+            return true
+        }
+        if (newer.paths.isEmpty() || older.paths.isEmpty()) {
+            return false
+        }
+        if (older.turnId == null && newer.turnId != null && older.paths.all(newer.paths::contains)) {
+            return true
+        }
+        if (older.isStreaming && !newer.isStreaming && older.paths.all(newer.paths::contains)) {
+            return true
+        }
+        return false
+    }
+
+    private fun removeDuplicateSubagentActionMessages(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        val result = mutableListOf<RemodexConversationItem>()
+        items.forEach { item ->
+            val action = item.subagentAction
+            if (
+                action == null ||
+                item.speaker != ConversationSpeaker.SYSTEM ||
+                item.kind != ConversationItemKind.SUBAGENT_ACTION
+            ) {
+                result += item
+                return@forEach
+            }
+
+            val previous = result.lastOrNull()
+            val previousAction = previous?.subagentAction
+            if (
+                previous == null ||
+                previousAction == null ||
+                !shouldMergeSubagentActionMessages(previous, previousAction, item, action)
+            ) {
+                result += item
+                return@forEach
+            }
+
+            result[result.lastIndex] = preferredSubagentActionMessage(previous, item)
+        }
+        return result
+    }
+
+    private fun shouldMergeSubagentActionMessages(
+        previous: RemodexConversationItem,
+        previousAction: com.emanueledipietro.remodex.model.RemodexSubagentAction,
+        incoming: RemodexConversationItem,
+        incomingAction: com.emanueledipietro.remodex.model.RemodexSubagentAction,
+    ): Boolean {
+        if (
+            previous.speaker != ConversationSpeaker.SYSTEM ||
+            previous.kind != ConversationItemKind.SUBAGENT_ACTION ||
+            normalizedIdentifier(previous.turnId) != normalizedIdentifier(incoming.turnId) ||
+            previousAction.normalizedTool != incomingAction.normalizedTool ||
+            previous.text != incoming.text
+        ) {
+            return false
+        }
+
+        val previousItemId = normalizedIdentifier(previous.itemId) ?: return false
+        val incomingItemId = normalizedIdentifier(incoming.itemId) ?: return false
+        if (previousItemId != incomingItemId) {
+            return false
+        }
+
+        val previousRows = previousAction.agentRows
+        val incomingRows = incomingAction.agentRows
+        if (previousRows.isEmpty() && incomingRows.isNotEmpty()) {
+            return true
+        }
+        return previousRows == incomingRows
+    }
+
+    private fun preferredSubagentActionMessage(
+        previous: RemodexConversationItem,
+        incoming: RemodexConversationItem,
+    ): RemodexConversationItem {
+        val previousRows = previous.subagentAction?.agentRows.orEmpty()
+        val incomingRows = incoming.subagentAction?.agentRows.orEmpty()
+        if (previousRows.isEmpty() && incomingRows.isNotEmpty()) {
+            return incoming
+        }
+        if (incoming.isStreaming != previous.isStreaming) {
+            return if (incoming.isStreaming) previous else incoming
+        }
+        return if (incoming.orderIndex >= previous.orderIndex) incoming else previous
+    }
+
+    private fun normalizedThinkingContent(text: String): String {
+        return text.lineSequence()
+            .map(String::trim)
+            .filterNot { line -> line.equals("thinking...", ignoreCase = true) }
+            .joinToString(separator = "\n")
+            .trim()
+    }
+
+    private fun normalizedIdentifier(value: String?): String? {
+        val trimmed = value?.trim().orEmpty()
+        return trimmed.ifEmpty { null }
+    }
+
+    private data class AssistantTurnTextObservation(
+        val orderIndex: Long,
+        val hasStableIdentity: Boolean,
+    )
+
+    private data class FileChangeDedupSignature(
+        val turnId: String?,
+        val key: String?,
+        val paths: Set<String>,
+        val isStreaming: Boolean,
+    )
+
+    private val filePathRegex = Regex("""(?<![\w/])(?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9_-]+""")
 }

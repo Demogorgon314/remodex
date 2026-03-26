@@ -568,8 +568,8 @@ fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
         parentThreadId = parentThreadId,
         agentNickname = agentNickname,
         agentRole = agentRole,
-            runtimeConfig = runtimeConfig,
-        timelineItems = TurnTimelineReducer.reduce(timelineMutations),
+        runtimeConfig = runtimeConfig,
+        timelineItems = TurnTimelineReducer.reduceProjected(timelineMutations),
     )
 }
 

@@ -174,4 +174,178 @@ class TurnTimelineReducerTest {
         assertEquals("src/App.kt", projected.first().assistantChangeSet?.fileChanges?.first()?.path)
         assertFalse(projected.first().isStreaming)
     }
+
+    @Test
+    fun `project reorders single item turns so activity comes before assistant and file changes trail`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "user-1",
+                    speaker = ConversationSpeaker.USER,
+                    text = "Run the tests",
+                    turnId = "turn-1",
+                    orderIndex = 0,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Here is the result",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    orderIndex = 1,
+                ),
+                RemodexConversationItem(
+                    id = "command-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "running ./gradlew test",
+                    turnId = "turn-1",
+                    itemId = "command-item",
+                    orderIndex = 2,
+                ),
+                RemodexConversationItem(
+                    id = "file-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "src/App.kt",
+                    turnId = "turn-1",
+                    itemId = "file-item",
+                    orderIndex = 3,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("user-1", "command-1", "assistant-1", "file-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project collapses repeated thinking rows inside the same system segment`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "thinking-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Thinking...",
+                    turnId = "turn-1",
+                    orderIndex = 0,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "thinking-2",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Checking the Gradle task graph",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(1, projected.size)
+        assertEquals(ConversationItemKind.REASONING, projected.first().kind)
+        assertEquals("Checking the Gradle task graph", projected.first().text)
+        assertFalse(projected.first().isStreaming)
+    }
+
+    @Test
+    fun `project removes duplicate assistant echoes when history repeats the same text`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-streaming",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "Finished answer",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-history",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "Finished answer",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(1, projected.size)
+        assertEquals("assistant-streaming", projected.first().id)
+    }
+
+    @Test
+    fun `project removes superseded file change rows once a finalized snapshot arrives`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "file-streaming",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "src/App.kt\nsrc/Main.kt",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "file-final",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "src/App.kt\nsrc/Main.kt",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("file-final"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
+    fun `project upgrades placeholder subagent cards when populated agent rows arrive`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "subagent-placeholder",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.SUBAGENT_ACTION,
+                    text = "Spawning 1 agent",
+                    turnId = "turn-1",
+                    itemId = "subagent-item",
+                    orderIndex = 1,
+                    isStreaming = true,
+                    subagentAction = com.emanueledipietro.remodex.model.RemodexSubagentAction(
+                        tool = "spawnAgent",
+                        status = "running",
+                    ),
+                ),
+                RemodexConversationItem(
+                    id = "subagent-populated",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.SUBAGENT_ACTION,
+                    text = "Spawning 1 agent",
+                    turnId = "turn-1",
+                    itemId = "subagent-item",
+                    orderIndex = 2,
+                    isStreaming = false,
+                    subagentAction = com.emanueledipietro.remodex.model.RemodexSubagentAction(
+                        tool = "spawnAgent",
+                        status = "completed",
+                        receiverThreadIds = listOf("child-thread-1"),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(1, projected.size)
+        assertEquals("subagent-populated", projected.first().id)
+        assertEquals(1, projected.first().subagentAction?.agentRows?.size)
+    }
 }

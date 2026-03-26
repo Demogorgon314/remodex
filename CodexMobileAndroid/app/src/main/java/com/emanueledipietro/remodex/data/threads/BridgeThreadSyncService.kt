@@ -1852,7 +1852,7 @@ class BridgeThreadSyncService(
         snapshot: ThreadSyncSnapshot,
         nextMutations: List<TimelineMutation>,
     ): String {
-        val previewItem = TurnTimelineReducer.reduce(nextMutations)
+        val previewItem = TurnTimelineReducer.reduceProjected(nextMutations)
             .lastOrNull { item ->
                 item.kind == ConversationItemKind.CHAT
                     && (item.speaker == ConversationSpeaker.USER || item.speaker == ConversationSpeaker.ASSISTANT)
@@ -1909,7 +1909,7 @@ class BridgeThreadSyncService(
 
     private fun hasStreamingMessage(threadId: String): Boolean {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return false
-        return TurnTimelineReducer.reduce(snapshot.timelineMutations).any { item -> item.isStreaming }
+        return TurnTimelineReducer.reduceProjected(snapshot.timelineMutations).any { item -> item.isStreaming }
     }
 
     private fun confirmLatestPendingUserMessage(
