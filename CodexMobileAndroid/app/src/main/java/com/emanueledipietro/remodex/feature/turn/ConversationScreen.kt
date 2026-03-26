@@ -2951,7 +2951,10 @@ private fun ConversationMessageActionContainer(
         Modifier
     }
 
-    Box(modifier = modifier.then(gestureModifier)) {
+    Box(
+        modifier = modifier.then(gestureModifier),
+        contentAlignment = if (alignMenuToEnd) Alignment.TopEnd else Alignment.TopStart,
+    ) {
         content()
         ConversationMessageContextMenu(
             expanded = menuExpanded,
