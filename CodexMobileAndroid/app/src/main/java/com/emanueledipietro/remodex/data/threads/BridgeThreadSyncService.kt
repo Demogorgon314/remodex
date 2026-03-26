@@ -338,13 +338,15 @@ class BridgeThreadSyncService(
                 title = trimmedName,
             )
         }
-        secureConnectionCoordinator.sendRequest(
-            method = "thread/name/set",
-            params = buildJsonObject {
-                put("thread_id", JsonPrimitive(threadId))
-                put("name", JsonPrimitive(trimmedName))
-            },
-        )
+        runCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = "thread/name/set",
+                params = buildJsonObject {
+                    put("thread_id", JsonPrimitive(threadId))
+                    put("name", JsonPrimitive(trimmedName))
+                },
+            )
+        }
     }
 
     override suspend fun archiveThread(

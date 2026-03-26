@@ -38,10 +38,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -88,7 +88,15 @@ import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
 private const val ProjectPreviewCount = 10
 private const val SidebarFooterTestTag = "sidebar_footer"
 private const val SidebarNewChatButtonTag = "sidebar_new_chat_button"
+private const val SidebarRenameTextFieldTag = "sidebar_rename_text_field"
 private val SidebarRowCornerRadius = 14.dp
+
+private data class ThreadRenamePromptState(
+    val threadId: String = "",
+    val currentTitle: String = "",
+    val draftTitle: String = "",
+    val isPresented: Boolean = false,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,6 +118,9 @@ fun ThreadsScreen(
     var searchText by rememberSaveable { mutableStateOf("") }
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
     var isNewChatSheetPresented by rememberSaveable { mutableStateOf(false) }
+    var renamePromptState by remember {
+        mutableStateOf(ThreadRenamePromptState())
+    }
     var expandedProjectIds by remember { mutableStateOf(setOf<String>()) }
     var hasInitializedProjectExpansion by rememberSaveable { mutableStateOf(false) }
     var revealedProjectGroupIds by remember { mutableStateOf(setOf<String>()) }
@@ -233,7 +244,14 @@ fun ThreadsScreen(
                                             group.projectPath?.let(onArchiveProject)
                                         },
                                         onSelectThread = onSelectThread,
-                                        onRenameThread = onRenameThread,
+                                        onRenameThread = { threadId, currentTitle ->
+                                            renamePromptState = ThreadRenamePromptState(
+                                                threadId = threadId,
+                                                currentTitle = currentTitle,
+                                                draftTitle = currentTitle,
+                                                isPresented = true,
+                                            )
+                                        },
                                         onArchiveThread = onArchiveThread,
                                         onUnarchiveThread = onUnarchiveThread,
                                         onDeleteThread = onDeleteThread,
@@ -255,7 +273,14 @@ fun ThreadsScreen(
                                             }
                                         },
                                         onSelectThread = onSelectThread,
-                                        onRenameThread = onRenameThread,
+                                        onRenameThread = { threadId, currentTitle ->
+                                            renamePromptState = ThreadRenamePromptState(
+                                                threadId = threadId,
+                                                currentTitle = currentTitle,
+                                                draftTitle = currentTitle,
+                                                isPresented = true,
+                                            )
+                                        },
                                         onArchiveThread = onArchiveThread,
                                         onUnarchiveThread = onUnarchiveThread,
                                         onDeleteThread = onDeleteThread,
@@ -282,6 +307,23 @@ fun ThreadsScreen(
             onCreateThread = { projectPath ->
                 isNewChatSheetPresented = false
                 onCreateThread(projectPath)
+            },
+        )
+    }
+
+    if (renamePromptState.isPresented) {
+        ThreadRenameDialog(
+            state = renamePromptState,
+            onDismiss = {
+                renamePromptState = renamePromptState.copy(isPresented = false)
+            },
+            onDraftChange = { updatedDraft ->
+                renamePromptState = renamePromptState.copy(draftTitle = updatedDraft)
+            },
+            onRename = { trimmedTitle ->
+                val targetThreadId = renamePromptState.threadId
+                renamePromptState = renamePromptState.copy(isPresented = false)
+                onRenameThread(targetThreadId, trimmedTitle)
             },
         )
     }
@@ -957,7 +999,7 @@ private fun ThreadTreeRow(
             null
         },
         onSelectThread = { onSelectThread(thread.id) },
-        onRenameThread = { name -> onRenameThread(thread.id, name) },
+        onRenameThread = onRenameThread,
         onArchiveThread = { onArchiveThread(thread.id) },
         onUnarchiveThread = { onUnarchiveThread(thread.id) },
         onDeleteThread = { onDeleteThread(thread.id) },
@@ -992,14 +1034,12 @@ private fun ThreadRow(
     isExpanded: Boolean,
     onToggleExpanded: (() -> Unit)?,
     onSelectThread: () -> Unit,
-    onRenameThread: (String) -> Unit,
+    onRenameThread: (String, String) -> Unit,
     onArchiveThread: () -> Unit,
     onUnarchiveThread: () -> Unit,
     onDeleteThread: () -> Unit,
 ) {
     var menuExpanded by remember(thread.id) { mutableStateOf(false) }
-    var renameExpanded by remember(thread.id) { mutableStateOf(false) }
-    var renameDraft by remember(thread.id, thread.displayTitle) { mutableStateOf(thread.displayTitle) }
     var menuOffset by remember(thread.id) { mutableStateOf(DpOffset.Zero) }
     val timingLabel = compactTimingLabel(thread.lastUpdatedLabel)
     val density = LocalDensity.current
@@ -1128,7 +1168,7 @@ private fun ThreadRow(
                 text = { Text("Rename") },
                 onClick = {
                     menuExpanded = false
-                    renameExpanded = true
+                    onRenameThread(thread.id, thread.displayTitle)
                 },
             )
             DropdownMenuItem(
@@ -1158,34 +1198,44 @@ private fun ThreadRow(
                 },
             )
         }
-
-        DropdownMenu(
-            expanded = renameExpanded,
-            onDismissRequest = { renameExpanded = false },
-        ) {
-            DropdownMenuItem(
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = renameDraft,
-                            onValueChange = { renameDraft = it },
-                            label = { Text("Thread name") },
-                            singleLine = true,
-                        )
-                        OutlinedButton(
-                            onClick = {
-                                renameExpanded = false
-                                onRenameThread(renameDraft)
-                            },
-                        ) {
-                            Text("Save")
-                        }
-                    }
-                },
-                onClick = {},
-            )
-        }
     }
+}
+
+@Composable
+private fun ThreadRenameDialog(
+    state: ThreadRenamePromptState,
+    onDismiss: () -> Unit,
+    onDraftChange: (String) -> Unit,
+    onRename: (String) -> Unit,
+) {
+    val trimmedDraft = state.draftTitle.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = { onRename(trimmedDraft) },
+                enabled = trimmedDraft.isNotEmpty() && trimmedDraft != state.currentTitle.trim(),
+            ) {
+                Text("Rename")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        title = { Text("Rename Conversation") },
+        text = {
+            OutlinedTextField(
+                value = state.draftTitle,
+                onValueChange = onDraftChange,
+                singleLine = true,
+                label = { Text("Name") },
+                modifier = Modifier.testTag(SidebarRenameTextFieldTag),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            )
+        },
+    )
 }
 
 @Composable

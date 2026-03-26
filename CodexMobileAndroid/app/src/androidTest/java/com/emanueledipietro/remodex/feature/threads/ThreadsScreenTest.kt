@@ -5,16 +5,22 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.ui.theme.RemodexTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
@@ -100,6 +106,59 @@ class ThreadsScreenTest {
         composeRule.onNodeWithText("Local").assertIsDisplayed()
         composeRule.onNodeWithText("DeepSpeed").assertIsDisplayed()
         composeRule.onNodeWithText("Cloud").assertIsDisplayed()
+    }
+
+    @Test
+    fun renameOpensSharedDialogAndCommitsLatestDraft() {
+        var renamedThreadId: String? = null
+        var renamedTitle: String? = null
+
+        composeRule.setContent {
+            RemodexTheme {
+                ThreadsScreen(
+                    uiState = AppUiState(
+                        connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                        threads = listOf(
+                            threadSummary(
+                                id = "thread-1",
+                                title = "Conversation 0",
+                                projectPath = "/tmp/project-0",
+                            ),
+                        ),
+                    ),
+                    onSelectThread = {},
+                    onRefreshThreads = {},
+                    onRetryConnection = {},
+                    onCreateThread = {},
+                    onRenameThread = { threadId, name ->
+                        renamedThreadId = threadId
+                        renamedTitle = name
+                    },
+                    onArchiveThread = {},
+                    onUnarchiveThread = {},
+                    onDeleteThread = {},
+                    onArchiveProject = {},
+                    onOpenSettings = {},
+                    onSearchActiveChange = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Conversation 0").performTouchInput {
+            longClick(center)
+        }
+        composeRule.onNodeWithText("Rename").performClick()
+
+        composeRule.onNodeWithText("Rename Conversation").assertIsDisplayed()
+        composeRule.onNodeWithTag("sidebar_rename_text_field").performTextClearance()
+        composeRule.onNodeWithTag("sidebar_rename_text_field").performTextInput("Renamed thread")
+        composeRule.onNodeWithText("Rename").performClick()
+
+        composeRule.runOnIdle {
+            assertEquals("thread-1", renamedThreadId)
+            assertEquals("Renamed thread", renamedTitle)
+        }
+        composeRule.onAllNodesWithText("Rename Conversation").assertCountEquals(0)
     }
 
     private fun threadSummary(

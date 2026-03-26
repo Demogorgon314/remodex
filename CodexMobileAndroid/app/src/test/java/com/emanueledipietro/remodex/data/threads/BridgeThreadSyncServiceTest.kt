@@ -474,6 +474,80 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `rename thread keeps optimistic title when rename rpc fails`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-rename-thread",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-rename"))
+                                        put("title", JsonPrimitive("Old title"))
+                                        put("cwd", JsonPrimitive("/tmp/project-rename"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_440))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/name/set" to {
+                    throw RpcError(code = -32603, message = "rename failed")
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.renameThread("thread-rename", "Renamed locally")
+            advanceUntilIdle()
+
+            val renamedThread = service.threads.value.first { it.id == "thread-rename" }
+            assertEquals("Renamed locally", renamedThread.title)
+            assertTrue(
+                relayFactory.receivedRequests.any { request ->
+                    request.method == "thread/name/set"
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `resume thread uses thread resume and refreshes snapshot history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
