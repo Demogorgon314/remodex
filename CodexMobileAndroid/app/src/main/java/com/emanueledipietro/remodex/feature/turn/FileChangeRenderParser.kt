@@ -214,6 +214,9 @@ internal object FileChangeRenderParser {
         val sections = bodyText
             .split("\n\n---\n\n")
             .filter { section -> section.isNotBlank() }
+        if (sections.size <= 1) {
+            return parseSingleRenderedSectionFallback(bodyText, entries)
+        }
         val looksLikeRenderedSections = sections.any { section ->
             val lines = section.lines()
             lines.any { line -> parsePathLine(line) != null } || lines.any { line -> line.trim().startsWith("```") }
@@ -239,6 +242,68 @@ internal object FileChangeRenderParser {
                 diffCode = diffCode,
             )
         }
+    }
+
+    private fun parseSingleRenderedSectionFallback(
+        bodyText: String,
+        entries: List<FileChangeSummaryEntry>,
+    ): List<PerFileDiffChunk> {
+        val lines = bodyText.lines()
+        val chunks = mutableListOf<PerFileDiffChunk>()
+        var currentPath: String? = null
+        var lineIndex = 0
+
+        while (lineIndex < lines.size) {
+            val trimmed = lines[lineIndex].trim()
+            val parsedPath = parsePathLine(lines[lineIndex])
+            if (parsedPath != null) {
+                currentPath = parsedPath
+                lineIndex += 1
+                continue
+            }
+
+            if (!trimmed.startsWith("```")) {
+                lineIndex += 1
+                continue
+            }
+
+            lineIndex += 1
+            val codeLines = mutableListOf<String>()
+            while (lineIndex < lines.size) {
+                val candidate = lines[lineIndex].trim()
+                if (candidate == "```") {
+                    break
+                }
+                codeLines += lines[lineIndex]
+                lineIndex += 1
+            }
+            if (lineIndex < lines.size) {
+                lineIndex += 1
+            }
+
+            val diffCode = codeLines.joinToString(separator = "\n").trim()
+            if (!RemodexUnifiedPatchParser.looksLikePatchText(diffCode)) {
+                continue
+            }
+
+            val parsedEntry = parsePatchChunk(diffCode).firstOrNull()
+            val fallbackPath = currentPath
+                ?: parsedEntry?.path
+                ?: entries.getOrNull(chunks.size)?.path
+                ?: continue
+            val entry = entries.firstOrNull { it.path == fallbackPath } ?: parsedEntry
+            chunks += PerFileDiffChunk(
+                id = "${chunks.size}-$fallbackPath",
+                path = fallbackPath,
+                action = entry?.action ?: FileChangeAction.EDITED,
+                additions = entry?.additions ?: 0,
+                deletions = entry?.deletions ?: 0,
+                diffCode = diffCode,
+            )
+            currentPath = null
+        }
+
+        return chunks
     }
 
     private fun parseUnifiedPatchChunks(

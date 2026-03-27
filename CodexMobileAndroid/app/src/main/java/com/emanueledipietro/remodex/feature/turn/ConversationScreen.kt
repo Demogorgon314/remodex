@@ -5287,16 +5287,11 @@ private fun FileChangeDetailFileCard(
                     shadowElevation = 0.dp,
                     tonalElevation = 0.dp,
                 ) {
-                    SelectionContainer {
-                        Text(
-                            text = chunk.diffCode,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
-                            color = chrome.bodyText,
-                        )
-                    }
+                    ConversationCleanDiffCodeBlock(
+                        code = chunk.diffCode,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    )
                 }
             }
         }

@@ -116,4 +116,62 @@ class FileChangeRenderParserTest {
         assertEquals(0, entry?.additions)
         assertEquals(1, entry?.deletions)
     }
+
+    @Test
+    fun diffChunks_extractsMultipleRenderedMessagesJoinedWithoutSectionSeparator() {
+        val rendered = """
+            Status: completed
+
+            Path: src/First.kt
+            Kind: update
+            Totals: +1 -1
+
+            ```diff
+            diff --git a/src/First.kt b/src/First.kt
+            index 1111111..2222222 100644
+            --- a/src/First.kt
+            +++ b/src/First.kt
+            @@ -1 +1 @@
+            -before
+            +after
+            ```
+
+            Status: completed
+
+            Path: src/Second.kt
+            Kind: update
+            Totals: +2 -0
+
+            ```diff
+            diff --git a/src/Second.kt b/src/Second.kt
+            index 3333333..4444444 100644
+            --- a/src/Second.kt
+            +++ b/src/Second.kt
+            @@ -1 +1,2 @@
+            -value
+            +value
+            +extra
+            ```
+        """.trimIndent()
+        val entries = listOf(
+            FileChangeSummaryEntry(
+                path = "src/First.kt",
+                additions = 1,
+                deletions = 1,
+                action = FileChangeAction.EDITED,
+            ),
+            FileChangeSummaryEntry(
+                path = "src/Second.kt",
+                additions = 2,
+                deletions = 0,
+                action = FileChangeAction.EDITED,
+            ),
+        )
+
+        val chunks = FileChangeRenderParser.diffChunks(rendered, entries)
+
+        assertEquals(listOf("src/First.kt", "src/Second.kt"), chunks.map(PerFileDiffChunk::path))
+        assertTrue(chunks[0].diffCode.contains("diff --git a/src/First.kt b/src/First.kt"))
+        assertTrue(chunks[1].diffCode.contains("diff --git a/src/Second.kt b/src/Second.kt"))
+    }
 }

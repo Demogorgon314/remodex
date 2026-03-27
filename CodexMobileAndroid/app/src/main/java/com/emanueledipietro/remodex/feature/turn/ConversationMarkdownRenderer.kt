@@ -192,6 +192,7 @@ internal fun ConversationRichMarkdownContent(
 
                 is ConversationMarkdownSegment.CodeBlock -> ConversationMarkdownCodeBlockSegment(
                     code = segment.code,
+                    language = segment.language,
                     style = style,
                     enablesSelection = enablesSelection,
                     onLongPress = onLongPress,
@@ -589,6 +590,7 @@ private fun ConversationMarkdownTextSegment(
 @Composable
 private fun ConversationMarkdownCodeBlockSegment(
     code: String,
+    language: String?,
     style: TextStyle,
     enablesSelection: Boolean,
     onLongPress: ((IntOffset) -> Unit)?,
@@ -629,7 +631,19 @@ private fun ConversationMarkdownCodeBlockSegment(
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
     ) {
-        if (enablesSelection) {
+        if (shouldRenderMarkdownCodeBlockAsDiff(language)) {
+            ConversationCleanDiffCodeBlock(
+                code = code,
+                modifier = Modifier.fillMaxWidth(),
+                style = textStyle,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 12.dp,
+                    vertical = 8.dp,
+                ),
+                enablesSelection = enablesSelection,
+                onLongPress = onLongPress,
+            )
+        } else if (enablesSelection) {
             SelectionContainer {
                 androidx.compose.material3.Text(
                     text = code,
