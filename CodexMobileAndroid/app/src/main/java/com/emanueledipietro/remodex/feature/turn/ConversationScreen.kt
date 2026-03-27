@@ -22,6 +22,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -981,6 +982,7 @@ private fun ConversationMarkdownText(
     style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
     color: Color = remodexConversationChrome().bodyText,
     enablesSelection: Boolean = false,
+    onLongPress: ((IntOffset) -> Unit)? = null,
 ) {
     ConversationRichMarkdownContent(
         text = text,
@@ -988,6 +990,7 @@ private fun ConversationMarkdownText(
         style = style,
         color = color,
         enablesSelection = enablesSelection,
+        onLongPress = onLongPress,
     )
 }
 
@@ -3974,7 +3977,7 @@ private fun ConversationMessageActionContainer(
     modifier: Modifier = Modifier,
     alignMenuToEnd: Boolean = false,
     onClick: (() -> Unit)? = null,
-    content: @Composable () -> Unit,
+    content: @Composable (showContextMenuAt: (IntOffset) -> Unit) -> Unit,
 ) {
     val trimmedText = remember(text) { text.trim() }
     val context = LocalContext.current
@@ -3985,6 +3988,15 @@ private fun ConversationMessageActionContainer(
     var selectableTextSheetState by remember(trimmedText, messageRole.name, usesMarkdownSelection) {
         mutableStateOf<SelectableMessageTextSheetState?>(null)
     }
+    val openContextMenu: (IntOffset) -> Unit = remember(trimmedText, messageRole.name, performLightHaptic) {
+        { pressOffset ->
+            if (trimmedText.isNotEmpty()) {
+                performLightHaptic()
+                menuPressOffset = pressOffset
+                menuExpanded = true
+            }
+        }
+    }
 
     val gestureModifier = if (trimmedText.isNotEmpty() || onClick != null) {
         Modifier
@@ -3994,12 +4006,12 @@ private fun ConversationMessageActionContainer(
                         onClick?.invoke()
                     },
                     onLongPress = { pressOffset ->
-                        performLightHaptic()
-                        menuPressOffset = IntOffset(
-                            x = pressOffset.x.toInt(),
-                            y = pressOffset.y.toInt(),
+                        openContextMenu(
+                            IntOffset(
+                                x = pressOffset.x.toInt(),
+                                y = pressOffset.y.toInt(),
+                            ),
                         )
-                        menuExpanded = true
                     },
                 )
             }
@@ -4013,9 +4025,7 @@ private fun ConversationMessageActionContainer(
                 }
                 if (trimmedText.isNotEmpty()) {
                     onLongClick {
-                        performLightHaptic()
-                        menuPressOffset = IntOffset.Zero
-                        menuExpanded = true
+                        openContextMenu(IntOffset.Zero)
                         true
                     }
                 }
@@ -4028,7 +4038,7 @@ private fun ConversationMessageActionContainer(
         modifier = modifier.then(gestureModifier),
         contentAlignment = if (alignMenuToEnd) Alignment.TopEnd else Alignment.TopStart,
     ) {
-        content()
+        content(openContextMenu)
         ConversationMessageContextMenu(
             expanded = menuExpanded,
             alignToTrailing = alignMenuToEnd,
@@ -4430,7 +4440,7 @@ private fun UserConversationRow(item: RemodexConversationItem) {
             allowsSelectText = false,
             modifier = Modifier.fillMaxWidth(0.8f),
             alignMenuToEnd = true,
-        ) {
+        ) { _ ->
             Column(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -4513,7 +4523,7 @@ private fun AssistantConversationRow(
         usesMarkdownSelection = true,
         allowsSelectText = true,
         modifier = Modifier.fillMaxWidth(0.94f),
-    ) {
+    ) { showContextMenuAt ->
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -4528,6 +4538,7 @@ private fun AssistantConversationRow(
                             text = item.text,
                             style = MaterialTheme.typography.bodyMedium,
                             color = chrome.bodyText,
+                            onLongPress = showContextMenuAt,
                         )
                     }
                 }
@@ -4685,7 +4696,7 @@ private fun ToolActivityConversationRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp),
-    ) {
+    ) { _ ->
         Column(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -4733,57 +4744,65 @@ private fun ThinkingConversationRow(
             )
         }
     }
-    Column(
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = thinkingText.isNotBlank(),
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        when {
-            activityPreview != null -> {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    ) { showContextMenuAt ->
+        Column(
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            when {
+                activityPreview != null -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ThinkingTitle(isStreaming = item.isStreaming)
+                        ThinkingActivityPreviewText(
+                            preview = activityPreview,
+                            chrome = chrome,
+                        )
+                    }
+                }
+
+                thinkingText.isEmpty() -> {
                     ThinkingTitle(isStreaming = item.isStreaming)
-                    ThinkingActivityPreviewText(
-                        preview = activityPreview,
-                        chrome = chrome,
-                    )
+                }
+
+                item.isStreaming -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ThinkingTitle(isStreaming = true)
+                        StreamingThinkingPreviewText(
+                            text = thinkingText,
+                            chrome = chrome,
+                        )
+                    }
+                }
+
+                else -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ThinkingTitle(isStreaming = item.isStreaming)
+                        ThinkingDisclosureContentView(
+                            messageId = item.id,
+                            content = thinkingContent,
+                            chrome = chrome,
+                            onLongPress = showContextMenuAt,
+                        )
+                    }
                 }
             }
-
-            thinkingText.isEmpty() -> {
-                ThinkingTitle(isStreaming = item.isStreaming)
+            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
             }
-
-            item.isStreaming -> {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ThinkingTitle(isStreaming = true)
-                    StreamingThinkingPreviewText(
-                        text = thinkingText,
-                        chrome = chrome,
-                    )
-                }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
             }
-
-            else -> {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ThinkingTitle(isStreaming = item.isStreaming)
-                    ThinkingDisclosureContentView(
-                        messageId = item.id,
-                        content = thinkingContent,
-                        chrome = chrome,
-                    )
-                }
-            }
-        }
-        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
-            Text(
-                text = supportingText,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
-        }
-        if (accessoryState?.showsRunningIndicator == true) {
-            TerminalRunningIndicator()
         }
     }
 }
@@ -4864,6 +4883,7 @@ private fun ThinkingDisclosureContentView(
     messageId: String,
     content: ThinkingDisclosureContent,
     chrome: RemodexConversationChrome,
+    onLongPress: ((IntOffset) -> Unit)? = null,
 ) {
     var expandedSectionIds by rememberSaveable(messageId) { mutableStateOf(emptyList<String>()) }
     Column(
@@ -4881,13 +4901,30 @@ private fun ThinkingDisclosureContentView(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = hasDetail) {
-                                expandedSectionIds = if (isExpanded) {
-                                    expandedSectionIds - section.id
+                            .then(
+                                if (hasDetail && onLongPress != null) {
+                                    Modifier.combinedClickable(
+                                        onClick = {
+                                            expandedSectionIds = if (isExpanded) {
+                                                expandedSectionIds - section.id
+                                            } else {
+                                                expandedSectionIds + section.id
+                                            }
+                                        },
+                                        onLongClick = { onLongPress(IntOffset.Zero) },
+                                    )
+                                } else if (hasDetail) {
+                                    Modifier.clickable {
+                                        expandedSectionIds = if (isExpanded) {
+                                            expandedSectionIds - section.id
+                                        } else {
+                                            expandedSectionIds + section.id
+                                        }
+                                    }
                                 } else {
-                                    expandedSectionIds + section.id
+                                    Modifier
                                 }
-                            },
+                            ),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -4913,6 +4950,7 @@ private fun ThinkingDisclosureContentView(
                             modifier = Modifier.padding(start = 22.dp),
                             style = MaterialTheme.typography.bodySmall,
                             color = chrome.secondaryText,
+                            onLongPress = onLongPress,
                         )
                     }
                 }
@@ -4922,6 +4960,7 @@ private fun ThinkingDisclosureContentView(
                 text = content.fallbackText,
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
+                onLongPress = onLongPress,
             )
         }
     }
@@ -4971,7 +5010,7 @@ private fun FileChangeConversationRow(
         usesMarkdownSelection = false,
         allowsSelectText = true,
         onClick = detailsPresentation?.let { presentation -> { onOpenDetails(presentation) } },
-    ) {
+    ) { showContextMenuAt ->
         Surface(
             color = chrome.panelSurface,
             shape = RemodexConversationShapes.card,
@@ -4997,6 +5036,7 @@ private fun FileChangeConversationRow(
                         text = item.text,
                         style = MaterialTheme.typography.bodyMedium,
                         color = chrome.bodyText,
+                        onLongPress = showContextMenuAt,
                     )
                 }
                 item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
@@ -5358,39 +5398,48 @@ private fun CommandExecutionConversationRow(
             details = details,
         )
     }
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        if (resolvedRows.isNotEmpty()) {
-            resolvedRows.forEachIndexed { index, status ->
-                CommandExecutionStatusCard(
-                    status = status,
-                    onClick = if (index == 0) {
-                        onOpenDetails
-                    } else {
-                        null
-                    },
-                )
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = true,
+    ) { showContextMenuAt ->
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (resolvedRows.isNotEmpty()) {
+                resolvedRows.forEachIndexed { index, status ->
+                    CommandExecutionStatusCard(
+                        status = status,
+                        onClick = if (index == 0) {
+                            onOpenDetails
+                        } else {
+                            null
+                        },
+                        onLongPress = showContextMenuAt,
+                    )
+                }
+            } else {
+                item.text.takeIf(String::isNotBlank)?.let { text ->
+                    ConversationMarkdownText(
+                        text = text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = chrome.secondaryText,
+                        onLongPress = showContextMenuAt,
+                    )
+                }
             }
-        } else {
-            item.text.takeIf(String::isNotBlank)?.let { text ->
-                ConversationMarkdownText(
-                    text = text,
+            item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                Text(
+                    text = supportingText,
                     style = MaterialTheme.typography.bodySmall,
                     color = chrome.secondaryText,
                 )
             }
-        }
-        item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
-            Text(
-                text = supportingText,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-            )
-        }
-        if (accessoryState?.showsRunningIndicator == true) {
-            TerminalRunningIndicator()
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
         }
     }
 }
@@ -5430,90 +5479,100 @@ private fun SubagentActionRow(
             .distinct()
             .forEach(onHydrateSubagentThread)
     }
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded },
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = item.text.isNotBlank(),
+    ) { showContextMenuAt ->
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = action.summaryText,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.secondaryText,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                imageVector = Icons.Outlined.ExpandMore,
-                contentDescription = null,
-                tint = chrome.tertiaryText,
+            Row(
                 modifier = Modifier
-                    .size(14.dp)
-                    .graphicsLayer { rotationZ = if (expanded) 0f else -90f },
-            )
-        }
-        if (expanded && resolvedRows.isNotEmpty()) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(subagentAgentRowSpacing(action.normalizedTool)),
-                modifier = Modifier.padding(top = subagentAgentRowsTopPadding(action.normalizedTool)),
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = { expanded = !expanded },
+                        onLongClick = { showContextMenuAt(IntOffset.Zero) },
+                    ),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                resolvedRows.forEach { row ->
-                    val observedThread = remember(row.threadId, threads) {
-                        observedSubagentThread(
-                            presentation = row,
-                            threads = threads,
+                Text(
+                    text = action.summaryText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = Icons.Outlined.ExpandMore,
+                    contentDescription = null,
+                    tint = chrome.tertiaryText,
+                    modifier = Modifier
+                        .size(14.dp)
+                        .graphicsLayer { rotationZ = if (expanded) 0f else -90f },
+                )
+            }
+            if (expanded && resolvedRows.isNotEmpty()) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(subagentAgentRowSpacing(action.normalizedTool)),
+                    modifier = Modifier.padding(top = subagentAgentRowsTopPadding(action.normalizedTool)),
+                ) {
+                    resolvedRows.forEach { row ->
+                        val observedThread = remember(row.threadId, threads) {
+                            observedSubagentThread(
+                                presentation = row,
+                                threads = threads,
+                            )
+                        }
+                        val status = remember(action, row, observedThread) {
+                            resolvedSubagentStatusPresentation(
+                                action = action,
+                                presentation = row,
+                                observedThread = observedThread,
+                            )
+                        }
+                        val statusText = remember(action.normalizedTool, status.label) {
+                            readableSubagentStatus(
+                                normalizedTool = action.normalizedTool,
+                                label = status.label,
+                            )
+                        }
+                        val detailModelLabel = remember(row, observedThread) {
+                            resolvedSubagentModelLabel(
+                                presentation = row,
+                                observedThread = observedThread,
+                            )
+                        }
+                        val detailText = remember(action.prompt, row.prompt, row.fallbackMessage) {
+                            detailSubagentText(
+                                action = action,
+                                presentation = row,
+                            )
+                        }
+                        SubagentAgentRowView(
+                            title = resolvedSubagentTitle(row),
+                            statusText = statusText,
+                            modelLabel = if (action.normalizedTool == "spawnagent") null else detailModelLabel,
+                            showsDetails = detailText != null || detailModelLabel != null,
+                            onShowDetails = {
+                                selectedAgentDetails = row
+                            },
+                            onOpen = {
+                                selectedAgentDetails = null
+                                onOpenSubagentThread(row.threadId)
+                            },
                         )
                     }
-                    val status = remember(action, row, observedThread) {
-                        resolvedSubagentStatusPresentation(
-                            action = action,
-                            presentation = row,
-                            observedThread = observedThread,
-                        )
-                    }
-                    val statusText = remember(action.normalizedTool, status.label) {
-                        readableSubagentStatus(
-                            normalizedTool = action.normalizedTool,
-                            label = status.label,
-                        )
-                    }
-                    val detailModelLabel = remember(row, observedThread) {
-                        resolvedSubagentModelLabel(
-                            presentation = row,
-                            observedThread = observedThread,
-                        )
-                    }
-                    val detailText = remember(action.prompt, row.prompt, row.fallbackMessage) {
-                        detailSubagentText(
-                            action = action,
-                            presentation = row,
-                        )
-                    }
-                    SubagentAgentRowView(
-                        title = resolvedSubagentTitle(row),
-                        statusText = statusText,
-                        modelLabel = if (action.normalizedTool == "spawnagent") null else detailModelLabel,
-                        showsDetails = detailText != null || detailModelLabel != null,
-                        onShowDetails = {
-                            selectedAgentDetails = row
-                        },
-                        onOpen = {
-                            selectedAgentDetails = null
-                            onOpenSubagentThread(row.threadId)
-                        },
-                    )
                 }
             }
-        }
-        if (item.isStreaming) {
-            MiniTypingIndicator()
-        }
-        if (accessoryState?.showsRunningIndicator == true) {
-            TerminalRunningIndicator()
+            if (item.isStreaming) {
+                MiniTypingIndicator()
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
         }
     }
     selectedAgentDetails?.let { selected ->
@@ -5584,11 +5643,19 @@ internal data class HumanizedCommandInfo(
 private fun CommandExecutionStatusCard(
     status: CommandExecutionStatusPresentation,
     onClick: (() -> Unit)?,
+    onLongPress: ((IntOffset) -> Unit)? = null,
 ) {
-    val clickableModifier = if (onClick != null) {
-        Modifier.clickable(onClick = onClick)
-    } else {
-        Modifier
+    val clickableModifier = when {
+        onClick != null && onLongPress != null -> Modifier.combinedClickable(
+            onClick = onClick,
+            onLongClick = { onLongPress(IntOffset.Zero) },
+        )
+        onClick != null -> Modifier.clickable(onClick = onClick)
+        onLongPress != null -> Modifier.combinedClickable(
+            onClick = {},
+            onLongClick = { onLongPress(IntOffset.Zero) },
+        )
+        else -> Modifier
     }
     CommandExecutionCardBody(
         status = status,
@@ -7034,13 +7101,14 @@ private fun DefaultSystemRow(
         messageRole = ConversationSpeaker.SYSTEM,
         usesMarkdownSelection = false,
         allowsSelectText = true,
-    ) {
+    ) { showContextMenuAt ->
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             item.text.takeIf(String::isNotBlank)?.let { text ->
                 ConversationMarkdownText(
                     text = text,
                     style = MaterialTheme.typography.bodySmall,
                     color = chrome.secondaryText,
+                    onLongPress = showContextMenuAt,
                 )
             }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->

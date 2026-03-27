@@ -59,6 +59,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -121,6 +122,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -179,6 +181,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -237,6 +240,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -311,6 +315,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -372,6 +377,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -434,6 +440,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},
@@ -471,6 +478,136 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun longPressSystemMarkdownMessageShowsSelectTextAndCopy() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "system-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.CHAT,
+                                text = "System note with **markdown** and `code`",
+                                orderIndex = 1,
+                            ),
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("System note", substring = true)
+            .performTouchInput { longClick() }
+
+        composeRule.onAllNodesWithText("Select Text").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Copy").assertCountEquals(1)
+    }
+
+    @Test
+    fun longPressCommandExecutionCardShowsSelectTextAndCopy() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "command-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running npm test",
+                                orderIndex = 1,
+                            ),
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("npm test", substring = true)
+            .performTouchInput { longClick() }
+
+        composeRule.onAllNodesWithText("Select Text").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Copy").assertCountEquals(1)
+    }
+
+    @Test
     fun longPressUserMessageShowsCopyWithoutSelectText() {
         composeRule.setContent {
             RemodexTheme {
@@ -498,6 +635,7 @@ class ConversationScreenTest {
                     onSelectAccessMode = {},
                     onSelectServiceTier = {},
                     onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
                     onRemoveAttachment = {},
                     onSelectFileAutocomplete = {},
                     onRemoveMentionedFile = {},

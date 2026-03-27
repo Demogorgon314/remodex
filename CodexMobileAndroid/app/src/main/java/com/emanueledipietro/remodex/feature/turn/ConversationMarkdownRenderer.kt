@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.feature.turn
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Handler
@@ -8,6 +9,7 @@ import android.os.Looper
 import android.text.method.LinkMovementMethod
 import android.util.TypedValue
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -18,6 +20,7 @@ import android.widget.TextView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,7 +60,12 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -152,6 +160,7 @@ internal fun ConversationRichMarkdownContent(
     style: TextStyle = MaterialTheme.typography.bodyMedium,
     color: Color = remodexConversationChrome().bodyText,
     enablesSelection: Boolean = false,
+    onLongPress: ((IntOffset) -> Unit)? = null,
 ) {
     val segments = remember(text) { parseConversationMarkdownSegments(text) }
     var preview by remember(text) { mutableStateOf<ConversationMarkdownPreview?>(null) }
@@ -167,10 +176,12 @@ internal fun ConversationRichMarkdownContent(
                     style = style,
                     color = color,
                     enablesSelection = enablesSelection,
+                    onLongPress = onLongPress,
                 )
 
                 is ConversationMarkdownSegment.Mermaid -> ConversationMermaidSegment(
                     source = segment.source,
+                    onLongPress = onLongPress,
                     onPreview = {
                         preview = ConversationMarkdownPreview.Mermaid(
                             source = segment.source,
@@ -183,6 +194,7 @@ internal fun ConversationRichMarkdownContent(
                     url = segment.url,
                     altText = segment.altText,
                     title = segment.title,
+                    onLongPress = onLongPress,
                     onPreview = {
                         preview = ConversationMarkdownPreview.Image(
                             url = segment.url,
@@ -346,11 +358,14 @@ private fun ConversationMarkdownTextSegment(
     style: TextStyle,
     color: Color,
     enablesSelection: Boolean,
+    onLongPress: ((IntOffset) -> Unit)?,
 ) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val density = LocalDensity.current
     val chrome = remodexConversationChrome()
+    val selectionHighlightColor = remember(context) { platformSelectionHighlightColor(context) }
+    val lastTouchOffset = remember { intArrayOf(0, 0) }
     val textSizePx = remember(style.fontSize, density) {
         if (style.fontSize.isSpecified) {
             with(density) { style.fontSize.toPx() }
@@ -405,15 +420,44 @@ private fun ConversationMarkdownTextSegment(
                 includeFontPadding = false
                 setLineSpacing(0f, 1f)
                 setPadding(0, 0, 0, 0)
-                highlightColor = AndroidColor.TRANSPARENT
+                highlightColor = if (enablesSelection) selectionHighlightColor else AndroidColor.TRANSPARENT
                 linksClickable = !enablesSelection
                 isFocusable = false
                 isClickable = false
-                isLongClickable = enablesSelection
+                isLongClickable = enablesSelection || onLongPress != null
             }
         },
         update = { textView ->
             val previousToken = textView.tag as? ConversationMarkdownTextRenderToken
+            textView.setOnTouchListener(
+                if (!enablesSelection && onLongPress != null) {
+                    { _, event ->
+                        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                            lastTouchOffset[0] = event.x.toInt()
+                            lastTouchOffset[1] = event.y.toInt()
+                        }
+                        false
+                    }
+                } else {
+                    null
+                },
+            )
+            textView.setOnLongClickListener(
+                if (!enablesSelection && onLongPress != null) {
+                    {
+                        onLongPress(IntOffset(x = lastTouchOffset[0], y = lastTouchOffset[1]))
+                        true
+                    }
+                } else {
+                    null
+                },
+            )
+            textView.isLongClickable = enablesSelection || onLongPress != null
+            textView.highlightColor = if (renderToken.enablesSelection) {
+                selectionHighlightColor
+            } else {
+                AndroidColor.TRANSPARENT
+            }
             if (previousToken != renderToken) {
                 textView.setTextColor(renderToken.textColorArgb)
                 textView.setLinkTextColor(renderToken.linkColorArgb)
@@ -438,6 +482,7 @@ private fun ConversationMarkdownTextSegment(
 @Composable
 private fun ConversationMermaidSegment(
     source: String,
+    onLongPress: ((IntOffset) -> Unit)?,
     onPreview: () -> Unit,
 ) {
     val view = LocalView.current
@@ -519,10 +564,13 @@ private fun ConversationMermaidSegment(
                 modifier = Modifier
                     .matchParentSize()
                     .clip(RoundedCornerShape(16.dp))
-                    .clickable {
-                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                        onPreview()
-                    },
+                    .markdownPreviewGestureModifier(
+                        onTap = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onPreview()
+                        },
+                        onLongPress = onLongPress,
+                    ),
             )
         }
     }
@@ -533,6 +581,7 @@ private fun ConversationMarkdownImageSegment(
     url: String,
     altText: String?,
     title: String?,
+    onLongPress: ((IntOffset) -> Unit)?,
     onPreview: () -> Unit,
 ) {
     val view = LocalView.current
@@ -542,10 +591,13 @@ private fun ConversationMarkdownImageSegment(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable {
-                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                onPreview()
-            },
+            .markdownPreviewGestureModifier(
+                onTap = {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    onPreview()
+                },
+                onLongPress = onLongPress,
+            ),
         color = chrome.panelSurface,
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, chrome.subtleBorder),
@@ -568,6 +620,44 @@ private fun ConversationMarkdownImageSegment(
             )
         }
     }
+}
+
+private fun Modifier.markdownPreviewGestureModifier(
+    onTap: () -> Unit,
+    onLongPress: ((IntOffset) -> Unit)?,
+): Modifier {
+    val gestureModifier = if (onLongPress != null) {
+        pointerInput(onTap, onLongPress) {
+            detectTapGestures(
+                onTap = { onTap() },
+                onLongPress = { offset ->
+                    onLongPress(
+                        IntOffset(
+                            x = offset.x.toInt(),
+                            y = offset.y.toInt(),
+                        ),
+                    )
+                },
+            )
+        }.semantics {
+            onClick {
+                onTap()
+                true
+            }
+            onLongClick {
+                onLongPress(IntOffset.Zero)
+                true
+            }
+        }
+    } else {
+        clickable(onClick = onTap)
+    }
+
+    return this.then(gestureModifier)
+}
+
+private fun platformSelectionHighlightColor(context: Context): Int {
+    return TextView(context).highlightColor
 }
 
 @Composable
