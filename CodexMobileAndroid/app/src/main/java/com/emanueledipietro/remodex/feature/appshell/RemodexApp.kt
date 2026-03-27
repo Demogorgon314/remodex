@@ -80,6 +80,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -131,6 +132,11 @@ internal enum class ShellBackAction {
     NAVIGATE_TO_CONTENT,
 }
 
+internal enum class ShellTopBarTitleLayout {
+    CENTERED,
+    LEADING,
+}
+
 private data class RemodexSystemBarStyle(
     val statusBarColor: Color,
     val navigationBarColor: Color,
@@ -150,6 +156,17 @@ internal fun resolveShellBackAction(
             ShellBackAction.NAVIGATE_TO_SETTINGS
         shellRoute == ShellRoute.SETTINGS -> ShellBackAction.NAVIGATE_TO_CONTENT
         else -> null
+    }
+}
+
+internal fun resolveShellTopBarTitleLayout(
+    shellRoute: ShellRoute,
+    hasSelectedThread: Boolean,
+): ShellTopBarTitleLayout {
+    return if (shellRoute == ShellRoute.CONTENT && hasSelectedThread) {
+        ShellTopBarTitleLayout.LEADING
+    } else {
+        ShellTopBarTitleLayout.CENTERED
     }
 }
 
@@ -734,6 +751,7 @@ private fun MainPane(
             shellRoute = shellRoute,
             selectedThreadTitle = uiState.selectedThread?.displayTitle,
             selectedThreadProjectPath = uiState.selectedThread?.projectPath,
+            hasSelectedThread = uiState.selectedThread != null,
             compact = compact,
             repoDiffTotals = repoDiffTotals,
             isLoadingRepoDiff = shellRoute == ShellRoute.CONTENT && uiState.composer.gitState.isLoading,
@@ -893,6 +911,7 @@ private fun ShellTopBar(
     shellRoute: ShellRoute,
     selectedThreadTitle: String?,
     selectedThreadProjectPath: String?,
+    hasSelectedThread: Boolean,
     compact: Boolean,
     repoDiffTotals: RemodexGitDiffTotals?,
     isLoadingRepoDiff: Boolean,
@@ -908,18 +927,40 @@ private fun ShellTopBar(
         ShellRoute.ARCHIVED_CHATS -> shellRoute.title
     }
     val subtitle = when (shellRoute) {
-        ShellRoute.CONTENT -> condensedProjectPath(selectedThreadProjectPath)
+        ShellRoute.CONTENT -> {
+            if (hasSelectedThread) {
+                condensedProjectPath(selectedThreadProjectPath)
+            } else {
+                null
+            }
+        }
         ShellRoute.SETTINGS,
         ShellRoute.ABOUT_REMODEX,
         ShellRoute.ARCHIVED_CHATS,
         -> null
+    }
+    val titleLayout = resolveShellTopBarTitleLayout(
+        shellRoute = shellRoute,
+        hasSelectedThread = hasSelectedThread,
+    )
+    val titleAlignment = when (titleLayout) {
+        ShellTopBarTitleLayout.CENTERED -> Alignment.CenterHorizontally
+        ShellTopBarTitleLayout.LEADING -> Alignment.Start
+    }
+    val titleTextAlign = when (titleLayout) {
+        ShellTopBarTitleLayout.CENTERED -> TextAlign.Center
+        ShellTopBarTitleLayout.LEADING -> TextAlign.Start
+    }
+    val rowVerticalAlignment = when (titleLayout) {
+        ShellTopBarTitleLayout.CENTERED -> Alignment.CenterVertically
+        ShellTopBarTitleLayout.LEADING -> Alignment.Top
     }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
             .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.Top,
+        verticalAlignment = rowVerticalAlignment,
     ) {
         when {
             shellRoute != ShellRoute.CONTENT -> {
@@ -957,23 +998,28 @@ private fun ShellTopBar(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 10.dp),
+            horizontalAlignment = titleAlignment,
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
                 text = title,
+                modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = chrome.titleText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                textAlign = titleTextAlign,
             )
             subtitle?.let { path ->
                 Text(
                     text = path,
+                    modifier = Modifier.fillMaxWidth(),
                     style = MaterialTheme.typography.labelSmall,
                     color = chrome.secondaryText,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    textAlign = titleTextAlign,
                 )
             }
         }
