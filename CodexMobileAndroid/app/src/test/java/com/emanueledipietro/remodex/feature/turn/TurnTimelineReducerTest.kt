@@ -47,6 +47,32 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `assistant deltas preserve token leading spaces while streaming`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "Hello",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = " world",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals(1, projected.size)
+        assertEquals("Hello world", projected.first().text)
+        assertTrue(projected.first().isStreaming)
+    }
+
+    @Test
     fun `projected fast path updates only the streaming assistant row`() {
         val user = RemodexConversationItem(
             id = "user-1",

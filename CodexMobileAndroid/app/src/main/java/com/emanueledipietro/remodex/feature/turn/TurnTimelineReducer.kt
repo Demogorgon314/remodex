@@ -145,7 +145,7 @@ object TurnTimelineReducer {
         }
 
         val existing = items[existingIndex]
-        val nextText = mergeText(existing.text, delta.trim())
+        val nextText = mergeText(existing.text, delta)
         val nextTurnId = turnId.ifBlank { existing.turnId.orEmpty() }
         val nextItemId = itemId ?: existing.itemId
 
@@ -182,7 +182,11 @@ object TurnTimelineReducer {
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
     ): List<RemodexConversationItem> {
-        val trimmedDelta = delta.trim()
+        val normalizedDelta = normalizeIncomingDelta(
+            delta = delta,
+            speaker = speaker,
+            kind = kind,
+        )
         val existingIndex = items.indexOfFirst { item ->
             item.id == messageId || (
                 item.kind == kind &&
@@ -196,7 +200,7 @@ object TurnTimelineReducer {
                 id = messageId,
                 speaker = speaker,
                 kind = kind,
-                text = trimmedDelta,
+                text = normalizedDelta,
                 turnId = turnId,
                 itemId = itemId,
                 isStreaming = true,
@@ -207,7 +211,7 @@ object TurnTimelineReducer {
             existing.copy(
                 text = mergeDeltaText(
                     existing = existing.text,
-                    incoming = trimmedDelta,
+                    incoming = normalizedDelta,
                     speaker = speaker,
                     kind = kind,
                 ),
@@ -362,7 +366,7 @@ object TurnTimelineReducer {
         existing: String,
         incoming: String,
     ): String {
-        if (incoming.isBlank()) {
+        if (incoming.isEmpty()) {
             return existing
         }
         if (existing.isEmpty()) {
@@ -409,6 +413,18 @@ object TurnTimelineReducer {
         }
 
         return existing + incoming
+    }
+
+    private fun normalizeIncomingDelta(
+        delta: String,
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): String {
+        return if (speaker == ConversationSpeaker.ASSISTANT && kind == ConversationItemKind.CHAT) {
+            delta
+        } else {
+            delta.trim()
+        }
     }
 
     private fun enforceIntraTurnOrder(

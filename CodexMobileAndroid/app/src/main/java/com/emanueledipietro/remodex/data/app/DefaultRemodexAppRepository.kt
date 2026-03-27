@@ -55,6 +55,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -116,8 +117,11 @@ class DefaultRemodexAppRepository(
     override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusState
 
     init {
-        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            threadSyncService.threads.collectLatest { snapshots ->
+        repositoryScope.launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            // Streaming assistant deltas should update the visible bubble continuously.
+            // Using collectLatest here lets newer thread snapshots cancel in-flight work,
+            // which makes Android feel chunkier than iOS under heavy streaming.
+            threadSyncService.threads.collect { snapshots ->
                 syncThreads(snapshots)
             }
         }

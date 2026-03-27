@@ -103,14 +103,47 @@ private val mermaidFenceRegex = Regex(
 )
 private val markdownImageTitleRegex = Regex("""^(.*)\s+(?:"([^"]*)"|'([^']*)')$""")
 
-private data class ConversationMarkdownTextRenderState(
-    val markdown: String,
+private data class ConversationMarkdownTextRenderToken(
+    val markdownToken: String,
     val textColorArgb: Int,
     val linkColorArgb: Int,
     val textSizePx: Float?,
     val lineHeightExtra: Float,
     val enablesSelection: Boolean,
 )
+
+private const val ConversationMarkdownRenderTokenSampleSize = 16
+
+internal fun conversationMarkdownRenderToken(text: String): String {
+    if (text.isEmpty()) {
+        return "0|||"
+    }
+
+    fun sample(startIndex: Int): String {
+        val length = text.length
+        val safeStart = startIndex.coerceIn(0, (length - 1).coerceAtLeast(0))
+        val safeEnd = (safeStart + ConversationMarkdownRenderTokenSampleSize).coerceAtMost(length)
+        val builder = StringBuilder((safeEnd - safeStart) * 2)
+        for (index in safeStart until safeEnd) {
+            val code = text[index].code
+            builder.append(code.toString(16))
+            builder.append('-')
+        }
+        return builder.toString()
+    }
+
+    val midStart = ((text.length - ConversationMarkdownRenderTokenSampleSize) / 2).coerceAtLeast(0)
+    val endStart = (text.length - ConversationMarkdownRenderTokenSampleSize).coerceAtLeast(0)
+    return buildString {
+        append(text.length)
+        append('|')
+        append(sample(startIndex = 0))
+        append('|')
+        append(sample(startIndex = midStart))
+        append('|')
+        append(sample(startIndex = endStart))
+    }
+}
 
 @Composable
 internal fun ConversationRichMarkdownContent(
@@ -332,9 +365,9 @@ private fun ConversationMarkdownTextSegment(
             0f
         }
     }
-    val renderState = remember(markdown, color, chrome.accent, textSizePx, lineHeightExtra, enablesSelection) {
-        ConversationMarkdownTextRenderState(
-            markdown = markdown,
+    val renderToken = remember(markdown, color, chrome.accent, textSizePx, lineHeightExtra, enablesSelection) {
+        ConversationMarkdownTextRenderToken(
+            markdownToken = conversationMarkdownRenderToken(markdown),
             textColorArgb = color.toArgb(),
             linkColorArgb = chrome.accent.toArgb(),
             textSizePx = textSizePx.takeUnless(Float::isNaN),
@@ -380,22 +413,22 @@ private fun ConversationMarkdownTextSegment(
             }
         },
         update = { textView ->
-            val previousState = textView.tag as? ConversationMarkdownTextRenderState
-            if (previousState != renderState) {
-                textView.setTextColor(renderState.textColorArgb)
-                textView.setLinkTextColor(renderState.linkColorArgb)
-                renderState.textSizePx?.let { resolvedTextSizePx ->
+            val previousToken = textView.tag as? ConversationMarkdownTextRenderToken
+            if (previousToken != renderToken) {
+                textView.setTextColor(renderToken.textColorArgb)
+                textView.setLinkTextColor(renderToken.linkColorArgb)
+                renderToken.textSizePx?.let { resolvedTextSizePx ->
                     textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, resolvedTextSizePx)
                 }
-                textView.setLineSpacing(renderState.lineHeightExtra, 1f)
-                textView.setTextIsSelectable(renderState.enablesSelection)
-                textView.movementMethod = if (renderState.enablesSelection) {
+                textView.setLineSpacing(renderToken.lineHeightExtra, 1f)
+                textView.setTextIsSelectable(renderToken.enablesSelection)
+                textView.movementMethod = if (renderToken.enablesSelection) {
                     null
                 } else {
                     LinkMovementMethod.getInstance()
                 }
-                markwon.setMarkdown(textView, renderState.markdown)
-                textView.tag = renderState
+                markwon.setMarkdown(textView, markdown)
+                textView.tag = renderToken
             }
         },
     )

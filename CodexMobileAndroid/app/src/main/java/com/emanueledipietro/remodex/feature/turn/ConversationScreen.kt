@@ -907,7 +907,7 @@ private data class ConversationTextBlock(
 
 private val conversationInlineMarkdownPattern = Regex("""\[[^\]]+]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|__[^_]+__""")
 private val heavyStreamingMarkdownSignalRegex = Regex(
-    pattern = """(?m)^\s{0,3}(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```|\|)|!\[[^\]]*]\([^)]+\)|\[[^\]]+]\([^)]+\)|`|(\*\*|__)""",
+    pattern = """(?m)^\s{0,3}(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```|\|)|!\[[^\]]*]\([^)]+\)|```mermaid""",
 )
 
 internal fun shouldUseLightweightStreamingAssistantText(text: String): Boolean {
@@ -4327,21 +4327,20 @@ private fun AssistantConversationRow(
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (item.text.isNotBlank()) {
-                if (item.isStreaming && shouldUseLightweightStreamingAssistantText(item.text)) {
-                    Text(
-                        text = item.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = chrome.bodyText,
-                    )
-                } else {
-                    ConversationMarkdownText(
-                        text = item.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = chrome.bodyText,
-                    )
+                if (item.text.isNotBlank()) {
+                    if (item.isStreaming && shouldUseLightweightStreamingAssistantText(item.text)) {
+                        LightweightStreamingAssistantMarkdownText(
+                            text = item.text,
+                            chrome = chrome,
+                        )
+                    } else {
+                        ConversationMarkdownText(
+                            text = item.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = chrome.bodyText,
+                        )
+                    }
                 }
-            }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
                 Text(
                     text = supportingText,
@@ -4366,6 +4365,51 @@ private fun AssistantConversationRow(
             }
             accessoryState?.copyText?.let { copyText ->
                 ConversationCopyBlockButton(text = copyText)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LightweightStreamingAssistantMarkdownText(
+    text: String,
+    chrome: RemodexConversationChrome,
+) {
+    val monoFamily = MaterialTheme.typography.bodyMedium.fontFamily ?: FontFamily.Monospace
+    val blocks = remember(text) { parseConversationTextBlocks(text) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        blocks.forEach { block ->
+            when (block.kind) {
+                ConversationTextBlockKind.PROSE -> Text(
+                    text = buildConversationAnnotatedString(
+                        text = block.text,
+                        chrome = chrome,
+                        monoFamily = monoFamily,
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.bodyText,
+                )
+
+                ConversationTextBlockKind.CODE -> Surface(
+                    color = chrome.mutedSurface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, chrome.subtleBorder),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    Text(
+                        text = block.text,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                        color = chrome.bodyText,
+                    )
+                }
             }
         }
     }
