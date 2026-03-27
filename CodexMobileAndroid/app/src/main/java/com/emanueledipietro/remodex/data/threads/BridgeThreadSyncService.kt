@@ -61,6 +61,7 @@ import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -200,6 +201,7 @@ class BridgeThreadSyncService(
     )
 
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
+    private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
@@ -575,35 +577,37 @@ class BridgeThreadSyncService(
         var imageUrlKey = "url"
         var turnStartResponse: RpcMessage? = null
         val response = try {
-            while (turnStartResponse == null) {
-                try {
-                    turnStartResponse = sendRequestWithServiceTierFallback(
-                        method = "turn/start",
-                        accessMode = runtimeConfig.accessMode,
-                        includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
-                        buildBaseParams = { includeServiceTier ->
-                            buildTurnStartParams(
-                                threadId = threadId,
-                                prompt = trimmedPrompt,
-                                attachments = attachments,
-                                runtimeConfig = runtimeConfig,
-                                includeServiceTier = includeServiceTier,
-                                imageUrlKey = imageUrlKey,
-                            )
-                        },
-                    )
-                } catch (error: Throwable) {
-                    if (imageUrlKey == "url" &&
-                        attachments.isNotEmpty() &&
-                        shouldRetryWithImageUrlFieldFallback(error)
-                    ) {
-                        imageUrlKey = "image_url"
-                        continue
+            retryAfterThreadMaterialization {
+                while (turnStartResponse == null) {
+                    try {
+                        turnStartResponse = sendRequestWithServiceTierFallback(
+                            method = "turn/start",
+                            accessMode = runtimeConfig.accessMode,
+                            includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
+                            buildBaseParams = { includeServiceTier ->
+                                buildTurnStartParams(
+                                    threadId = threadId,
+                                    prompt = trimmedPrompt,
+                                    attachments = attachments,
+                                    runtimeConfig = runtimeConfig,
+                                    includeServiceTier = includeServiceTier,
+                                    imageUrlKey = imageUrlKey,
+                                )
+                            },
+                        )
+                    } catch (error: Throwable) {
+                        if (imageUrlKey == "url" &&
+                            attachments.isNotEmpty() &&
+                            shouldRetryWithImageUrlFieldFallback(error)
+                        ) {
+                            imageUrlKey = "image_url"
+                            continue
+                        }
+                        throw error
                     }
-                    throw error
                 }
+                turnStartResponse ?: error("turn/start retry loop exited without a response")
             }
-            turnStartResponse ?: error("turn/start retry loop exited without a response")
         } catch (error: Throwable) {
             if (!hadRunningState) {
                 clearThreadRunningState(threadId)
@@ -682,15 +686,17 @@ class BridgeThreadSyncService(
             }",
         )
         val response = try {
-            sendRequestWithApprovalPolicyFallback(
-                method = "review/start",
-                baseParams = buildJsonObject {
-                    put("threadId", JsonPrimitive(threadId))
-                    put("delivery", JsonPrimitive("inline"))
-                    put("target", targetObject)
-                },
-                accessMode = runtimeConfig.accessMode,
-            )
+            retryAfterThreadMaterialization {
+                sendRequestWithApprovalPolicyFallback(
+                    method = "review/start",
+                    baseParams = buildJsonObject {
+                        put("threadId", JsonPrimitive(threadId))
+                        put("delivery", JsonPrimitive("inline"))
+                        put("target", targetObject)
+                    },
+                    accessMode = runtimeConfig.accessMode,
+                )
+            }
         } catch (error: Throwable) {
             if (!hadRunningState) {
                 clearThreadRunningState(threadId)
@@ -1449,6 +1455,25 @@ class BridgeThreadSyncService(
 
     private fun shouldRetryWithImageUrlFieldFallback(error: Throwable): Boolean {
         return shouldRetryWithImageUrlFieldFallbackValue(error)
+    }
+
+    private suspend fun <T> retryAfterThreadMaterialization(block: suspend () -> T): T {
+        var attempt = 0
+        while (true) {
+            try {
+                return block()
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                val retryDelayMs = threadMaterializationRetryDelaysMs.getOrNull(attempt)
+                if (retryDelayMs == null || !shouldRetryAfterThreadMaterializationValue(error)) {
+                    throw error
+                }
+                attempt += 1
+                delay(retryDelayMs)
+            }
+        }
     }
 
     private fun shouldTreatAsThreadNotFound(error: Throwable): Boolean {
@@ -5453,6 +5478,26 @@ internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolea
         || message.contains("unknown field")
         || message.contains("expected")
         || message.contains("invalid")
+}
+
+internal fun shouldRetryAfterThreadMaterializationValue(error: Throwable): Boolean {
+    val message = when (error) {
+        is RpcError -> error.message
+        else -> error.message ?: error.localizedMessage ?: error.toString()
+    }.lowercase(Locale.ROOT)
+
+    if (message.contains("thread not found") || message.contains("unknown thread")) {
+        return false
+    }
+    return message.contains("not materialized")
+        || message.contains("not yet materialized")
+        || message.contains("no rollout found for thread")
+        || message.contains("no rollout file found for thread")
+        || (
+            message.contains("rollout") &&
+                message.contains("thread") &&
+                (message.contains("missing") || message.contains("not found"))
+            )
 }
 
 internal fun shouldTreatAsThreadNotFoundValue(error: Throwable): Boolean {

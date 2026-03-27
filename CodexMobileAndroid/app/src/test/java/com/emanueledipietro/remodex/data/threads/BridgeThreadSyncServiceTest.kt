@@ -187,6 +187,39 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `thread materialization retry matcher only accepts rollout race errors`() {
+        assertTrue(
+            shouldRetryAfterThreadMaterializationValue(
+                RpcError(
+                    code = -32000,
+                    message = "No rollout found for thread id thread-1",
+                ),
+            ),
+        )
+        assertTrue(
+            shouldRetryAfterThreadMaterializationValue(
+                IllegalStateException("Thread thread-1 is not yet materialized."),
+            ),
+        )
+        assertFalse(
+            shouldRetryAfterThreadMaterializationValue(
+                RpcError(
+                    code = -32000,
+                    message = "thread not found: thread-1",
+                ),
+            ),
+        )
+        assertFalse(
+            shouldRetryAfterThreadMaterializationValue(
+                RpcError(
+                    code = -32602,
+                    message = "Invalid params",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `assistant lifecycle matcher treats generic messages without a user role as assistant like ios`() {
         assertTrue(
             isAssistantLifecycleItemValue(
@@ -1391,6 +1424,108 @@ class BridgeThreadSyncServiceTest {
             advanceUntilIdle()
 
             assertEquals(listOf(null), turnStartServiceTiers)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `send prompt retries transient missing rollout errors for newly created threads`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-rollout-race",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var turnStartCalls = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/start" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-rollout-race"))
+                                put("title", JsonPrimitive("Rollout race"))
+                                put("cwd", JsonPrimitive("/tmp/project-rollout-race"))
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-rollout-race"))
+                                put("title", JsonPrimitive("Rollout race"))
+                                put("cwd", JsonPrimitive("/tmp/project-rollout-race"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to {
+                    turnStartCalls += 1
+                    if (turnStartCalls == 1) {
+                        throw RpcError(
+                            code = -32000,
+                            message = "No rollout found for thread id thread-rollout-race",
+                        )
+                    }
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-rollout-race"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            val createdThread = service.createThread(
+                preferredProjectPath = "/tmp/project-rollout-race",
+                runtimeDefaults = RemodexRuntimeDefaults(),
+            )
+            advanceUntilIdle()
+
+            service.sendPrompt(
+                threadId = "thread-rollout-race",
+                prompt = "Retry the first turn after rollout materializes.",
+                runtimeConfig = createdThread!!.runtimeConfig,
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertEquals(2, turnStartCalls)
+            val thread = service.threads.value.first { it.id == "thread-rollout-race" }
+            assertTrue(
+                TurnTimelineReducer.reduce(thread.timelineMutations).any { item ->
+                    item.text.contains("Retry the first turn after rollout materializes.")
+                },
+            )
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
