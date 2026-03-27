@@ -90,6 +90,18 @@ class BridgeThreadSyncService(
         val item: com.emanueledipietro.remodex.model.RemodexConversationItem,
     )
 
+    private data class DecodedFileChangeInlineTotals(
+        val additions: Int,
+        val deletions: Int,
+    )
+
+    private data class DecodedFileChangeEntry(
+        val path: String,
+        val kind: String,
+        val diff: String,
+        val inlineTotals: DecodedFileChangeInlineTotals?,
+    )
+
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
@@ -1803,10 +1815,9 @@ class BridgeThreadSyncService(
 
             itemType == "filechange" || itemType == "diff" -> {
                 kind = ConversationItemKind.FILE_CHANGE
-                body = decodeStructuredLifecycleBody(
+                body = decodeFileChangeLifecycleBody(
                     itemObject = itemObject,
-                    inProgressFallback = "Updating files...",
-                    completedFallback = "Updated files.",
+                    itemType = itemType,
                     isCompleted = isCompleted,
                 )
                 planState = null
@@ -1816,10 +1827,9 @@ class BridgeThreadSyncService(
             itemType == "toolcall" -> {
                 if (isLikelyFileChangeToolCall(itemObject, decodeItemText(itemObject))) {
                     kind = ConversationItemKind.FILE_CHANGE
-                    body = decodeStructuredLifecycleBody(
+                    body = decodeFileChangeLifecycleBody(
                         itemObject = itemObject,
-                        inProgressFallback = "Updating files...",
-                        completedFallback = "Updated files.",
+                        itemType = itemType,
                         isCompleted = isCompleted,
                     )
                 } else {
@@ -2476,6 +2486,102 @@ class BridgeThreadSyncService(
             .ifBlank { "Thinking..." }
     }
 
+    private fun decodeFileChangeLifecycleBody(
+        itemObject: JsonObject,
+        itemType: String,
+        isCompleted: Boolean,
+    ): String {
+        val decoded = when (itemType) {
+            "toolcall" -> decodeToolCallFileChangeBody(
+                itemObject = itemObject,
+                isCompleted = isCompleted,
+            )
+
+            "diff" -> decodeDiffItemBody(
+                itemObject = itemObject,
+                isCompleted = isCompleted,
+            )
+
+            else -> decodeFileChangeItemBody(
+                itemObject = itemObject,
+                isCompleted = isCompleted,
+            )
+        }
+        if (!decoded.isNullOrBlank()) {
+            return decoded
+        }
+        return decodeStructuredLifecycleBody(
+            itemObject = itemObject,
+            inProgressFallback = "Updating files...",
+            completedFallback = "Updated files.",
+            isCompleted = isCompleted,
+        )
+    }
+
+    private fun decodeFileChangeItemBody(
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String? {
+        val status = normalizedFileChangeStatus(
+            itemObject = itemObject,
+            isCompleted = isCompleted,
+        )
+        val changes = decodeFileChangeEntries(
+            rawChanges = extractFileChangeChanges(itemObject),
+        )
+        if (changes.isNotEmpty()) {
+            return renderFileChangeEntries(
+                status = status,
+                changes = changes,
+            )
+        }
+        val diff = extractUnifiedDiffText(itemObject)
+        if (!diff.isNullOrBlank() && RemodexUnifiedPatchParser.looksLikePatchText(diff)) {
+            return renderUnifiedDiffBody(
+                diff = diff,
+                status = status,
+            )
+        }
+        val output = extractStructuredOutputText(itemObject)
+        if (!output.isNullOrBlank()) {
+            return "Status: $status\n\n${output.trim()}"
+        }
+        return null
+    }
+
+    private fun renderFileChangeEntries(
+        status: String,
+        changes: List<DecodedFileChangeEntry>,
+    ): String {
+        val renderedChanges = changes.map { entry ->
+            buildString {
+                append("Path: ")
+                append(entry.path)
+                append("\nKind: ")
+                append(entry.kind)
+                entry.inlineTotals?.let { totals ->
+                    append("\nTotals: +")
+                    append(totals.additions)
+                    append(" -")
+                    append(totals.deletions)
+                }
+                if (entry.diff.isNotBlank()) {
+                    append("\n\n```diff\n")
+                    append(entry.diff)
+                    append("\n```")
+                }
+            }
+        }
+        return buildString {
+            append("Status: ")
+            append(status)
+            if (renderedChanges.isNotEmpty()) {
+                append("\n\n")
+                append(renderedChanges.joinToString(separator = "\n\n---\n\n"))
+            }
+        }
+    }
+
     private fun decodeStructuredLifecycleBody(
         itemObject: JsonObject,
         inProgressFallback: String,
@@ -2527,6 +2633,421 @@ class BridgeThreadSyncService(
         }
     }
 
+    private fun decodeFileChangeEntries(
+        rawChanges: JsonElement?,
+    ): List<DecodedFileChangeEntry> {
+        val changeObjects = mutableListOf<JsonObject>()
+        when (rawChanges) {
+            is JsonArray -> rawChanges.forEach { value ->
+                value.jsonObjectOrNull?.let(changeObjects::add)
+            }
+
+            is JsonObject -> rawChanges.keys.sorted().forEach { key ->
+                when (val value = rawChanges[key]) {
+                    is JsonObject -> {
+                        if (value["path"] == null) {
+                            changeObjects += buildJsonObject {
+                                put("path", JsonPrimitive(key))
+                                value.forEach { (nestedKey, nestedValue) ->
+                                    put(nestedKey, nestedValue)
+                                }
+                            }
+                        } else {
+                            changeObjects += value
+                        }
+                    }
+
+                    is JsonPrimitive -> {
+                        value.contentOrNull
+                            ?.trim()
+                            ?.takeIf(String::isNotEmpty)
+                            ?.let { diff ->
+                                changeObjects += buildJsonObject {
+                                    put("path", JsonPrimitive(key))
+                                    put("diff", JsonPrimitive(diff))
+                                }
+                            }
+                    }
+
+                    else -> Unit
+                }
+            }
+
+            else -> Unit
+        }
+
+        return changeObjects.map { changeObject ->
+            val path = decodeChangePath(changeObject)
+            val kind = decodeChangeKind(changeObject)
+            var diff = decodeChangeDiff(changeObject)
+            val totals = decodeChangeInlineTotals(changeObject)
+            if (diff.isBlank()) {
+                changeObject.firstString("content")
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let { content ->
+                        diff = synthesizeUnifiedDiffFromContent(
+                            content = content,
+                            kind = kind,
+                            path = path,
+                        )
+                    }
+            }
+            DecodedFileChangeEntry(
+                path = path,
+                kind = kind,
+                diff = diff,
+                inlineTotals = totals,
+            )
+        }
+    }
+
+    private fun decodeChangePath(changeObject: JsonObject): String {
+        return listOf(
+            "path",
+            "file",
+            "file_path",
+            "filePath",
+            "relative_path",
+            "relativePath",
+            "new_path",
+            "newPath",
+            "to",
+            "target",
+            "name",
+            "old_path",
+            "oldPath",
+            "from",
+        ).firstNotNullOfOrNull { key ->
+            changeObject.firstString(key)
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+        } ?: "unknown"
+    }
+
+    private fun decodeChangeKind(changeObject: JsonObject): String {
+        return listOfNotNull(
+            changeObject.firstString("kind"),
+            changeObject.firstString("action"),
+            changeObject.firstObject("kind")?.firstString("type"),
+            changeObject.firstString("type"),
+        ).map(String::trim)
+            .firstOrNull(String::isNotEmpty)
+            ?: "update"
+    }
+
+    private fun decodeChangeDiff(changeObject: JsonObject): String {
+        return changeObject.firstString(
+            "diff",
+            "unified_diff",
+            "unifiedDiff",
+            "patch",
+            "delta",
+        )?.trim().orEmpty()
+    }
+
+    private fun decodeChangeInlineTotals(
+        changeObject: JsonObject,
+    ): DecodedFileChangeInlineTotals? {
+        val additions = decodeNumericField(
+            objectValue = changeObject,
+            keys = listOf(
+                "additions",
+                "lines_added",
+                "line_additions",
+                "lineAdditions",
+                "added",
+                "insertions",
+                "inserted",
+                "num_added",
+            ),
+        ) ?: 0
+        val deletions = decodeNumericField(
+            objectValue = changeObject,
+            keys = listOf(
+                "deletions",
+                "lines_deleted",
+                "line_deletions",
+                "lineDeletions",
+                "removed",
+                "deleted",
+                "num_deleted",
+                "num_removed",
+            ),
+        ) ?: 0
+        if (additions <= 0 && deletions <= 0) {
+            return null
+        }
+        return DecodedFileChangeInlineTotals(
+            additions = additions,
+            deletions = deletions,
+        )
+    }
+
+    private fun decodeNumericField(
+        objectValue: JsonObject,
+        keys: List<String>,
+    ): Int? {
+        keys.forEach { key ->
+            objectValue.firstInt(key)?.let { return it }
+            objectValue.firstDouble(key)?.toInt()?.let { return it }
+            objectValue.firstString(key)?.trim()?.toIntOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    private fun synthesizeUnifiedDiffFromContent(
+        content: String,
+        kind: String,
+        path: String,
+    ): String {
+        val normalizedKind = kind.lowercase(Locale.ROOT)
+        val contentLines = content.split('\n')
+        if (normalizedKind.contains("add") || normalizedKind.contains("create")) {
+            return buildList {
+                add("diff --git a/$path b/$path")
+                add("new file mode 100644")
+                add("--- /dev/null")
+                add("+++ b/$path")
+                addAll(contentLines.map { line -> "+$line" })
+            }.joinToString(separator = "\n")
+        }
+        if (normalizedKind.contains("delete") || normalizedKind.contains("remove")) {
+            return buildList {
+                add("diff --git a/$path b/$path")
+                add("deleted file mode 100644")
+                add("--- a/$path")
+                add("+++ /dev/null")
+                addAll(contentLines.map { line -> "-$line" })
+            }.joinToString(separator = "\n")
+        }
+        return ""
+    }
+
+    private fun renderUnifiedDiffBody(
+        diff: String,
+        status: String,
+    ): String {
+        val perFileDiffs = splitUnifiedDiffByFile(diff)
+        if (perFileDiffs.isEmpty()) {
+            return "Status: $status\n\n```diff\n${diff.trim()}\n```"
+        }
+        val renderedChanges = perFileDiffs.map { change ->
+            "Path: ${normalizeDiffPath(change.first)}\nKind: update\n\n```diff\n${change.second}\n```"
+        }
+        return "Status: $status\n\n${renderedChanges.joinToString(separator = "\n\n---\n\n")}"
+    }
+
+    private fun splitUnifiedDiffByFile(diff: String): List<Pair<String, String>> {
+        val lines = diff.split('\n')
+        if (lines.isEmpty()) {
+            return emptyList()
+        }
+        val chunks = mutableListOf<Pair<String, String>>()
+        var currentLines = mutableListOf<String>()
+        var currentPath: String? = null
+
+        fun flushChunk() {
+            if (currentLines.isEmpty()) {
+                return
+            }
+            val fallbackPath = currentPath ?: parsePathFromDiffLines(currentLines) ?: "unknown"
+            val chunkText = currentLines.joinToString(separator = "\n").trim()
+            if (chunkText.isNotEmpty()) {
+                chunks += fallbackPath to chunkText
+            }
+            currentLines = mutableListOf()
+        }
+
+        lines.forEach { line ->
+            if (line.startsWith("diff --git ") && currentLines.isNotEmpty()) {
+                flushChunk()
+                currentPath = null
+            }
+            if (currentPath == null) {
+                parsePathFromDiffLine(line)?.let { currentPath = it }
+            }
+            currentLines += line
+        }
+        flushChunk()
+        return chunks
+    }
+
+    private fun parsePathFromDiffLines(lines: List<String>): String? {
+        return lines.firstNotNullOfOrNull(::parsePathFromDiffLine)
+    }
+
+    private fun parsePathFromDiffLine(line: String): String? {
+        if (line.startsWith("+++ ")) {
+            return normalizeDiffPath(line.removePrefix("+++ ").trim())
+                .takeIf { path -> path != "unknown" }
+        }
+        if (line.startsWith("diff --git ")) {
+            val components = line.split(' ', limit = 5)
+            if (components.size >= 4) {
+                return normalizeDiffPath(components[3]).takeIf { path -> path != "unknown" }
+            }
+        }
+        return null
+    }
+
+    private fun normalizeDiffPath(rawValue: String): String {
+        val trimmed = rawValue.trim()
+        if (trimmed.isEmpty() || trimmed == "/dev/null") {
+            return "unknown"
+        }
+        return when {
+            trimmed.startsWith("a/") || trimmed.startsWith("b/") -> trimmed.drop(2)
+            else -> trimmed
+        }
+    }
+
+    private fun normalizedFileChangeStatus(
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String {
+        return firstNestedString(
+            element = itemObject,
+            keys = setOf("status"),
+        ) ?: if (isCompleted) {
+            "completed"
+        } else {
+            "inProgress"
+        }
+    }
+
+    private fun extractFileChangeChanges(itemObject: JsonObject): JsonElement? {
+        return firstNestedValue(
+            element = itemObject,
+            keys = setOf(
+                "changes",
+                "file_changes",
+                "fileChanges",
+                "files",
+                "edits",
+                "modified_files",
+                "modifiedFiles",
+                "patches",
+            ),
+        )
+    }
+
+    private fun extractUnifiedDiffText(itemObject: JsonObject): String? {
+        return firstNestedString(
+            element = itemObject,
+            keys = setOf("diff", "unified_diff", "unifiedDiff", "patch"),
+        )
+    }
+
+    private fun extractToolCallChanges(itemObject: JsonObject): JsonElement? = extractFileChangeChanges(itemObject)
+
+    private fun extractToolCallUnifiedDiff(itemObject: JsonObject): String? = extractUnifiedDiffText(itemObject)
+
+    private fun extractStructuredOutputText(itemObject: JsonObject): String? {
+        val segments = linkedSetOf<String>()
+        decodeItemText(itemObject)
+            .trim()
+            .takeIf(String::isNotEmpty)
+            ?.let(segments::add)
+        listOf(
+            firstNestedValue(itemObject, setOf("output")),
+            firstNestedValue(itemObject, setOf("result")),
+            firstNestedValue(itemObject, setOf("payload")),
+            firstNestedValue(itemObject, setOf("data")),
+        ).forEach { value ->
+            decodeStringParts(value).forEach { part ->
+                part.trim().takeIf(String::isNotEmpty)?.let(segments::add)
+            }
+        }
+        listOf("stdout", "stderr", "output_text", "outputText").forEach { key ->
+            firstNestedString(itemObject, setOf(key))
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let(segments::add)
+        }
+        return segments.joinToString(separator = "\n\n").takeIf(String::isNotBlank)
+    }
+
+    private fun decodeToolCallFileChangeBody(
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String? {
+        if (!isLikelyFileChangeToolCall(itemObject, extractStructuredOutputText(itemObject).orEmpty())) {
+            return null
+        }
+        return decodeFileChangeItemBody(
+            itemObject = itemObject,
+            isCompleted = isCompleted,
+        )
+    }
+
+    private fun decodeDiffItemBody(
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String? {
+        val status = normalizedFileChangeStatus(
+            itemObject = itemObject,
+            isCompleted = isCompleted,
+        )
+        val diff = extractToolCallUnifiedDiff(itemObject)
+        if (!diff.isNullOrBlank() && RemodexUnifiedPatchParser.looksLikePatchText(diff)) {
+            return renderUnifiedDiffBody(
+                diff = diff,
+                status = status,
+            )
+        }
+        val output = extractStructuredOutputText(itemObject)
+        if (!output.isNullOrBlank()) {
+            return "Status: $status\n\n${output.trim()}"
+        }
+        return null
+    }
+
+    private fun firstNestedString(
+        element: JsonElement?,
+        keys: Set<String>,
+        depth: Int = 0,
+    ): String? {
+        return firstNestedValue(
+            element = element,
+            keys = keys,
+            depth = depth,
+        )?.stringOrNull?.trim()?.takeIf(String::isNotEmpty)
+    }
+
+    private fun firstNestedValue(
+        element: JsonElement?,
+        keys: Set<String>,
+        depth: Int = 0,
+    ): JsonElement? {
+        if (element == null || depth > MaxPatchSearchDepth) {
+            return null
+        }
+        return when (element) {
+            is JsonObject -> {
+                keys.firstNotNullOfOrNull { key ->
+                    element[key]
+                } ?: element.values.firstNotNullOfOrNull { value ->
+                    firstNestedValue(
+                        element = value,
+                        keys = keys,
+                        depth = depth + 1,
+                    )
+                }
+            }
+
+            is JsonArray -> element.firstNotNullOfOrNull { value ->
+                firstNestedValue(
+                    element = value,
+                    keys = keys,
+                    depth = depth + 1,
+                )
+            }
+
+            else -> null
+        }
+    }
+
     private fun extractToolCallActivityLines(delta: String): List<String> {
         val acceptedPrefixes = listOf(
             "running ",
@@ -2568,15 +3089,7 @@ class BridgeThreadSyncService(
         if (itemObject == null) {
             return RemodexUnifiedPatchParser.looksLikePatchText(fallbackText)
         }
-        if (itemObject.firstValue(
-                "changes",
-                "file_changes",
-                "fileChanges",
-                "files",
-                "diff",
-                "patch",
-            ) != null
-        ) {
+        if (extractFileChangeChanges(itemObject) != null || extractUnifiedDiffText(itemObject) != null) {
             return true
         }
         val toolLabel = normalizeStatus(
@@ -3084,7 +3597,11 @@ class BridgeThreadSyncService(
                     "reasoning" -> ConversationItemKind.REASONING
                     "plan" -> ConversationItemKind.PLAN
                     "filechange", "diff" -> ConversationItemKind.FILE_CHANGE
-                    "toolcall" -> ConversationItemKind.TOOL_ACTIVITY
+                    "toolcall" -> if (isLikelyFileChangeToolCall(itemObject, decodeItemText(itemObject))) {
+                        ConversationItemKind.FILE_CHANGE
+                    } else {
+                        ConversationItemKind.TOOL_ACTIVITY
+                    }
                     "commandexecution", "contextcompaction" -> ConversationItemKind.COMMAND_EXECUTION
                     "userinputprompt", "requestuserinput" -> ConversationItemKind.USER_INPUT_PROMPT
                     else -> if (isSubagentHistoryItemType(itemType)) {
@@ -3116,6 +3633,10 @@ class BridgeThreadSyncService(
                 val resolvedText = when {
                     kind == ConversationItemKind.PLAN -> decodePlanItemText(itemObject)
                     kind == ConversationItemKind.REASONING -> decodeHistoryReasoningBody(itemObject)
+                    kind == ConversationItemKind.FILE_CHANGE -> decodeFileChangeHistoryBody(
+                        itemObject = itemObject,
+                        itemType = itemType,
+                    )
                     itemType == "toolcall" -> decodeToolCallActivityBody(
                         itemObject = itemObject,
                         isCompleted = true,
@@ -3271,6 +3792,17 @@ class BridgeThreadSyncService(
             return explanation
         }
         return planState?.steps?.firstOrNull()?.step.orEmpty()
+    }
+
+    private fun decodeFileChangeHistoryBody(
+        itemObject: JsonObject,
+        itemType: String,
+    ): String {
+        return decodeFileChangeLifecycleBody(
+            itemObject = itemObject,
+            itemType = itemType,
+            isCompleted = true,
+        )
     }
 
     private fun decodeHistoryPlanState(itemObject: JsonObject): RemodexPlanState? {

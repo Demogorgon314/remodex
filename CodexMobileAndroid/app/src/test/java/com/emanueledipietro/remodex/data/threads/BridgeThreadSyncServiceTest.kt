@@ -11,6 +11,8 @@ import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.data.connection.firstArray
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
+import com.emanueledipietro.remodex.feature.turn.FileChangeAction
+import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
@@ -1125,6 +1127,177 @@ class BridgeThreadSyncServiceTest {
             assertTrue(reasoningItem.text.contains("Investigating timeline merge"))
             assertTrue(reasoningItem.text.contains("running rg -n \"reasoning\" app/src/main/java"))
             assertTrue(reasoningItem.text.contains("opened BridgeThreadSyncService.kt"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread decodes file change items and file change toolcalls into rendered file rows`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-filechange-history",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-filechange"))
+                                            put("title", JsonPrimitive("File change thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-filechange"))
+                                            put("updatedAt", JsonPrimitive(1_713_333_444))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-filechange"))
+                                put("title", JsonPrimitive("File change thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-filechange"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-filechange"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("filechange-item-1"))
+                                                                put("type", JsonPrimitive("file_change"))
+                                                                put("status", JsonPrimitive("completed"))
+                                                                put(
+                                                                    "changes",
+                                                                    buildJsonArray {
+                                                                        add(
+                                                                            buildJsonObject {
+                                                                                put("path", JsonPrimitive("app/src/Main.kt"))
+                                                                                put("kind", JsonPrimitive("update"))
+                                                                                put("additions", JsonPrimitive(2))
+                                                                                put("deletions", JsonPrimitive(1))
+                                                                                put(
+                                                                                    "diff",
+                                                                                    JsonPrimitive(
+                                                                                        """
+                                                                                        diff --git a/app/src/Main.kt b/app/src/Main.kt
+                                                                                        index 1111111..2222222 100644
+                                                                                        --- a/app/src/Main.kt
+                                                                                        +++ b/app/src/Main.kt
+                                                                                        @@ -1 +1,2 @@
+                                                                                        -old
+                                                                                        +new
+                                                                                        +more
+                                                                                        """.trimIndent(),
+                                                                                    ),
+                                                                                )
+                                                                            },
+                                                                        )
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("toolcall-filechange-1"))
+                                                                put("type", JsonPrimitive("tool_call"))
+                                                                put("name", JsonPrimitive("apply_patch"))
+                                                                put(
+                                                                    "output",
+                                                                    buildJsonObject {
+                                                                        put(
+                                                                            "changes",
+                                                                            buildJsonArray {
+                                                                                add(
+                                                                                    buildJsonObject {
+                                                                                        put("path", JsonPrimitive("app/src/Deleted.kt"))
+                                                                                        put("kind", JsonPrimitive("delete"))
+                                                                                        put("content", JsonPrimitive("gone"))
+                                                                                        put("deletions", JsonPrimitive(1))
+                                                                                    },
+                                                                                )
+                                                                            },
+                                                                        )
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-filechange")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-filechange" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            val fileChangeItems = projected.filter { item ->
+                item.kind == com.emanueledipietro.remodex.model.ConversationItemKind.FILE_CHANGE
+            }
+
+            assertEquals(2, fileChangeItems.size)
+
+            val structuredRenderState = FileChangeRenderParser.renderState(fileChangeItems[0].text)
+            val structuredEntry = structuredRenderState.summary?.entries?.single()
+            assertEquals("app/src/Main.kt", structuredEntry?.path)
+            assertEquals(FileChangeAction.EDITED, structuredEntry?.action)
+            assertEquals(2, structuredEntry?.additions)
+            assertEquals(1, structuredEntry?.deletions)
+
+            val toolCallRenderState = FileChangeRenderParser.renderState(fileChangeItems[1].text)
+            val toolCallEntry = toolCallRenderState.summary?.entries?.single()
+            assertEquals("app/src/Deleted.kt", toolCallEntry?.path)
+            assertEquals(FileChangeAction.DELETED, toolCallEntry?.action)
+            assertEquals(0, toolCallEntry?.additions)
+            assertEquals(1, toolCallEntry?.deletions)
+            assertTrue(fileChangeItems[1].text.contains("Path: app/src/Deleted.kt"))
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

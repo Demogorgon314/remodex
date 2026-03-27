@@ -148,22 +148,28 @@ internal object FileChangeRenderParser {
             val lines = section.lines()
             val path = lines.firstNotNullOfOrNull(::parsePathLine)
             val kind = lines.firstNotNullOfOrNull(::parseKindLine)
+            val totals = lines.firstNotNullOfOrNull(::parseTotalsLine)
             val diffCode = extractFencedCode(lines)
             when {
                 path != null && diffCode != null && RemodexUnifiedPatchParser.looksLikePatchText(diffCode) -> {
                     val patchEntry = parsePatchChunk(diffCode).firstOrNull()
+                    val kindAction = FileChangeAction.fromKind(kind)
+                    val patchAction = patchEntry?.action
                     FileChangeSummaryEntry(
                         path = patchEntry?.path ?: path,
-                        additions = patchEntry?.additions ?: 0,
-                        deletions = patchEntry?.deletions ?: 0,
-                        action = FileChangeAction.fromKind(kind) ?: patchEntry?.action ?: FileChangeAction.EDITED,
+                        additions = patchEntry?.additions ?: totals?.first ?: 0,
+                        deletions = patchEntry?.deletions ?: totals?.second ?: 0,
+                        action = when {
+                            patchAction != null && (kindAction == null || kindAction == FileChangeAction.EDITED) -> patchAction
+                            else -> kindAction ?: patchAction ?: FileChangeAction.EDITED
+                        },
                     )
                 }
 
                 path != null -> FileChangeSummaryEntry(
                     path = path,
-                    additions = 0,
-                    deletions = 0,
+                    additions = totals?.first ?: 0,
+                    deletions = totals?.second ?: 0,
                     action = FileChangeAction.fromKind(kind) ?: FileChangeAction.EDITED,
                 )
 
@@ -289,6 +295,16 @@ internal object FileChangeRenderParser {
             return null
         }
         return trimmed.removePrefix("Kind:").trim().takeIf(String::isNotEmpty)
+    }
+
+    private fun parseTotalsLine(line: String): Pair<Int, Int>? {
+        val trimmed = line.trim()
+        if (!trimmed.startsWith("Totals:")) {
+            return null
+        }
+        val match = Regex("""Totals:\s*\+(\d+)\s*-(\d+)""").find(trimmed) ?: return null
+        return (match.groupValues[1].toIntOrNull() ?: return null) to
+            (match.groupValues[2].toIntOrNull() ?: return null)
     }
 
     private fun extractFencedCode(lines: List<String>): String? {

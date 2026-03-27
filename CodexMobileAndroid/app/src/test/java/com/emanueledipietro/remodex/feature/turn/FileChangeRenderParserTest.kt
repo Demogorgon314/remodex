@@ -68,4 +68,52 @@ class FileChangeRenderParserTest {
         assertTrue(chunks.first().diffCode.contains("diff --git a/src/Edited.kt b/src/Edited.kt"))
         assertTrue(chunks.last().diffCode.contains("deleted file mode 100644"))
     }
+
+    @Test
+    fun renderState_parsesIosStyleTotalsWithoutDiff() {
+        val rendered = """
+            Status: completed
+
+            Path: src/SummaryOnly.kt
+            Kind: update
+            Totals: +4 -2
+        """.trimIndent()
+
+        val renderState = FileChangeRenderParser.renderState(rendered)
+        val entry = renderState.summary?.entries?.single()
+
+        assertEquals("src/SummaryOnly.kt", entry?.path)
+        assertEquals(FileChangeAction.EDITED, entry?.action)
+        assertEquals(4, entry?.additions)
+        assertEquals(2, entry?.deletions)
+    }
+
+    @Test
+    fun renderState_prefersPatchActionOverGenericUpdateKind() {
+        val rendered = """
+            Status: completed
+
+            Path: src/Deleted.kt
+            Kind: update
+            Totals: +0 -1
+
+            ```diff
+            diff --git a/src/Deleted.kt b/src/Deleted.kt
+            deleted file mode 100644
+            index 3333333..0000000
+            --- a/src/Deleted.kt
+            +++ /dev/null
+            @@ -1 +0,0 @@
+            -gone
+            ```
+        """.trimIndent()
+
+        val renderState = FileChangeRenderParser.renderState(rendered)
+        val entry = renderState.summary?.entries?.single()
+
+        assertEquals("src/Deleted.kt", entry?.path)
+        assertEquals(FileChangeAction.DELETED, entry?.action)
+        assertEquals(0, entry?.additions)
+        assertEquals(1, entry?.deletions)
+    }
 }
