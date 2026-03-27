@@ -692,6 +692,7 @@ class AppViewModel(
                 this[threadId] = limitedAttachments
             }
         }
+        clearComposerMessage(threadId)
         clearReviewSelectionIfConfirmed(threadId)
     }
 
@@ -906,6 +907,11 @@ class AppViewModel(
 
     fun closeComposerAutocomplete() {
         clearComposerAutocomplete()
+    }
+
+    fun presentComposerMessage(message: String?) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        setComposerMessage(threadId, message)
     }
 
     fun selectPlanningMode(planningMode: RemodexPlanningMode) {

@@ -72,7 +72,9 @@ import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Cloud
@@ -310,6 +312,7 @@ fun ConversationScreen(
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
+    onOpenCameraCapture: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
@@ -712,6 +715,7 @@ fun ConversationScreen(
                                 onSelectAccessMode = onSelectAccessMode,
                                 onSelectServiceTier = onSelectServiceTier,
                                 onOpenAttachmentPicker = onOpenAttachmentPicker,
+                                onOpenCameraCapture = onOpenCameraCapture,
                                 onRemoveAttachment = onRemoveAttachment,
                                 onSelectFileAutocomplete = onSelectFileAutocomplete,
                                 onRemoveMentionedFile = onRemoveMentionedFile,
@@ -2298,6 +2302,7 @@ private fun ComposerCard(
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
+    onOpenCameraCapture: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
@@ -2334,6 +2339,7 @@ private fun ComposerCard(
             option.reasoningEffort == composer.runtimeConfig.reasoningEffort
         }
     }
+    val canAddAttachments = composer.attachments.size < composer.maxAttachments
     var plusMenuExpanded by rememberSaveable(uiState.selectedThread?.id) { mutableStateOf(false) }
 
     Surface(
@@ -2458,28 +2464,22 @@ private fun ComposerCard(
                                 onDismissRequest = { plusMenuExpanded = false },
                             ) {
                                 ComposerDropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
-                                                "Disable plan mode"
-                                            } else {
-                                                "Enable plan mode"
-                                            },
-                                        )
-                                    },
+                                    text = { Text("Take a photo") },
+                                    enabled = canAddAttachments,
                                     onClick = {
                                         plusMenuExpanded = false
-                                        onSelectPlanningMode(
-                                            if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
-                                                RemodexPlanningMode.AUTO
-                                            } else {
-                                                RemodexPlanningMode.PLAN
-                                            },
+                                        onOpenCameraCapture()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.CameraAlt,
+                                            contentDescription = null,
                                         )
                                     },
                                 )
                                 ComposerDropdownMenuItem(
                                     text = { Text("Photo library") },
+                                    enabled = canAddAttachments,
                                     onClick = {
                                         plusMenuExpanded = false
                                         onOpenAttachmentPicker()
@@ -2492,10 +2492,32 @@ private fun ComposerCard(
                                     },
                                 )
                                 ComposerDropdownMenuItem(
-                                    text = { Text("Take a photo") },
-                                    enabled = false,
+                                    text = { Text("Plan mode") },
                                     onClick = {
                                         plusMenuExpanded = false
+                                        onSelectPlanningMode(
+                                            if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
+                                                RemodexPlanningMode.AUTO
+                                            } else {
+                                                RemodexPlanningMode.PLAN
+                                            },
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Checklist,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    trailingIcon = if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Check,
+                                                contentDescription = null,
+                                            )
+                                        }
+                                    } else {
+                                        null
                                     },
                                 )
                             }

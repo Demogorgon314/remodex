@@ -178,6 +178,35 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `adding attachments clears any composer error message`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(threadSummary(id = "thread-1", title = "Camera thread")),
+            selectedThreadId = "thread-1",
+        )
+        advanceUntilIdle()
+
+        viewModel.presentComposerMessage("Camera permission was denied.")
+        advanceUntilIdle()
+        assertEquals("Camera permission was denied.", viewModel.uiState.value.composer.composerMessage)
+
+        viewModel.addAttachments(
+            listOf(
+                RemodexComposerAttachment(
+                    id = "attachment-1",
+                    uriString = "content://attachments/1",
+                    displayName = "Capture.jpg",
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.uiState.value.composer.composerMessage)
+    }
+
+    @Test
     fun `assistant revert preview and apply update the sheet and final button state`() = runTest {
         val repository = TestRemodexAppRepository()
         repository.snapshot.value = repository.snapshot.value.copy(

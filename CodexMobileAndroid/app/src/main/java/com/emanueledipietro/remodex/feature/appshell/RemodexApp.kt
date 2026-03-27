@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
@@ -85,6 +86,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.feature.onboarding.OnboardingScreen
@@ -102,6 +104,9 @@ import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.platform.media.ComposerCameraCapture
+import com.emanueledipietro.remodex.platform.media.canLaunchComposerCameraCapture
+import com.emanueledipietro.remodex.platform.media.createComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.resolveComposerAttachments
 import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotificationManager
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
@@ -174,6 +179,7 @@ fun RemodexApp(
             notificationManager.notifyPushRegistrationStateMayHaveChanged()
         }
     }
+    var pendingCameraCapture by remember { mutableStateOf<ComposerCameraCapture?>(null) }
     val attachmentPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = MaxComposerImages),
     ) { uris ->
@@ -181,10 +187,50 @@ fun RemodexApp(
             viewModel.addAttachments(resolveComposerAttachments(context, uris))
         }
     }
+    val cameraCaptureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+    ) { didCapture ->
+        val capture = pendingCameraCapture
+        pendingCameraCapture = null
+        if (!didCapture || capture == null) {
+            capture?.file?.delete()
+            return@rememberLauncherForActivityResult
+        }
+
+        val attachments = resolveComposerAttachments(context, listOf(capture.uri))
+        if (attachments.isEmpty()) {
+            capture.file.delete()
+            viewModel.presentComposerMessage("Could not load the captured photo.")
+            return@rememberLauncherForActivityResult
+        }
+        viewModel.addAttachments(attachments)
+    }
+    val launchCameraCapture = {
+        val capture = createComposerCameraCapture(context)
+        if (capture == null) {
+            viewModel.presentComposerMessage("Could not prepare the camera capture. Try again.")
+        } else {
+            pendingCameraCapture?.file?.delete()
+            pendingCameraCapture = capture
+            viewModel.presentComposerMessage(null)
+            cameraCaptureLauncher.launch(capture.uri)
+        }
+    }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) {
         refreshNotificationUiState()
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { isGranted ->
+        if (!isGranted) {
+            viewModel.presentComposerMessage(
+                "Camera permission was denied. You can still use Photo library or enable camera access in Android Settings.",
+            )
+            return@rememberLauncherForActivityResult
+        }
+        launchCameraCapture()
     }
 
     DisposableEffect(lifecycleOwner, notificationManager) {
@@ -335,9 +381,24 @@ fun RemodexApp(
             }
         },
         onOpenAttachmentPicker = {
+            viewModel.presentComposerMessage(null)
             attachmentPickerLauncher.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
             )
+        },
+        onOpenCameraCapture = {
+            if (!canLaunchComposerCameraCapture(context)) {
+                viewModel.presentComposerMessage("Camera is not available on this device.")
+                return@RemodexShell
+            }
+
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                launchCameraCapture()
+            } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
         },
         onOpenScanner = {
             viewModel.prepareForManualScan()
@@ -457,6 +518,7 @@ private fun RemodexShell(
     notificationPermissionUiState: RemodexNotificationPermissionUiState,
     onNotificationAction: () -> Unit,
     onOpenAttachmentPicker: () -> Unit,
+    onOpenCameraCapture: () -> Unit,
     onOpenScanner: () -> Unit,
 ) {
     val shellBackground = if (shellRoute == ShellRoute.CONTENT) {
@@ -536,6 +598,7 @@ private fun RemodexShell(
                         onNotificationAction = onNotificationAction,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onOpenAttachmentPicker = onOpenAttachmentPicker,
+                        onOpenCameraCapture = onOpenCameraCapture,
                         onNavigateToThreadCompletion = { threadId ->
                             viewModel.selectThread(threadId)
                             onShellRouteChange(ShellRoute.CONTENT)
@@ -605,6 +668,7 @@ private fun RemodexShell(
                         onNotificationAction = onNotificationAction,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onOpenAttachmentPicker = onOpenAttachmentPicker,
+                        onOpenCameraCapture = onOpenCameraCapture,
                         onNavigateToThreadCompletion = { threadId ->
                             viewModel.selectThread(threadId)
                             onShellRouteChange(ShellRoute.CONTENT)
@@ -641,6 +705,7 @@ private fun MainPane(
     onNotificationAction: () -> Unit,
     notificationPermissionUiState: RemodexNotificationPermissionUiState,
     onOpenAttachmentPicker: () -> Unit,
+    onOpenCameraCapture: () -> Unit,
     onNavigateToThreadCompletion: (String) -> Unit,
     onDismissThreadCompletionBanner: () -> Unit,
 ) {
@@ -730,6 +795,7 @@ private fun MainPane(
                             onSelectAccessMode = viewModel::selectAccessMode,
                             onSelectServiceTier = viewModel::selectServiceTier,
                             onOpenAttachmentPicker = onOpenAttachmentPicker,
+                            onOpenCameraCapture = onOpenCameraCapture,
                             onRemoveAttachment = viewModel::removeAttachment,
                             onSelectFileAutocomplete = viewModel::selectFileAutocomplete,
                             onRemoveMentionedFile = viewModel::removeMentionedFile,

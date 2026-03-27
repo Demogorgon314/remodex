@@ -1,14 +1,23 @@
 package com.emanueledipietro.remodex.platform.media
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.Base64
 import kotlin.math.roundToInt
+
+data class ComposerCameraCapture(
+    val file: File,
+    val uri: Uri,
+)
 
 fun resolveComposerAttachments(
     context: Context,
@@ -24,6 +33,33 @@ fun resolveComposerAttachments(
             payloadDataUrl = payloadDataUrl,
         )
     }
+}
+
+fun canLaunchComposerCameraCapture(context: Context): Boolean {
+    if (!context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_CAMERA_ANY)) {
+        return false
+    }
+    val captureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+    return captureIntent.resolveActivity(context.packageManager) != null
+}
+
+fun createComposerCameraCapture(context: Context): ComposerCameraCapture? {
+    return runCatching {
+        val captureDirectory = File(context.cacheDir, ComposerCameraCaptureDirectoryName).apply {
+            mkdirs()
+        }
+        val captureFile = File.createTempFile(
+            ComposerCameraCaptureFilePrefix,
+            ComposerCameraCaptureFileSuffix,
+            captureDirectory,
+        )
+        val captureUri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            captureFile,
+        )
+        ComposerCameraCapture(file = captureFile, uri = captureUri)
+    }.getOrNull()
 }
 
 private fun Context.resolveDisplayName(uri: Uri): String {
@@ -88,3 +124,6 @@ private fun normalizePayloadJpeg(sourceBytes: ByteArray): ByteArray? {
 
 private const val MaxPayloadDimension = 1600
 private const val PayloadCompressionQuality = 80
+private const val ComposerCameraCaptureDirectoryName = "composer-captures"
+private const val ComposerCameraCaptureFilePrefix = "composer-capture-"
+private const val ComposerCameraCaptureFileSuffix = ".jpg"
