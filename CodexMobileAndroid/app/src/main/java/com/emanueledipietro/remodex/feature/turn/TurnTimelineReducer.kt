@@ -257,7 +257,7 @@ object TurnTimelineReducer {
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
     ): String {
-        if (speaker == ConversationSpeaker.ASSISTANT || kind == ConversationItemKind.REASONING) {
+        if (preservesStreamingWhitespace(speaker = speaker, kind = kind)) {
             return mergeText(existing, incoming)
         }
         return mergeSystemText(existing, incoming)
@@ -392,17 +392,8 @@ object TurnTimelineReducer {
         if (existing.isEmpty()) {
             return incoming
         }
-
-        val placeholderValues = setOf("thinking...")
-        val existingTrimmed = existing.trim()
-        val incomingTrimmed = incoming.trim()
-        val existingLower = existingTrimmed.lowercase()
-        val incomingLower = incomingTrimmed.lowercase()
-        if (placeholderValues.contains(incomingLower)) {
-            return existing
-        }
-        if (placeholderValues.contains(existingLower)) {
-            return incoming
+        if (existing.isBlank() || incoming.isBlank()) {
+            return existing + incoming
         }
         if (incoming == existing) {
             return existing
@@ -415,12 +406,6 @@ object TurnTimelineReducer {
         }
         if (existing.length > incoming.length && existing.startsWith(incoming)) {
             return existing
-        }
-        if (existingLower == incomingLower || incomingTrimmed in existingTrimmed) {
-            return existing
-        }
-        if (existingTrimmed in incomingTrimmed) {
-            return incoming
         }
 
         val maxOverlap = minOf(existing.length, incoming.length)
@@ -440,10 +425,24 @@ object TurnTimelineReducer {
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
     ): String {
-        return if (speaker == ConversationSpeaker.ASSISTANT && kind == ConversationItemKind.CHAT) {
+        return if (preservesStreamingWhitespace(speaker = speaker, kind = kind)) {
             delta
         } else {
             delta.trim()
+        }
+    }
+
+    internal fun preservesStreamingWhitespace(
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): Boolean {
+        return when (speaker) {
+            ConversationSpeaker.ASSISTANT -> kind == ConversationItemKind.CHAT
+            ConversationSpeaker.SYSTEM -> kind == ConversationItemKind.CHAT ||
+                kind == ConversationItemKind.REASONING ||
+                kind == ConversationItemKind.PLAN ||
+                kind == ConversationItemKind.FILE_CHANGE
+            ConversationSpeaker.USER -> false
         }
     }
 

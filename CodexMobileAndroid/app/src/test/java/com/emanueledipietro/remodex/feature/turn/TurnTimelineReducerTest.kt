@@ -73,6 +73,181 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `assistant deltas do not drop repeated substring chunks that are not overlaps`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "现在这个文件同时负责环境变量校验",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "环境变量",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals("现在这个文件同时负责环境变量校验环境变量", projected.first().text)
+    }
+
+    @Test
+    fun `reasoning deltas preserve whitespace only chunks while streaming`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.ReasoningTextDelta(
+                    messageId = "reasoning-1",
+                    turnId = "turn-1",
+                    itemId = "reasoning-item",
+                    delta = "  indented",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.ReasoningTextDelta(
+                    messageId = "reasoning-1",
+                    turnId = "turn-1",
+                    itemId = "reasoning-item",
+                    delta = "\n",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.ReasoningTextDelta(
+                    messageId = "reasoning-1",
+                    turnId = "turn-1",
+                    itemId = "reasoning-item",
+                    delta = "    detail",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals(1, projected.size)
+        assertEquals("  indented\n    detail", projected.first().text)
+        assertTrue(projected.first().isStreaming)
+    }
+
+    @Test
+    fun `supported system streaming kinds preserve whitespace only chunks`() {
+        val systemChat = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.SystemTextDelta(
+                    messageId = "system-1",
+                    turnId = "turn-1",
+                    itemId = "system-item",
+                    delta = "line one",
+                    kind = ConversationItemKind.CHAT,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "system-1",
+                    turnId = "turn-1",
+                    itemId = "system-item",
+                    delta = "  ",
+                    kind = ConversationItemKind.CHAT,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "system-1",
+                    turnId = "turn-1",
+                    itemId = "system-item",
+                    delta = "line two",
+                    kind = ConversationItemKind.CHAT,
+                    orderIndex = 1,
+                ),
+            ),
+        )
+        val plan = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.SystemTextDelta(
+                    messageId = "plan-1",
+                    turnId = "turn-1",
+                    itemId = "plan-item",
+                    delta = "1. step",
+                    kind = ConversationItemKind.PLAN,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "plan-1",
+                    turnId = "turn-1",
+                    itemId = "plan-item",
+                    delta = "\n  ",
+                    kind = ConversationItemKind.PLAN,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "plan-1",
+                    turnId = "turn-1",
+                    itemId = "plan-item",
+                    delta = "2. next",
+                    kind = ConversationItemKind.PLAN,
+                    orderIndex = 1,
+                ),
+            ),
+        )
+        val fileChange = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.SystemTextDelta(
+                    messageId = "file-1",
+                    turnId = "turn-1",
+                    itemId = "file-item",
+                    delta = "@@ -1 +1 @@\n",
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "file-1",
+                    turnId = "turn-1",
+                    itemId = "file-item",
+                    delta = "    ",
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "file-1",
+                    turnId = "turn-1",
+                    itemId = "file-item",
+                    delta = "+value",
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals("line one  line two", systemChat.first().text)
+        assertEquals("1. step\n  2. next", plan.first().text)
+        assertEquals("@@ -1 +1 @@\n    +value", fileChange.first().text)
+    }
+
+    @Test
+    fun `command execution keeps trimming whitespace only chunks`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.SystemTextDelta(
+                    messageId = "command-1",
+                    turnId = "turn-1",
+                    itemId = "command-item",
+                    delta = "running pwd",
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "command-1",
+                    turnId = "turn-1",
+                    itemId = "command-item",
+                    delta = "   ",
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals("running pwd", projected.first().text)
+    }
+
+    @Test
     fun `assistant response anchor prefers the active turn response`() {
         val items = listOf(
             RemodexConversationItem(

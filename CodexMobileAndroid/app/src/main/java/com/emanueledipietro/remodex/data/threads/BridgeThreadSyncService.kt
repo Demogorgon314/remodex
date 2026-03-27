@@ -9,6 +9,7 @@ import com.emanueledipietro.remodex.data.connection.firstBoolean
 import com.emanueledipietro.remodex.data.connection.firstDouble
 import com.emanueledipietro.remodex.data.connection.firstInt
 import com.emanueledipietro.remodex.data.connection.firstObject
+import com.emanueledipietro.remodex.data.connection.firstRawString
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.firstValue
 import com.emanueledipietro.remodex.data.connection.jsonArrayOrNull
@@ -78,6 +79,16 @@ import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
+
+internal fun shouldIgnoreStreamingTextDelta(delta: String): Boolean = delta.isEmpty()
+
+internal fun assistantLifecycleStartedText(existingText: String?): String = existingText.orEmpty()
+
+internal fun shouldMergeThreadReadHistory(
+    threadIsRunning: Boolean,
+    existingHasTimeline: Boolean,
+    allowWhileRunning: Boolean,
+): Boolean = allowWhileRunning || !threadIsRunning || !existingHasTimeline
 
 class BridgeThreadSyncService(
     private val secureConnectionCoordinator: SecureConnectionCoordinator,
@@ -191,6 +202,7 @@ class BridgeThreadSyncService(
             response = response,
             existingSnapshot = existingSnapshot,
             syncState = currentSyncState(threadId),
+            allowHistoryMergeWhileRunning = true,
         ) ?: return
 
         upsertThreadSnapshot(refreshedSnapshot)
@@ -216,6 +228,7 @@ class BridgeThreadSyncService(
             response = response,
             existingSnapshot = existingSnapshot,
             syncState = RemodexThreadSyncState.LIVE,
+            allowHistoryMergeWhileRunning = true,
         ) ?: existingSnapshot
         resumedThreadIds.add(threadId)
         if (refreshedSnapshot != null) {
@@ -253,26 +266,39 @@ class BridgeThreadSyncService(
         response: RpcMessage,
         existingSnapshot: ThreadSyncSnapshot?,
         syncState: RemodexThreadSyncState,
+        allowHistoryMergeWhileRunning: Boolean = false,
     ): ThreadSyncSnapshot? {
         val resultObject = response.result?.jsonObjectOrNull ?: return null
         val threadObject = resultObject.firstObject("thread") ?: return null
         indexTurnIds(threadId = threadId, threadObject = threadObject)
         val turnReadState = resolveTurnReadState(threadObject)
         applyTurnReadState(threadId = threadId, turnReadState = turnReadState)
-        val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
-        val mergedHistoryItems = ThreadHistoryReconciler.mergeHistoryItems(
-            existing = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty(),
-            history = TurnTimelineReducer.reduce(historyItems),
-            threadIsActive = threadHasKnownRunningState(threadId),
-            threadIsRunning = threadHasKnownRunningState(threadId),
-        )
+        val threadIsRunning = threadHasKnownRunningState(threadId)
+        val existingItems = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty()
+        val mergedHistoryItems = if (
+            shouldMergeThreadReadHistory(
+                threadIsRunning = threadIsRunning,
+                existingHasTimeline = existingSnapshot?.timelineMutations?.isNotEmpty() == true,
+                allowWhileRunning = allowHistoryMergeWhileRunning,
+            )
+        ) {
+            val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
+            ThreadHistoryReconciler.mergeHistoryItems(
+                existing = existingItems,
+                history = TurnTimelineReducer.reduce(historyItems),
+                threadIsActive = threadIsRunning,
+                threadIsRunning = threadIsRunning,
+            )
+        } else {
+            existingItems
+        }
         val refreshedSnapshot = parseThreadSnapshot(
             threadObject = threadObject,
             syncState = syncState,
             existing = existingSnapshot,
         )?.copy(
             timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
-            isRunning = threadHasKnownRunningState(threadId),
+            isRunning = threadIsRunning,
         ) ?: return null
         return refreshedSnapshot
     }
@@ -1510,7 +1536,7 @@ class BridgeThreadSyncService(
 
     private fun appendAssistantDelta(paramsObject: JsonObject) {
         val delta = extractTextDelta(paramsObject)
-        if (delta.isBlank()) {
+        if (shouldIgnoreStreamingTextDelta(delta)) {
             return
         }
         val eventObject = envelopeEventObject(paramsObject)
@@ -1552,7 +1578,7 @@ class BridgeThreadSyncService(
 
     private fun appendReasoningDelta(paramsObject: JsonObject) {
         val delta = extractTextDelta(paramsObject)
-        if (delta.isBlank()) {
+        if (shouldIgnoreStreamingTextDelta(delta)) {
             return
         }
         val eventObject = envelopeEventObject(paramsObject)
@@ -1777,17 +1803,21 @@ class BridgeThreadSyncService(
             turnId = resolvedTurnId,
             fallbackPrefix = "assistant",
         )
-        val body = decodeItemText(itemObject)
+        val existingItem = projectedTimelineItem(
+            threadId = threadId,
+            messageId = messageId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+        )
         if (!isCompleted) {
-            if (body.isBlank()) {
-                return
-            }
             upsertStreamingItem(
                 threadId = threadId,
                 item = timelineItem(
                     id = messageId,
                     speaker = ConversationSpeaker.ASSISTANT,
-                    text = body,
+                    text = assistantLifecycleStartedText(existingItem?.text),
                     kind = ConversationItemKind.CHAT,
                     turnId = resolvedTurnId,
                     itemId = itemId,
@@ -1800,12 +1830,14 @@ class BridgeThreadSyncService(
                         speaker = ConversationSpeaker.ASSISTANT,
                         kind = ConversationItemKind.CHAT,
                     ),
+                    assistantChangeSet = existingItem?.assistantChangeSet,
                 ),
                 isRunning = true,
             )
             return
         }
 
+        val body = decodeItemText(itemObject)
         if (body.isNotBlank()) {
             upsertStreamingItem(
                 threadId = threadId,
@@ -1825,14 +1857,7 @@ class BridgeThreadSyncService(
                         speaker = ConversationSpeaker.ASSISTANT,
                         kind = ConversationItemKind.CHAT,
                     ),
-                    assistantChangeSet = projectedTimelineItem(
-                        threadId = threadId,
-                        messageId = messageId,
-                        turnId = resolvedTurnId,
-                        itemId = itemId,
-                        speaker = ConversationSpeaker.ASSISTANT,
-                        kind = ConversationItemKind.CHAT,
-                    )?.assistantChangeSet,
+                    assistantChangeSet = existingItem?.assistantChangeSet,
                 ),
             )
         } else {
@@ -2086,7 +2111,7 @@ class BridgeThreadSyncService(
         fallbackPrefix: String,
     ) {
         val delta = extractTextDelta(paramsObject)
-        if (delta.isBlank()) {
+        if (shouldIgnoreStreamingTextDelta(delta)) {
             return
         }
         val eventObject = envelopeEventObject(paramsObject)
@@ -3423,9 +3448,9 @@ class BridgeThreadSyncService(
 
     private fun extractTextDelta(paramsObject: JsonObject): String {
         val eventObject = envelopeEventObject(paramsObject)
-        return paramsObject.firstString("delta", "textDelta", "text_delta", "text", "summary", "part")
-            ?: eventObject?.firstString("delta", "text", "summary", "part")
-            ?: paramsObject.firstObject("event")?.firstString("delta", "text", "summary", "part")
+        return paramsObject.firstRawString("delta", "textDelta", "text_delta", "text", "summary", "part")
+            ?: eventObject?.firstRawString("delta", "text", "summary", "part")
+            ?: paramsObject.firstObject("event")?.firstRawString("delta", "text", "summary", "part")
             ?: ""
     }
 

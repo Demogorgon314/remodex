@@ -40,6 +40,46 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class BridgeThreadSyncServiceTest {
     @Test
+    fun `streaming text delta filter keeps whitespace only chunks`() {
+        assertTrue(shouldIgnoreStreamingTextDelta(""))
+        assertFalse(shouldIgnoreStreamingTextDelta(" "))
+        assertFalse(shouldIgnoreStreamingTextDelta("\n"))
+        assertFalse(shouldIgnoreStreamingTextDelta("    "))
+    }
+
+    @Test
+    fun `assistant lifecycle start text preserves existing streaming content and ignores lifecycle body`() {
+        assertEquals("", assistantLifecycleStartedText(null))
+        assertEquals("already streamed", assistantLifecycleStartedText("already streamed"))
+        assertEquals("  indented\ntext", assistantLifecycleStartedText("  indented\ntext"))
+    }
+
+    @Test
+    fun `thread read history merge skips running threads when local timeline already exists`() {
+        assertFalse(
+            shouldMergeThreadReadHistory(
+                threadIsRunning = true,
+                existingHasTimeline = true,
+                allowWhileRunning = false,
+            ),
+        )
+        assertTrue(
+            shouldMergeThreadReadHistory(
+                threadIsRunning = true,
+                existingHasTimeline = false,
+                allowWhileRunning = false,
+            ),
+        )
+        assertTrue(
+            shouldMergeThreadReadHistory(
+                threadIsRunning = true,
+                existingHasTimeline = true,
+                allowWhileRunning = true,
+            ),
+        )
+    }
+
+    @Test
     fun `approval policy fallback only retries compatibility-shaped rpc errors`() {
         assertTrue(
             shouldRetryWithApprovalPolicyFallbackValue(
@@ -495,6 +535,116 @@ class BridgeThreadSyncServiceTest {
             service.hydrateThread("thread-running-clear")
             advanceUntilIdle()
             assertFalse(service.threads.value.first { it.id == "thread-running-clear" }.isRunning)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread merges server history for running thread even when local timeline exists`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-running-history-merge",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-running-history"))
+                                        put("title", JsonPrimitive("Reconnect target"))
+                                        put("cwd", JsonPrimitive("/tmp/project-running-history"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_335))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-running-history"))
+                                put("title", JsonPrimitive("Reconnect target"))
+                                put("cwd", JsonPrimitive("/tmp/project-running-history"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-running-history"))
+                                                put("status", JsonPrimitive("running"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-history"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put(
+                                                                    "text",
+                                                                    JsonPrimitive("Recovered assistant output after reconnect."),
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.appendLocalSystemMessage("thread-running-history", "Local reconnect note")
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-running-history")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-running-history" }
+            val items = TurnTimelineReducer.reduce(thread.timelineMutations)
+            assertTrue(thread.isRunning)
+            assertTrue(items.any { it.text == "Local reconnect note" })
+            assertTrue(items.any { it.text == "Recovered assistant output after reconnect." })
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

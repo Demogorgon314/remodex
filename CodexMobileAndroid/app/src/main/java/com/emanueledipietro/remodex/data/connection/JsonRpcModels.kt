@@ -107,6 +107,9 @@ val JsonElement?.jsonArrayOrNull: JsonArray?
 val JsonElement?.stringOrNull: String?
     get() = (this as? JsonPrimitive)?.contentOrNull?.trim()?.ifEmpty { null }
 
+val JsonElement?.rawStringOrNull: String?
+    get() = (this as? JsonPrimitive)?.contentOrNull
+
 val JsonElement?.intOrNull: Int?
     get() = (this as? JsonPrimitive)?.intOrNull
 
@@ -126,6 +129,8 @@ fun JsonObject.firstValue(vararg keys: String): JsonElement? {
 }
 
 fun JsonObject.firstString(vararg keys: String): String? = firstValue(*keys).stringOrNull
+
+fun JsonObject.firstRawString(vararg keys: String): String? = firstValue(*keys).rawStringOrNull
 
 fun JsonObject.firstInt(vararg keys: String): Int? = firstValue(*keys).intOrNull
 

@@ -994,122 +994,18 @@ private fun ConversationMarkdownText(
     )
 }
 
-private enum class ConversationTextBlockKind {
-    PROSE,
-    CODE,
-}
-
-private data class ConversationTextBlock(
-    val kind: ConversationTextBlockKind,
-    val text: String,
-)
-
-private val conversationInlineMarkdownPattern = Regex("""\[[^\]]+]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|__[^_]+__""")
-private val heavyStreamingMarkdownSignalRegex = Regex(
-    pattern = """(?m)^\s{0,3}(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```|\|)|!\[[^\]]*]\([^)]+\)|```mermaid""",
-)
-
-internal fun shouldUseLightweightStreamingAssistantText(text: String): Boolean {
-    val trimmed = text.trim()
-    if (trimmed.isEmpty()) {
-        return true
+internal fun formatStreamingPlainTextForDisplay(text: String): String {
+    val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+    if (normalized.isEmpty()) {
+        return normalized
     }
-    return !heavyStreamingMarkdownSignalRegex.containsMatchIn(trimmed)
-}
-
-private fun parseConversationTextBlocks(text: String): List<ConversationTextBlock> {
-    if (text.isBlank()) {
-        return emptyList()
-    }
-
-    val blocks = mutableListOf<ConversationTextBlock>()
-    val lines = text.replace("\r\n", "\n").split('\n')
-    val buffer = StringBuilder()
-    var inCodeFence = false
-
-    fun flushBuffer() {
-        if (buffer.isEmpty()) {
-            return
-        }
-        val raw = buffer.toString().trimEnd('\n')
-        buffer.clear()
-        if (raw.isBlank()) {
-            return
-        }
-        blocks += ConversationTextBlock(
-            kind = if (inCodeFence) ConversationTextBlockKind.CODE else ConversationTextBlockKind.PROSE,
-            text = raw,
-        )
-    }
-
-    lines.forEach { line ->
-        if (line.trim().startsWith("```")) {
-            flushBuffer()
-            inCodeFence = !inCodeFence
-        } else {
-            buffer.append(line).append('\n')
-        }
-    }
-    flushBuffer()
-
-    return if (blocks.isEmpty()) {
-        listOf(ConversationTextBlock(ConversationTextBlockKind.PROSE, text.trim()))
-    } else {
-        blocks
-    }
-}
-
-private fun buildConversationAnnotatedString(
-    text: String,
-    chrome: RemodexConversationChrome,
-    monoFamily: FontFamily?,
-): AnnotatedString = buildAnnotatedString {
-    var cursor = 0
-
-    conversationInlineMarkdownPattern.findAll(text).forEach { match ->
-        if (match.range.first > cursor) {
-            append(text.substring(cursor, match.range.first))
-        }
-
-        val raw = match.value
-        when {
-            raw.startsWith("[") -> {
-                val label = raw.substringAfter('[').substringBefore(']')
-                withStyle(
-                    SpanStyle(
-                        color = chrome.accent,
-                        fontWeight = FontWeight.Medium,
-                        textDecoration = TextDecoration.Underline,
-                    ),
-                ) {
-                    append(label)
-                }
-            }
-
-            raw.startsWith("`") -> {
-                withStyle(
-                    SpanStyle(
-                        fontFamily = monoFamily,
-                        background = chrome.nestedSurface,
-                        color = chrome.bodyText,
-                    ),
-                ) {
-                    append(raw.removePrefix("`").removeSuffix("`"))
-                }
-            }
-
-            raw.startsWith("**") || raw.startsWith("__") -> {
-                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
-                    append(raw.drop(2).dropLast(2))
-                }
+    return buildString(normalized.length) {
+        normalized.forEach { character ->
+            when (character) {
+                '\t' -> append("    ")
+                else -> append(character)
             }
         }
-
-        cursor = match.range.last + 1
-    }
-
-    if (cursor < text.length) {
-        append(text.substring(cursor))
     }
 }
 
@@ -3979,18 +3875,18 @@ private fun ConversationMessageActionContainer(
     onClick: (() -> Unit)? = null,
     content: @Composable (showContextMenuAt: (IntOffset) -> Unit) -> Unit,
 ) {
-    val trimmedText = remember(text) { text.trim() }
+    val hasActionableText = remember(text) { text.isNotEmpty() }
     val context = LocalContext.current
     val density = LocalDensity.current
     val performLightHaptic = rememberLightImpactHaptic()
-    var menuExpanded by rememberSaveable(trimmedText, messageRole.name) { mutableStateOf(false) }
-    var menuPressOffset by remember(trimmedText, messageRole.name) { mutableStateOf(IntOffset.Zero) }
-    var selectableTextSheetState by remember(trimmedText, messageRole.name, usesMarkdownSelection) {
+    var menuExpanded by rememberSaveable(text, messageRole.name) { mutableStateOf(false) }
+    var menuPressOffset by remember(text, messageRole.name) { mutableStateOf(IntOffset.Zero) }
+    var selectableTextSheetState by remember(text, messageRole.name, usesMarkdownSelection) {
         mutableStateOf<SelectableMessageTextSheetState?>(null)
     }
-    val openContextMenu: (IntOffset) -> Unit = remember(trimmedText, messageRole.name, performLightHaptic) {
+    val openContextMenu: (IntOffset) -> Unit = remember(text, messageRole.name, performLightHaptic) {
         { pressOffset ->
-            if (trimmedText.isNotEmpty()) {
+            if (hasActionableText) {
                 performLightHaptic()
                 menuPressOffset = pressOffset
                 menuExpanded = true
@@ -3998,9 +3894,9 @@ private fun ConversationMessageActionContainer(
         }
     }
 
-    val gestureModifier = if (trimmedText.isNotEmpty() || onClick != null) {
+    val gestureModifier = if (hasActionableText || onClick != null) {
         Modifier
-            .pointerInput(trimmedText, messageRole.name, onClick, density) {
+            .pointerInput(text, messageRole.name, onClick, density) {
                 detectTapGestures(
                     onTap = {
                         onClick?.invoke()
@@ -4023,7 +3919,7 @@ private fun ConversationMessageActionContainer(
                         true
                     }
                 }
-                if (trimmedText.isNotEmpty()) {
+                if (hasActionableText) {
                     onLongClick {
                         openContextMenu(IntOffset.Zero)
                         true
@@ -4043,11 +3939,11 @@ private fun ConversationMessageActionContainer(
             expanded = menuExpanded,
             alignToTrailing = alignMenuToEnd,
             pressOffset = menuPressOffset,
-            showsSelectTextAction = allowsSelectText && trimmedText.isNotEmpty(),
+            showsSelectTextAction = allowsSelectText && hasActionableText,
             onSelectText = {
                 selectableTextSheetState = SelectableMessageTextSheetState(
                     role = messageRole,
-                    text = trimmedText,
+                    text = text,
                     usesMarkdownSelection = usesMarkdownSelection,
                 )
                 menuExpanded = false
@@ -4056,7 +3952,7 @@ private fun ConversationMessageActionContainer(
                 copyPlainTextToClipboard(
                     context = context,
                     label = "Conversation message",
-                    text = trimmedText,
+                    text = text,
                 )
                 menuExpanded = false
             },
@@ -4528,7 +4424,7 @@ private fun AssistantConversationRow(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
                 if (item.text.isNotBlank()) {
-                    if (item.isStreaming && shouldUseLightweightStreamingAssistantText(item.text)) {
+                    if (item.isStreaming) {
                         LightweightStreamingAssistantMarkdownText(
                             text = item.text,
                             chrome = chrome,
@@ -4576,44 +4472,14 @@ private fun LightweightStreamingAssistantMarkdownText(
     text: String,
     chrome: RemodexConversationChrome,
 ) {
-    val monoFamily = MaterialTheme.typography.bodyMedium.fontFamily ?: FontFamily.Monospace
-    val blocks = remember(text) { parseConversationTextBlocks(text) }
-
-    Column(
+    val displayText = remember(text) { formatStreamingPlainTextForDisplay(text) }
+    Text(
+        text = displayText,
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        blocks.forEach { block ->
-            when (block.kind) {
-                ConversationTextBlockKind.PROSE -> Text(
-                    text = buildConversationAnnotatedString(
-                        text = block.text,
-                        chrome = chrome,
-                        monoFamily = monoFamily,
-                    ),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.bodyText,
-                )
-
-                ConversationTextBlockKind.CODE -> Surface(
-                    color = chrome.mutedSurface,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, chrome.subtleBorder),
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
-                ) {
-                    Text(
-                        text = block.text,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
-                        color = chrome.bodyText,
-                    )
-                }
-            }
-        }
-    }
+        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+        color = chrome.bodyText,
+        softWrap = true,
+    )
 }
 
 @Composable

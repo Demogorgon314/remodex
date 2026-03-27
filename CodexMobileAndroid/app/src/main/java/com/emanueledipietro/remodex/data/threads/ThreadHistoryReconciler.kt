@@ -61,14 +61,58 @@ internal object ThreadHistoryReconciler {
         if (existingText.length > incomingText.length && existingText.startsWith(incomingText)) {
             return existingText
         }
+        val existingCompacted = compactStreamingText(existingText)
+        val incomingCompacted = compactStreamingText(incomingText)
+        if (existingCompacted == incomingCompacted) {
+            return existingText
+        }
+        if (existingCompacted.contains(incomingCompacted)) {
+            return existingText
+        }
+        if (incomingCompacted.startsWith(existingCompacted)) {
+            return appendCompactedSuffix(
+                existingText = existingText,
+                incomingText = incomingText,
+                matchedCompactedLength = existingCompacted.length,
+            )
+        }
 
-        val maxOverlap = minOf(existingText.length, incomingText.length)
+        val maxOverlap = minOf(existingCompacted.length, incomingCompacted.length)
         for (overlap in maxOverlap downTo 1) {
-            if (existingText.takeLast(overlap) == incomingText.take(overlap)) {
-                return existingText + incomingText.drop(overlap)
+            if (existingCompacted.takeLast(overlap) == incomingCompacted.take(overlap)) {
+                return appendCompactedSuffix(
+                    existingText = existingText,
+                    incomingText = incomingText,
+                    matchedCompactedLength = overlap,
+                )
             }
         }
         return incomingText
+    }
+
+    private fun appendCompactedSuffix(
+        existingText: String,
+        incomingText: String,
+        matchedCompactedLength: Int,
+    ): String {
+        if (matchedCompactedLength <= 0) {
+            return existingText + incomingText
+        }
+        var consumed = 0
+        var startIndex = incomingText.length
+        for ((index, character) in incomingText.withIndex()) {
+            if (!character.isWhitespace()) {
+                consumed += 1
+                if (consumed == matchedCompactedLength) {
+                    startIndex = index + 1
+                    break
+                }
+            }
+        }
+        if (startIndex >= incomingText.length) {
+            return existingText
+        }
+        return existingText + incomingText.substring(startIndex)
     }
 
     private fun findMatchIndex(
@@ -292,7 +336,7 @@ internal object ThreadHistoryReconciler {
         val nextAssistantChangeSet = serverItem.assistantChangeSet ?: value.assistantChangeSet
         val nextStreaming = if (value.speaker == ConversationSpeaker.ASSISTANT || value.speaker == ConversationSpeaker.SYSTEM) {
             if (preservesRunningPresentation) {
-                localItem.isStreaming || serverItem.isStreaming || threadIsRunning
+                localItem.isStreaming || serverItem.isStreaming
             } else {
                 false
             }
@@ -376,6 +420,16 @@ internal object ThreadHistoryReconciler {
     }
 
     private fun normalizedText(value: String): String = value.trim()
+
+    private fun compactStreamingText(value: String): String {
+        return buildString(value.length) {
+            value.forEach { character ->
+                if (!character.isWhitespace()) {
+                    append(character)
+                }
+            }
+        }
+    }
 
     private fun normalizedIdentifier(value: String?): String? {
         val trimmed = value?.trim().orEmpty()

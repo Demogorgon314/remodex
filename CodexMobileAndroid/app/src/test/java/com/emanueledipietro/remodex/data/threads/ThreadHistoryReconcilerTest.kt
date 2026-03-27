@@ -7,9 +7,115 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ThreadHistoryReconcilerTest {
+    @Test
+    fun `merge history items keeps local streaming assistant formatting when snapshot compacts whitespace`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "assistant-local",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = """
+                    可以，下面给你一版适合直接当 backlog 用的任务清单。
+
+                    **P0**
+
+                    1. 拆分启动脚本
+                       把 build/entrypoint.sh 拆成
+                       env、openconnect、danted。
+                """.trimIndent(),
+                turnId = "turn-1",
+                isStreaming = true,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "assistant-history",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "可以，下面给你一版适合直接当 backlog 用的任务清单。**P0**1. 拆分启动脚本把 build/entrypoint.sh 拆成env、openconnect、danted。",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = true,
+                orderIndex = 5L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = true,
+            threadIsRunning = true,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("assistant-item-1", merged.single().itemId)
+        assertEquals(existing.single().text, merged.single().text)
+        assertTrue(merged.single().isStreaming)
+    }
+
+    @Test
+    fun `merge history items appends resumed streaming suffix while preserving local formatting`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "assistant-local",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = """
+                    可以，下面给你一版适合直接当 backlog 用的任务清单。
+
+                    **P0**
+
+                    1. 拆分启动脚本
+                       把 build/entrypoint.sh 拆成
+                       env、openconnect、danted。
+                """.trimIndent(),
+                turnId = "turn-1",
+                isStreaming = true,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "assistant-history",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "可以，下面给你一版适合直接当 backlog 用的任务清单。**P0**1. 拆分启动脚本把 build/entrypoint.sh 拆成env、openconnect、danted。2. 增加重连恢复测试。",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = true,
+                orderIndex = 5L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = true,
+            threadIsRunning = true,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("assistant-item-1", merged.single().itemId)
+        assertEquals(
+            """
+                可以，下面给你一版适合直接当 backlog 用的任务清单。
+
+                **P0**
+
+                1. 拆分启动脚本
+                   把 build/entrypoint.sh 拆成
+                   env、openconnect、danted。2. 增加重连恢复测试。
+            """.trimIndent(),
+            merged.single().text,
+        )
+        assertTrue(merged.single().isStreaming)
+    }
+
     @Test
     fun `merge history items keeps detailed reasoning when incoming snapshot is shorter`() {
         val existing = listOf(
@@ -51,6 +157,44 @@ class ThreadHistoryReconcilerTest {
         assertEquals(1, merged.size)
         assertEquals("reasoning-item-1", merged.single().itemId)
         assertEquals(existing.single().text, merged.single().text)
+        assertFalse(merged.single().isStreaming)
+    }
+
+    @Test
+    fun `merge history items does not mark historical assistant rows streaming just because thread is running`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "assistant-local",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "final response",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = false,
+                orderIndex = 2L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "assistant-history",
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
+                text = "final response",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                isStreaming = false,
+                orderIndex = 5L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = true,
+            threadIsRunning = true,
+        )
+
+        assertEquals(1, merged.size)
         assertFalse(merged.single().isStreaming)
     }
 
