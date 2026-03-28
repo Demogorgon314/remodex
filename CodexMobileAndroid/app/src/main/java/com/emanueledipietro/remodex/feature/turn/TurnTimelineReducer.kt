@@ -205,7 +205,10 @@ object TurnTimelineReducer {
             turnId = nextTurnId,
             itemId = nextItemId,
             isStreaming = true,
-            orderIndex = maxOf(existing.orderIndex, orderIndex),
+            orderIndex = preservedStreamingOrderIndex(
+                existing = existing,
+                incomingOrderIndex = orderIndex,
+            ),
         )
 
         return items.toMutableList().apply {
@@ -259,7 +262,10 @@ object TurnTimelineReducer {
                 turnId = turnId,
                 itemId = itemId ?: existing.itemId,
                 isStreaming = true,
-                orderIndex = maxOf(existing.orderIndex, orderIndex),
+                orderIndex = preservedStreamingOrderIndex(
+                    existing = existing,
+                    incomingOrderIndex = orderIndex,
+                ),
             )
         }
 
@@ -862,6 +868,19 @@ object TurnTimelineReducer {
         }
 
         return result
+    }
+
+    private fun preservedStreamingOrderIndex(
+        existing: RemodexConversationItem,
+        incomingOrderIndex: Long,
+    ): Long {
+        if (
+            existing.speaker == ConversationSpeaker.ASSISTANT &&
+            existing.kind == ConversationItemKind.CHAT
+        ) {
+            return existing.orderIndex
+        }
+        return maxOf(existing.orderIndex, incomingOrderIndex)
     }
 
     private fun removeDuplicateFileChangeMessages(

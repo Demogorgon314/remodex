@@ -609,6 +609,56 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `reduce projected keeps assistant anchored before later command when subsequent deltas arrive`() {
+        val projected = TurnTimelineReducer.reduceProjected(
+            listOf(
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "thinking-1",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.REASONING,
+                        text = "Inspecting the repository",
+                        turnId = "turn-1",
+                        itemId = "thinking-item-1",
+                        orderIndex = 0,
+                    ),
+                ),
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    delta = "I will first inspect the codebase",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "command-1",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.COMMAND_EXECUTION,
+                        text = "running rg -n activeTurnIdByThread",
+                        turnId = "turn-1",
+                        itemId = "command-item-1",
+                        orderIndex = 2,
+                    ),
+                ),
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    delta = " and compare the iOS flow",
+                    orderIndex = 3,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("thinking-1", "assistant-1", "command-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals(1L, projected.first { it.id == "assistant-1" }.orderIndex)
+    }
+
+    @Test
     fun `project filters hidden push reset markers`() {
         val projected = TurnTimelineReducer.project(
             listOf(
