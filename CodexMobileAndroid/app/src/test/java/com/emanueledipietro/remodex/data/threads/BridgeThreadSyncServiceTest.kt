@@ -3194,6 +3194,218 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `thread status idle completes local streaming state before catchup`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = ScriptedRpcRelayWebSocketFactory(
+                macDeviceId = "mac-idle-local-complete",
+                macIdentity = macIdentity,
+                requestHandlers = emptyMap(),
+            ),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-idle-retry",
+                    title = "Idle retry thread",
+                    preview = "Recovered final response",
+                    projectPath = "/tmp/project-idle-retry",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-item-idle-retry",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Recovered final response",
+                                turnId = "turn-idle-retry",
+                                itemId = "assistant-item-idle-retry",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleThreadStatusChangedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-idle-retry"))
+                put("status", JsonPrimitive("idle"))
+            },
+        )
+        advanceUntilIdle()
+
+        val thread = service.threads.value.first { it.id == "thread-idle-retry" }
+        val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .first { item -> item.id == "assistant-item-idle-retry" }
+        assertEquals("Recovered final response", assistant.text)
+        assertFalse(assistant.isStreaming)
+        assertFalse(thread.isRunning)
+    }
+
+    @Test
+    fun `forced lifecycle catchup keeps retrying until delayed history is complete`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-idle-retry-catchup",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var threadReadCalls = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-idle-retry"))
+                                            put("title", JsonPrimitive("Idle retry thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-idle-retry"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_620))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    threadReadCalls += 1
+                    val assistantText = if (threadReadCalls == 1) {
+                        "Recovered final response"
+                    } else {
+                        "Recovered final response after delayed hydration."
+                    }
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-idle-retry"))
+                                put("title", JsonPrimitive("Idle retry thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-idle-retry"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-idle-retry"))
+                                                put("status", JsonPrimitive("completed"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-idle-retry"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive(assistantText))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-idle-retry",
+                        title = "Idle retry thread",
+                        preview = "Recovered final response",
+                        projectPath = "/tmp/project-idle-retry",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = listOf(
+                            TimelineMutation.Upsert(
+                                RemodexConversationItem(
+                                    id = "assistant-item-idle-retry",
+                                    speaker = ConversationSpeaker.ASSISTANT,
+                                    kind = ConversationItemKind.CHAT,
+                                    text = "Recovered final response",
+                                    turnId = "turn-idle-retry",
+                                    itemId = "assistant-item-idle-retry",
+                                    isStreaming = true,
+                                    orderIndex = 0L,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+
+            service.hydrateThread("thread-idle-retry")
+            advanceUntilIdle()
+            service.hydrateThread("thread-idle-retry")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-idle-retry" }
+            val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+                .first { item -> item.id == "assistant-item-idle-retry" }
+            assertEquals("Recovered final response after delayed hydration.", assistant.text)
+            assertFalse(assistant.isStreaming)
+            assertFalse(thread.isRunning)
+            assertTrue(threadReadCalls >= 2)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `hydrate thread decodes reasoning summary and content fields`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

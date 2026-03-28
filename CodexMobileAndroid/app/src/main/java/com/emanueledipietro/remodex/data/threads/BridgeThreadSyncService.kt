@@ -1919,23 +1919,32 @@ class BridgeThreadSyncService(
                 || normalizedStatus == "finished"
                 || normalizedStatus == "stopped"
                 || normalizedStatus == "systemerror" -> {
-                if (
-                    activeTurnIdByThread[threadId] != null ||
+                val activeTurnIdForThread = activeTurnIdByThread[threadId]
+                val shouldCatchUpLifecycle = (
+                    activeTurnIdForThread != null ||
                     runningThreadFallbackIds.contains(threadId) ||
                     hasStreamingMessage(threadId)
-                ) {
-                    scheduleLifecycleCatchup(threadId)
-                    return
-                }
+                )
                 terminalStateForNormalizedStatus(normalizedStatus)?.let { state ->
                     setLatestTurnTerminalState(
                         threadId = threadId,
                         state = state,
-                        turnId = activeTurnIdByThread[threadId],
+                        turnId = activeTurnIdForThread,
                     )
                 }
+                completeStreamingItemsForThread(
+                    threadId = threadId,
+                    turnId = activeTurnIdForThread,
+                )
                 clearThreadRunningState(threadId)
                 touchThread(threadId = threadId, isRunning = false)
+                if (shouldCatchUpLifecycle) {
+                    scheduleLifecycleCatchup(
+                        threadId = threadId,
+                        turnId = activeTurnIdForThread,
+                        forceDelayedRetries = true,
+                    )
+                }
             }
         }
     }
@@ -5435,20 +5444,62 @@ class BridgeThreadSyncService(
         syncThreadLifecycleState(threadId = threadId, isRunning = false)
     }
 
-    private fun scheduleLifecycleCatchup(threadId: String) {
+    private fun scheduleLifecycleCatchup(
+        threadId: String,
+        turnId: String? = null,
+        forceDelayedRetries: Boolean = false,
+    ) {
         val existingJob = lifecycleCatchupJobByThread[threadId]
         if (existingJob?.isActive == true) {
             return
         }
 
-        lifecycleCatchupJobByThread[threadId] = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        lifecycleCatchupJobByThread[threadId] = scope.launch {
             try {
-                refreshThreads()
-                hydrateThread(threadId)
+                performLifecycleCatchup(threadId)
+                if (shouldRunDelayedLifecycleCatchupPasses(
+                        threadId = threadId,
+                        turnId = turnId,
+                        forceDelayedRetries = forceDelayedRetries,
+                    )
+                ) {
+                    for (delayMs in postTurnCatchupDelaysMs) {
+                        if (!shouldRunDelayedLifecycleCatchupPasses(
+                                threadId = threadId,
+                                turnId = turnId,
+                                forceDelayedRetries = forceDelayedRetries,
+                            )
+                        ) {
+                            break
+                        }
+                        delay(delayMs)
+                        if (!isConnected()) {
+                            break
+                        }
+                        performLifecycleCatchup(threadId)
+                    }
+                }
             } finally {
                 lifecycleCatchupJobByThread.remove(threadId)
             }
         }
+    }
+
+    private suspend fun performLifecycleCatchup(threadId: String) {
+        refreshThreads()
+        hydrateThread(threadId)
+    }
+
+    private fun shouldRunDelayedLifecycleCatchupPasses(
+        threadId: String,
+        turnId: String?,
+        forceDelayedRetries: Boolean,
+    ): Boolean {
+        if (forceDelayedRetries) {
+            return true
+        }
+        return hasStreamingMessage(threadId) ||
+            shouldContinueTurnCompletionCatchup(threadId = threadId, turnId = turnId)
     }
 
     private fun syncThreadLifecycleState(

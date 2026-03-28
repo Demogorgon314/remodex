@@ -297,6 +297,72 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `encrypted reconnect keeps catching up selected streaming thread after initial hydrate`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ReconnectStreamingCatchupSyncService()
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-repository-streaming-catchup",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = payload.macDeviceId,
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val hydrateCallsBeforeReconnect = syncService.hydrateCalls
+        syncService.finalizeAfterHydrateCalls = hydrateCallsBeforeReconnect + 2
+
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        var catchupCompleted = false
+        for (attempt in 0 until 100) {
+            advanceUntilIdle()
+            val selectedThread = repository.session.value.selectedThread
+            if (
+                selectedThread?.id == "thread-notifications" &&
+                selectedThread.messages.any { item ->
+                    item.id == "assistant-streaming-recovery" &&
+                        item.text == "Recovered final output after delayed reconnect catchup." &&
+                        !item.isStreaming
+                }
+            ) {
+                catchupCompleted = true
+                break
+            }
+            if (attempt < 99) {
+                Thread.sleep(20)
+            }
+        }
+        if (!catchupCompleted) {
+            fail(
+                "Expected reconnect catchup to finish but hydrateCalls=${syncService.hydrateCalls} refreshCalls=${syncService.refreshCalls} resumeCalls=${syncService.resumeCalls} selectedMessages=${repository.session.value.selectedThread?.messages}",
+            )
+        }
+        assertTrue(syncService.hydrateCalls >= hydrateCallsBeforeReconnect + 2)
+        assertEquals(0, syncService.resumeCalls)
+    }
+
+    @Test
     fun `duplicate encrypted snapshots in same attempt do not rerun selected thread recovery`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectResumeSyncService()
@@ -1611,6 +1677,94 @@ class DefaultRemodexAppRepositoryTest {
 
         fun updateThreads(threads: List<ThreadSyncSnapshot>) {
             delegate.updateThreads(threads)
+        }
+    }
+
+    private class ReconnectStreamingCatchupSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadHydrationService, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        var hydrateCalls: Int = 0
+            private set
+        var finalizeAfterHydrateCalls: Int = 2
+        var refreshCalls: Int = 0
+            private set
+        var resumeCalls: Int = 0
+            private set
+
+        init {
+            delegate.updateThreads(
+                delegate.threads.value.map { snapshot ->
+                    if (snapshot.id == "thread-notifications") {
+                        snapshot.copy(
+                            isRunning = false,
+                            timelineMutations = listOf(
+                                TimelineMutation.Upsert(
+                                    RemodexConversationItem(
+                                        id = "assistant-streaming-recovery",
+                                        speaker = ConversationSpeaker.ASSISTANT,
+                                        kind = ConversationItemKind.CHAT,
+                                        text = "Recovered final output",
+                                        turnId = "turn-streaming-recovery",
+                                        itemId = "assistant-streaming-recovery",
+                                        isStreaming = true,
+                                        orderIndex = 0L,
+                                    ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        snapshot
+                    }
+                },
+            )
+        }
+
+        override suspend fun refreshThreads() {
+            refreshCalls += 1
+        }
+
+        override suspend fun hydrateThread(threadId: String) {
+            hydrateCalls += 1
+            if (threadId == "thread-notifications" && hydrateCalls >= finalizeAfterHydrateCalls) {
+                delegate.updateThreads(
+                    delegate.threads.value.map { snapshot ->
+                        if (snapshot.id == threadId) {
+                            snapshot.copy(
+                                isRunning = false,
+                                timelineMutations = listOf(
+                                    TimelineMutation.Upsert(
+                                        RemodexConversationItem(
+                                            id = "assistant-streaming-recovery",
+                                            speaker = ConversationSpeaker.ASSISTANT,
+                                            kind = ConversationItemKind.CHAT,
+                                            text = "Recovered final output after delayed reconnect catchup.",
+                                            turnId = "turn-streaming-recovery",
+                                            itemId = "assistant-streaming-recovery",
+                                            isStreaming = false,
+                                            orderIndex = 0L,
+                                        ),
+                                    ),
+                                ),
+                            )
+                        } else {
+                            snapshot
+                        }
+                    },
+                )
+            }
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            resumeCalls += 1
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return delegate.isThreadResumedLocally(threadId)
         }
     }
 

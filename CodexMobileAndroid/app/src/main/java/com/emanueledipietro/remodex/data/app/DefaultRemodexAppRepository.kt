@@ -102,6 +102,7 @@ class DefaultRemodexAppRepository(
     private var threadCacheWriteJob: Job? = null
     private var threadListPublishJob: Job? = null
     private var recoveredEncryptedAttempt: Int? = null
+    private val reconnectCatchupJobByThread = mutableMapOf<String, Job>()
     private val initialBaseThreads = threadSyncService.threads.value
         .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
         .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
@@ -216,6 +217,8 @@ class DefaultRemodexAppRepository(
             secureConnectionCoordinator.state.collectLatest { secureConnection ->
                 if (secureConnection.secureState != SecureConnectionState.ENCRYPTED) {
                     recoveredEncryptedAttempt = null
+                    reconnectCatchupJobByThread.values.forEach(Job::cancel)
+                    reconnectCatchupJobByThread.clear()
                     return@collectLatest
                 }
 
@@ -225,30 +228,39 @@ class DefaultRemodexAppRepository(
                 }
                 recoveredEncryptedAttempt = currentAttempt
 
-                val selectedThreadIdBeforeRecovery = sessionState.value.selectedThreadId
-                val runningSelectedThreadBeforeRecovery = selectedThreadIdBeforeRecovery
-                    ?.let { selectedThreadId ->
-                        sessionState.value.selectedThread
-                            ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning }
-                    }
+                val selectedThreadBeforeRecovery = sessionState.value.selectedThread
+                val selectedThreadIdBeforeRecovery =
+                    selectedThreadBeforeRecovery?.id ?: sessionState.value.selectedThreadId
 
                 selectedThreadIdBeforeRecovery
                     ?.let { selectedThreadId ->
                         runHydrationSafely {
                             hydrationService()?.hydrateThread(selectedThreadId)
                         }
-                        (runningSelectedThreadBeforeRecovery
-                            ?: sessionState.value.selectedThread
-                                ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning })
-                            ?.let { selectedThread ->
+                        val refreshedSnapshot = threadSyncService.threads.value
+                            .firstOrNull { snapshot -> snapshot.id == selectedThreadId }
+                        val refreshedSelectedThread = sessionState.value.selectedThread
+                            ?.takeIf { thread -> thread.id == selectedThreadId }
+                            ?: sessionState.value.threads.firstOrNull { thread -> thread.id == selectedThreadId }
+                        val shouldResumeAfterReconnect =
+                            selectedThreadBeforeRecovery?.isRunning == true ||
+                                refreshedSnapshot?.isRunning == true ||
+                                refreshedSelectedThread?.isRunning == true
+                        val selectedThreadForRecovery = refreshedSelectedThread ?: selectedThreadBeforeRecovery
+                        if (shouldResumeAfterReconnect) {
+                            val projectPath = refreshedSnapshot?.projectPath ?: selectedThreadForRecovery?.projectPath.orEmpty()
+                            val runtimeConfig = refreshedSnapshot?.runtimeConfig ?: selectedThreadForRecovery?.runtimeConfig
+                            if (!projectPath.isBlank() || runtimeConfig != null) {
                                 runHydrationSafely {
                                     resumeService()?.resumeThread(
-                                        threadId = selectedThread.id,
-                                        preferredProjectPath = selectedThread.projectPath.ifBlank { null },
-                                        modelIdentifier = selectedThread.runtimeConfig.selectedModelId,
+                                        threadId = selectedThreadId,
+                                        preferredProjectPath = projectPath.ifBlank { null },
+                                        modelIdentifier = runtimeConfig?.selectedModelId,
                                     )
                                 }
                             }
+                        }
+                        scheduleReconnectCatchup(threadId = selectedThreadId)
                     }
             }
         }
@@ -271,6 +283,56 @@ class DefaultRemodexAppRepository(
                 return
             }
         }
+    }
+
+    private suspend fun scheduleReconnectCatchup(threadId: String) {
+        reconnectCatchupJobByThread.remove(threadId)?.cancel()
+        if (performReconnectCatchupPass(threadId)) {
+            return
+        }
+        reconnectCatchupJobByThread[threadId] = repositoryScope.launch {
+            try {
+                val recoveryDelaysMs = listOf(1_000L, 2_000L)
+                for (delayMs in recoveryDelaysMs) {
+                    delay(delayMs)
+                    if (performReconnectCatchupPass(threadId)) {
+                        break
+                    }
+                }
+            } finally {
+                reconnectCatchupJobByThread.remove(threadId)
+            }
+        }
+    }
+
+    private suspend fun performReconnectCatchupPass(threadId: String): Boolean {
+        if (secureConnectionCoordinator.state.value.secureState != SecureConnectionState.ENCRYPTED) {
+            return true
+        }
+
+        runHydrationSafely {
+            hydrationService()?.refreshThreads()
+        }
+        runHydrationSafely {
+            hydrationService()?.hydrateThread(threadId)
+        }
+
+        val refreshedSnapshot = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+            ?: return true
+        if (refreshedSnapshot.isRunning) {
+            runHydrationSafely {
+                resumeService()?.resumeThread(
+                    threadId = threadId,
+                    preferredProjectPath = refreshedSnapshot.projectPath.ifBlank { null },
+                    modelIdentifier = refreshedSnapshot.runtimeConfig.selectedModelId,
+                )
+            }
+        }
+
+        val settledSnapshot = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+            ?: return true
+        return !settledSnapshot.isRunning &&
+            projectThreadTimelineItems(settledSnapshot).none(RemodexConversationItem::isStreaming)
     }
 
     private suspend fun fetchBridgeManagedAccountState() =
