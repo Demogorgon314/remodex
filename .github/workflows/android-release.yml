@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS; do
             if [[ -z "${!secret_name:-}" ]]; then
               echo "::error::Missing required repository secret ${secret_name}."
               exit 1

@@ -26,12 +26,11 @@ val configuredVersionName = propOrEnv("remodexAndroidVersionName", "ANDROID_VERS
 val releaseKeystorePath = propOrEnv("remodexAndroidKeystorePath", "ANDROID_KEYSTORE_PATH")
 val releaseKeystorePassword = propOrEnv("remodexAndroidKeystorePassword", "ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = propOrEnv("remodexAndroidKeyAlias", "ANDROID_KEY_ALIAS")
-val releaseKeyPassword = propOrEnv("remodexAndroidKeyPassword", "ANDROID_KEY_PASSWORD")
+val releaseKeyPassword = propOrEnv("remodexAndroidKeyPassword", "ANDROID_KEY_PASSWORD") ?: releaseKeystorePassword
 val hasReleaseSigning = listOf(
     releaseKeystorePath,
     releaseKeystorePassword,
     releaseKeyAlias,
-    releaseKeyPassword,
 ).all { !it.isNullOrBlank() }
 
 android {

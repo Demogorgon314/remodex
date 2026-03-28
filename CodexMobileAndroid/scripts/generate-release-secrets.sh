@@ -47,7 +47,7 @@ Options:
   --validity-days DAYS      Keystore validity in days
                             Default: ${VALIDITY_DAYS}
   --keystore-password PASS  Use an explicit keystore password instead of generating one
-  --key-password PASS       Use an explicit key password instead of generating one
+  --key-password PASS       Optional separate key password; defaults to the keystore password
   --set-gh-secrets          Push the generated values to GitHub repository secrets via gh
   --repo OWNER/REPO         GitHub repo to target with --set-gh-secrets
   --force                   Overwrite an existing output directory contents
@@ -188,7 +188,7 @@ main() {
   fi
 
   if [[ -z "${KEY_PASSWORD}" ]]; then
-    KEY_PASSWORD="$(random_secret)"
+    KEY_PASSWORD="${KEYSTORE_PASSWORD}"
   fi
 
   [[ "${VALIDITY_DAYS}" =~ ^[0-9]+$ ]] || die "--validity-days must be numeric"
