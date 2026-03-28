@@ -1,4 +1,6 @@
 package com.emanueledipietro.remodex.feature.appshell
+
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -971,6 +973,25 @@ class AppViewModel(
         clearComposerAutocomplete()
     }
 
+    fun prepareForkDestinationSelection() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val draftBefore = composerDrafts.value[threadId].orEmpty()
+        val draftAfter = RemodexComposerCommandLogic.removeTrailingSlashCommandToken(draftBefore)
+            ?: draftBefore
+        runCatching {
+            Log.d(
+                ForkDebugTag,
+                "prepareForkDestinationSelection threadId=$threadId draftBefore='$draftBefore' draftAfter='$draftAfter' panel=${uiState.value.composer.autocomplete.panel}",
+            )
+        }
+        composerDrafts.update { draftsByThread ->
+            draftsByThread.toMutableMap().apply {
+                this[threadId] = draftAfter
+            }
+        }
+        clearComposerAutocomplete()
+    }
+
     fun clearReviewSelection() {
         val threadId = uiState.value.selectedThread?.id ?: return
         composerReviewSelections.update { selectionsByThread ->
@@ -1322,8 +1343,22 @@ class AppViewModel(
     ) {
         val threadId = uiState.value.selectedThread?.id ?: return
         val trimmedName = name.trim()
-        val trimmedBaseBranch = baseBranch?.trim().orEmpty()
-        if (trimmedName.isEmpty() || trimmedBaseBranch.isEmpty()) {
+        if (trimmedName.isEmpty()) {
+            return
+        }
+        val gitState = gitStates.value[threadId]
+        val resolvedBaseBranch = baseBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: gitState?.branches?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: gitState?.sync?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: gitState?.branches?.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+        if (resolvedBaseBranch == null) {
+            showGitSyncAlert(
+                threadId = threadId,
+                title = "Worktree Fork Failed",
+                message = "Could not determine a base branch for the new worktree.",
+            )
             return
         }
 
@@ -1338,7 +1373,7 @@ class AppViewModel(
                 val worktreeResult = repository.createGitWorktreeResult(
                     threadId = threadId,
                     name = trimmedName,
-                    baseBranch = trimmedBaseBranch,
+                    baseBranch = resolvedBaseBranch,
                     changeTransfer = RemodexGitWorktreeChangeTransferMode.COPY,
                 )
                 if (worktreeResult.alreadyExisted) {
@@ -2888,6 +2923,7 @@ class AppViewModel(
     }
 
     companion object {
+        const val ForkDebugTag = "RemodexForkDebug"
         const val MaxComposerImages = 4
         const val MaxAutocompleteItems = 6
         const val MinAutocompleteQueryLength = 2

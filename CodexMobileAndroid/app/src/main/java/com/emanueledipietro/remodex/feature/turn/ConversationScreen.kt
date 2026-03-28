@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import android.util.Log
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.text.format.DateFormat
@@ -124,6 +125,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -207,6 +210,7 @@ import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
@@ -233,6 +237,7 @@ private val ComposerMentionFileTint = Color(0xFF2563EB)
 private val ComposerMentionSkillTint = Color(0xFF4F46E5)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
+private const val ForkDebugTag = "RemodexForkDebug"
 
 private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
     com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject(projectPath)
@@ -370,6 +375,7 @@ fun ConversationScreen(
     onClearReviewSelection: () -> Unit,
     onClearSubagentsSelection: () -> Unit,
     onCloseComposerAutocomplete: () -> Unit,
+    onPrepareForkDestinationSelection: () -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
     onRefreshUsageStatus: () -> Unit = {},
@@ -516,14 +522,33 @@ fun ConversationScreen(
             }
         }
     }
-    val handleForkThread: (RemodexComposerForkDestination) -> Unit = remember(onForkThread) {
-        { destination ->
-            if (destination == RemodexComposerForkDestination.NEW_WORKTREE) {
-                worktreeSheetMode = WorktreeSheetMode.FORK
-                worktreeHandoffSheetExpanded = true
-            } else {
-                onForkThread(destination)
+    val handleForkThread: (RemodexComposerForkDestination) -> Unit = { destination ->
+        runCatching {
+            Log.d(
+                ForkDebugTag,
+                "handleForkThread destination=$destination autocompleteVisible=$autocompleteVisible draft='${uiState.composer.draftText}' panel=${uiState.composer.autocomplete.panel}",
+            )
+        }
+        onPrepareForkDestinationSelection()
+        if (destination == RemodexComposerForkDestination.NEW_WORKTREE) {
+            worktreeSheetMode = WorktreeSheetMode.FORK
+            worktreeHandoffSheetExpanded = true
+            runCatching {
+                Log.d(
+                    ForkDebugTag,
+                    "handleForkThread opening dialog mode=$worktreeSheetMode expanded=$worktreeHandoffSheetExpanded",
+                )
             }
+        } else {
+            onForkThread(destination)
+        }
+    }
+    LaunchedEffect(worktreeHandoffSheetExpanded, worktreeSheetMode, autocompleteVisible, uiState.composer.draftText) {
+        runCatching {
+            Log.d(
+                ForkDebugTag,
+                "ConversationScreen dialogState expanded=$worktreeHandoffSheetExpanded mode=$worktreeSheetMode autocompleteVisible=$autocompleteVisible draft='${uiState.composer.draftText}' panel=${uiState.composer.autocomplete.panel}",
+            )
         }
     }
     LaunchedEffect(thread.id, lastTimelineItemId) {
@@ -2425,7 +2450,6 @@ private fun DetailedGitSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WorktreeHandoffSheet(
     mode: WorktreeSheetMode,
@@ -2434,58 +2458,87 @@ private fun WorktreeHandoffSheet(
     onSubmit: (String, String) -> Unit,
 ) {
     var branchDraft by rememberSaveable { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
     val trimmedBaseBranch = preferredBaseBranch.trim()
+    val trimmedBranchName = branchDraft.trim()
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+    LaunchedEffect(mode) {
+        runCatching {
+            Log.d(
+                ForkDebugTag,
+                "WorktreeHandoffSheet composed mode=$mode preferredBaseBranch='$preferredBaseBranch'",
+            )
+        }
+        focusRequester.requestFocus()
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            tonalElevation = 0.dp,
+            shadowElevation = 12.dp,
+            color = MaterialTheme.colorScheme.surface,
         ) {
-            Text(
-                text = when (mode) {
-                    WorktreeSheetMode.HANDOFF -> "Hand off thread to worktree"
-                    WorktreeSheetMode.FORK -> "Fork thread into new worktree"
-                },
-                style = MaterialTheme.typography.titleLarge,
-            )
-            Text(
-                text = when (mode) {
-                    WorktreeSheetMode.HANDOFF ->
-                        "Create and check out a branch in a new worktree to keep working in parallel. Tracked local changes move there too, while ignored files stay in Local."
-                    WorktreeSheetMode.FORK ->
-                        "Create and check out a branch in a new worktree, then fork this conversation into the new checkout. Tracked local changes are copied there too, while the current thread and Local checkout stay exactly where they are."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedTextField(
-                value = branchDraft,
-                onValueChange = { branchDraft = it },
-                label = { Text("Branch name") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (trimmedBaseBranch.isNotEmpty()) {
-                Text(
-                    text = "Base branch: $trimmedBaseBranch",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Button(
-                onClick = { onSubmit(branchDraft.trim(), trimmedBaseBranch) },
-                enabled = branchDraft.isNotBlank() && trimmedBaseBranch.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 460.dp)
+                    .padding(horizontal = 24.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 Text(
-                    when (mode) {
-                        WorktreeSheetMode.HANDOFF -> "Hand off"
-                        WorktreeSheetMode.FORK -> "Fork"
+                    text = when (mode) {
+                        WorktreeSheetMode.HANDOFF -> "Hand off thread to worktree"
+                        WorktreeSheetMode.FORK -> "Fork thread into new worktree"
                     },
+                    style = MaterialTheme.typography.headlineSmall,
                 )
+                Text(
+                    text = when (mode) {
+                        WorktreeSheetMode.HANDOFF ->
+                            "Create and check out a branch in a new worktree to keep working in parallel. Tracked local changes move there too, while ignored files stay in Local."
+                        WorktreeSheetMode.FORK ->
+                            "Create and check out a branch in a new worktree, then fork this conversation into the new checkout. Tracked local changes are copied there too, while the current thread and Local checkout stay exactly where they are."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = branchDraft,
+                    onValueChange = { branchDraft = it },
+                    label = { Text("Branch name") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                )
+                if (trimmedBaseBranch.isNotEmpty()) {
+                    Text(
+                        text = "Base branch: $trimmedBaseBranch",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Button(
+                        onClick = { onSubmit(trimmedBranchName, trimmedBaseBranch) },
+                        enabled = trimmedBranchName.isNotBlank() && trimmedBaseBranch.isNotBlank(),
+                    ) {
+                        Text(
+                            when (mode) {
+                                WorktreeSheetMode.HANDOFF -> "Hand off"
+                                WorktreeSheetMode.FORK -> "Fork"
+                            },
+                        )
+                    }
+                }
             }
         }
     }

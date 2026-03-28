@@ -435,6 +435,124 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `fork thread into prepared project path upserts immediately and retries hydration until materialized`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-fork-materialize",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var forkedThreadReadCalls = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-source"))
+                                            put("title", JsonPrimitive("Source thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-source"))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/fork" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-forked"))
+                                put("title", JsonPrimitive("Forked thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-forked"))
+                            },
+                        )
+                    }
+                },
+                "thread/read" to { request ->
+                    val threadId = request.params?.jsonObjectOrNull?.firstString("threadId", "thread_id")
+                    when (threadId) {
+                        "thread-forked" -> {
+                            forkedThreadReadCalls += 1
+                            if (forkedThreadReadCalls == 1) {
+                                throw RpcError(
+                                    code = -32000,
+                                    message = "No rollout found for thread id thread-forked",
+                                )
+                            }
+                            buildJsonObject {
+                                put(
+                                    "thread",
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-forked"))
+                                        put("title", JsonPrimitive("Forked thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-forked"))
+                                        put("turns", buildJsonArray { })
+                                    },
+                                )
+                            }
+                        }
+
+                        else -> buildJsonObject {
+                            put(
+                                "thread",
+                                buildJsonObject {
+                                    put("id", JsonPrimitive(threadId ?: "thread-source"))
+                                    put("title", JsonPrimitive("Source thread"))
+                                    put("cwd", JsonPrimitive("/tmp/project-source"))
+                                    put("turns", buildJsonArray { })
+                                },
+                            )
+                        }
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            val forkedThread = service.forkThreadIntoProjectPath(
+                threadId = "thread-source",
+                projectPath = "/tmp/project-forked",
+            )
+            advanceUntilIdle()
+
+            assertEquals("thread-forked", forkedThread?.id)
+            assertEquals("thread-forked", service.threads.value.firstOrNull()?.id)
+            assertEquals("/tmp/project-forked", service.threads.value.firstOrNull()?.projectPath)
+            assertEquals(2, forkedThreadReadCalls)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `image url fallback only retries compatibility-shaped rpc errors`() {
         assertTrue(
             shouldRetryWithImageUrlFieldFallbackValue(

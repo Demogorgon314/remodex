@@ -51,6 +51,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -280,6 +282,66 @@ class DefaultRemodexAppRepositoryTest {
 
         assertEquals(1, syncService.resumeCalls)
         assertEquals(originalProjectPath, repository.session.value.selectedThread?.projectPath)
+    }
+
+    @Test
+    fun `fork into prepared project path selects returned fork thread immediately`() = runTest {
+        val syncService = DelayedForkVisibilitySyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val selectedForkThreadId = repository.forkThreadIntoProjectPath(
+            threadId = "thread-notifications",
+            projectPath = "/tmp/.codex/worktrees/feature-forked",
+        )
+        advanceUntilIdle()
+
+        assertEquals("thread-forked-delayed", selectedForkThreadId)
+        assertEquals("thread-forked-delayed", repository.session.value.selectedThread?.id)
+        assertEquals("/tmp/.codex/worktrees/feature-forked", repository.session.value.selectedThread?.projectPath)
+    }
+
+    @Test
+    fun `fork into prepared project path creates a fresh thread for empty resumed source`() = runTest {
+        val syncService = EmptyThreadForkFallbackSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createSecureCoordinator(backgroundScope),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.createThread(preferredProjectPath = "/tmp/local-main")
+        advanceUntilIdle()
+        val sourceThreadId = requireNotNull(repository.session.value.selectedThread?.id) {
+            "Expected created source thread"
+        }
+
+        val forkedThreadId = repository.forkThreadIntoProjectPath(
+            threadId = sourceThreadId,
+            projectPath = "/tmp/.codex/worktrees/feature-empty-fork",
+        )
+        advanceUntilIdle()
+
+        assertEquals(0, syncService.forkThreadIntoProjectPathCalls)
+        assertNotNull(forkedThreadId)
+        assertNotEquals(sourceThreadId, forkedThreadId)
+        assertEquals(forkedThreadId, repository.session.value.selectedThread?.id)
+        assertEquals("/tmp/.codex/worktrees/feature-empty-fork", repository.session.value.selectedThread?.projectPath)
     }
 
     @Test
@@ -1219,6 +1281,50 @@ class DefaultRemodexAppRepositoryTest {
 
         override fun isThreadResumedLocally(threadId: String): Boolean {
             return delegate.isThreadResumedLocally(threadId)
+        }
+    }
+
+    private class DelayedForkVisibilitySyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate {
+        override suspend fun forkThreadIntoProjectPath(
+            threadId: String,
+            projectPath: String,
+        ): ThreadSyncSnapshot? {
+            val source = delegate.threads.value.firstOrNull { snapshot -> snapshot.id == threadId } ?: return null
+            return ThreadSyncSnapshot(
+                id = "thread-forked-delayed",
+                title = "${source.title} fork",
+                name = null,
+                preview = source.preview,
+                projectPath = projectPath,
+                lastUpdatedLabel = source.lastUpdatedLabel,
+                lastUpdatedEpochMs = source.lastUpdatedEpochMs + 1,
+                isRunning = false,
+                syncState = RemodexThreadSyncState.LIVE,
+                parentThreadId = source.id,
+                agentNickname = source.agentNickname,
+                agentRole = source.agentRole,
+                activeTurnId = null,
+                latestTurnTerminalState = null,
+                stoppedTurnIds = emptySet(),
+                runtimeConfig = source.runtimeConfig,
+                timelineMutations = source.timelineMutations,
+            )
+        }
+    }
+
+    private class EmptyThreadForkFallbackSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService by delegate {
+        var forkThreadIntoProjectPathCalls: Int = 0
+
+        override suspend fun forkThreadIntoProjectPath(
+            threadId: String,
+            projectPath: String,
+        ): ThreadSyncSnapshot? {
+            forkThreadIntoProjectPathCalls += 1
+            return delegate.forkThreadIntoProjectPath(threadId, projectPath)
         }
     }
 }

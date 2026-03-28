@@ -1284,6 +1284,91 @@ class AppViewModelTest {
         )
     }
 
+    @Test
+    fun `fork into new worktree falls back to current branch when base branch is omitted`() = runTest {
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Git thread",
+            projectPath = "/tmp/remodex",
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+            gitStateResult = RemodexGitState(
+                sync = RemodexGitRepoSync(
+                    currentBranch = "feature/current",
+                ),
+                branches = RemodexGitBranches(
+                    branches = listOf("feature/current", "main"),
+                    currentBranch = "feature/current",
+                    defaultBranch = "main",
+                ),
+            )
+            gitWorktreeResult = com.emanueledipietro.remodex.model.RemodexGitWorktreeResult(
+                branch = "feature/forked",
+                worktreePath = "/tmp/remodex/.codex/worktrees/feature/forked",
+                alreadyExisted = false,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.forkThreadIntoNewWorktree(
+            name = "feature/forked",
+            baseBranch = "",
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(Triple("thread-1", "feature/forked", "feature/current")),
+            repository.createGitWorktreeResultRequests,
+        )
+        assertEquals(
+            listOf("thread-1" to "/tmp/remodex/.codex/worktrees/feature/forked"),
+            repository.forkThreadIntoProjectPathRequests,
+        )
+    }
+
+    @Test
+    fun `prepare fork destination selection clears trailing slash command token and autocomplete`() = runTest {
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Git thread",
+            projectPath = "/tmp/remodex",
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/")
+        advanceUntilIdle()
+        assertEquals("/", viewModel.uiState.value.composer.draftText)
+        assertEquals(
+            com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel.COMMANDS,
+            viewModel.uiState.value.composer.autocomplete.panel,
+        )
+
+        viewModel.prepareForkDestinationSelection()
+        advanceUntilIdle()
+
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertEquals(
+            com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel.NONE,
+            viewModel.uiState.value.composer.autocomplete.panel,
+        )
+    }
+
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())

@@ -283,12 +283,15 @@ class BridgeThreadSyncService(
             }
             .plus(
                 existingById.values.mapNotNull { existing ->
-                    if (existing.id in serverThreadIds || !threadHasKnownRunningState(existing.id)) {
+                    if (
+                        existing.id in serverThreadIds ||
+                        (!threadHasKnownRunningState(existing.id) && existing.id !in resumedThreadIds)
+                    ) {
                         null
                     } else {
                         existing.withResolvedLiveThreadState(
                             threadId = existing.id,
-                            isRunning = true,
+                            isRunning = threadHasKnownRunningState(existing.id),
                         )
                     }
                 },
@@ -303,7 +306,11 @@ class BridgeThreadSyncService(
         }
 
         val existingSnapshot = backingThreads.value.firstOrNull { it.id == threadId }
-        val response = runThreadRead(threadId) ?: return
+        val response = runCatching {
+            retryAfterThreadMaterialization {
+                requestThreadRead(threadId)
+            }
+        }.getOrNull() ?: return
         val refreshedSnapshot = applyThreadSnapshotResponse(
             threadId = threadId,
             response = response,
@@ -1225,6 +1232,10 @@ class BridgeThreadSyncService(
     }
 
     private suspend fun runThreadRead(threadId: String): RpcMessage? {
+        return runCatching { requestThreadRead(threadId) }.getOrNull()
+    }
+
+    private suspend fun requestThreadRead(threadId: String): RpcMessage {
         val camelParams = buildJsonObject {
             put("threadId", JsonPrimitive(threadId))
             put("includeTurns", JsonPrimitive(true))
@@ -1242,7 +1253,7 @@ class BridgeThreadSyncService(
                     put("include_turns", JsonPrimitive(true))
                 },
             )
-        }.getOrNull()
+        }.getOrThrow()
     }
 
     private suspend fun runThreadResume(
@@ -1358,6 +1369,7 @@ class BridgeThreadSyncService(
         projectPath: String?,
         runtimeConfig: RemodexRuntimeConfig,
     ): ThreadSyncSnapshot? {
+        val normalizedProjectPath = projectPath?.trim()?.takeIf(String::isNotEmpty)
         var includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier)
         var includeSandbox = true
         var useMinimalParams = false
@@ -1365,7 +1377,7 @@ class BridgeThreadSyncService(
             val baseParams = buildJsonObject {
                 put("threadId", JsonPrimitive(threadId))
                 if (!useMinimalParams) {
-                    projectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
+                    normalizedProjectPath?.let { put("cwd", JsonPrimitive(it)) }
                     runtimeConfig.selectedModelId?.takeIf(String::isNotBlank)?.let { put("model", JsonPrimitive(it)) }
                     if (includeServiceTier) {
                         runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
@@ -1381,11 +1393,11 @@ class BridgeThreadSyncService(
                     baseParams = baseParams,
                     accessMode = runtimeConfig.accessMode,
                 )
-                val threadObject = response.result?.jsonObjectOrNull?.firstObject("thread") ?: return null
-                return parseThreadSnapshot(
-                    threadObject = threadObject,
-                    syncState = RemodexThreadSyncState.LIVE,
-                    existing = null,
+                return handleThreadForkResponse(
+                    response = response,
+                    sourceRuntimeConfig = runtimeConfig,
+                    fallbackProjectPath = normalizedProjectPath,
+                    usesPostForkResumeOverrides = useMinimalParams,
                 )
             } catch (error: Throwable) {
                 val message = error.message.orEmpty().lowercase(Locale.ROOT)
@@ -1406,6 +1418,51 @@ class BridgeThreadSyncService(
                 }
             }
         }
+    }
+
+    private fun handleThreadForkResponse(
+        response: RpcMessage,
+        sourceRuntimeConfig: RemodexRuntimeConfig,
+        fallbackProjectPath: String?,
+        usesPostForkResumeOverrides: Boolean,
+    ): ThreadSyncSnapshot? {
+        val threadObject = response.result?.jsonObjectOrNull?.firstObject("thread") ?: return null
+        val parsedSnapshot = parseThreadSnapshot(
+            threadObject = threadObject,
+            syncState = RemodexThreadSyncState.LIVE,
+            existing = null,
+        ) ?: return null
+        val resolvedProjectPath = when {
+            usesPostForkResumeOverrides && fallbackProjectPath != null -> fallbackProjectPath
+            parsedSnapshot.projectPath.isBlank() && fallbackProjectPath != null -> fallbackProjectPath
+            else -> parsedSnapshot.projectPath
+        }
+        val mergedSnapshot = parsedSnapshot.copy(
+            projectPath = resolvedProjectPath,
+            runtimeConfig = sourceRuntimeConfig.copy(
+                availableModels = if (parsedSnapshot.runtimeConfig.availableModels.isNotEmpty()) {
+                    parsedSnapshot.runtimeConfig.availableModels
+                } else {
+                    sourceRuntimeConfig.availableModels
+                },
+                availableReasoningEfforts = if (parsedSnapshot.runtimeConfig.availableReasoningEfforts.isNotEmpty()) {
+                    parsedSnapshot.runtimeConfig.availableReasoningEfforts
+                } else {
+                    sourceRuntimeConfig.availableReasoningEfforts
+                },
+                availableServiceTiers = if (parsedSnapshot.runtimeConfig.availableServiceTiers.isNotEmpty()) {
+                    parsedSnapshot.runtimeConfig.availableServiceTiers
+                } else {
+                    sourceRuntimeConfig.availableServiceTiers
+                },
+                selectedModelId = parsedSnapshot.runtimeConfig.selectedModelId ?: sourceRuntimeConfig.selectedModelId,
+                reasoningEffort = parsedSnapshot.runtimeConfig.reasoningEffort ?: sourceRuntimeConfig.reasoningEffort,
+                serviceTier = parsedSnapshot.runtimeConfig.serviceTier ?: sourceRuntimeConfig.serviceTier,
+            ).normalizeSelections(),
+        )
+        resumedThreadIds.add(mergedSnapshot.id)
+        upsertThreadSnapshot(mergedSnapshot)
+        return backingThreads.value.firstOrNull { snapshot -> snapshot.id == mergedSnapshot.id } ?: mergedSnapshot
     }
 
     private suspend fun runGitRequest(

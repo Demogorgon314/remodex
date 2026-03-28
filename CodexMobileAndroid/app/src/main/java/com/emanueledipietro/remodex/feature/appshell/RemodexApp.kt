@@ -826,6 +826,7 @@ private fun MainPane(
                             onClearReviewSelection = viewModel::clearReviewSelection,
                             onClearSubagentsSelection = viewModel::clearSubagentsSelection,
                             onCloseComposerAutocomplete = viewModel::closeComposerAutocomplete,
+                            onPrepareForkDestinationSelection = viewModel::prepareForkDestinationSelection,
                             onSelectGitBaseBranch = viewModel::selectGitBaseBranch,
                             onRefreshGitState = viewModel::refreshGitState,
                             onRefreshUsageStatus = viewModel::refreshUsageStatus,

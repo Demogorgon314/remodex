@@ -920,6 +920,17 @@ class DefaultRemodexAppRepository(
         threadId: String,
         projectPath: String,
     ): String? {
+        val sourceThread = sessionState.value.threads.firstOrNull { existing -> existing.id == threadId }
+            ?: sessionState.value.selectedThread?.takeIf { selected -> selected.id == threadId }
+        val resumeService = resumeService()
+        if (sourceThread?.messages.isNullOrEmpty() && resumeService?.isThreadResumedLocally(threadId) == true) {
+            createThread(
+                preferredProjectPath = projectPath,
+                inheritRuntimeFromThreadId = threadId,
+            )
+            return sessionState.value.selectedThreadId
+                ?.takeIf { selectedThreadId -> selectedThreadId != threadId }
+        }
         val forkedThread = threadCommandService.forkThreadIntoProjectPath(
             threadId = threadId,
             projectPath = projectPath,
@@ -932,11 +943,17 @@ class DefaultRemodexAppRepository(
     ): String {
         refreshBaseThreadsFromSync()
         appPreferencesRepository.setSelectedThreadId(forkedThread.id)
+        val selectedThread = selectedThreadSnapshotForThreadId(forkedThread.id)
+            ?: forkedThread.toCachedThreadRecord(projectThreadTimelineItems(forkedThread))
+                .toBaseThreadSummary()
+                .materialize(
+                    preferences = preferencesState.value,
+                    availableModels = resolveAvailableModels(baseThreadsState.value),
+                )
         sessionState.update { snapshot ->
             snapshot.copy(
                 selectedThreadId = forkedThread.id,
-                selectedThreadSnapshot = snapshot.threads.firstOrNull { thread -> thread.id == forkedThread.id }
-                    ?: snapshot.selectedThreadSnapshot,
+                selectedThreadSnapshot = selectedThread,
             )
         }
         return forkedThread.id
