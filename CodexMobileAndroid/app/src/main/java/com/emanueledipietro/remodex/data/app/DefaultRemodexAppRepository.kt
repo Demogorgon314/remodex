@@ -1324,11 +1324,23 @@ class DefaultRemodexAppRepository(
         if (resumeService.isThreadResumedLocally(thread.id)) {
             return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
         }
-        resumeService.resumeThread(
-            threadId = thread.id,
-            preferredProjectPath = thread.projectPath.ifBlank { null },
-            modelIdentifier = thread.runtimeConfig.selectedModelId,
-        )
+        try {
+            resumeService.resumeThread(
+                threadId = thread.id,
+                preferredProjectPath = thread.projectPath.ifBlank { null },
+                modelIdentifier = thread.runtimeConfig.selectedModelId,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            // Brand-new local threads can survive a reconnect before their first rollout
+            // exists. Keep the send path moving so turn/start can materialize the thread.
+            if (shouldRetryAfterThreadMaterializationValue(error)) {
+                return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
+            }
+            throw error
+        }
         refreshBaseThreadsFromSync()
         return sessionState.value.threads.firstOrNull { candidate -> candidate.id == thread.id } ?: thread
     }

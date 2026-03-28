@@ -817,6 +817,40 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `send prompt keeps going when pre-send resume hits missing rollout after reconnect`() = runTest {
+        val syncService = MaterializationRaceOnResumeSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.createThread("/tmp/reconnect-rollout-race")
+        advanceUntilIdle()
+
+        val createdThreadId = requireNotNull(repository.session.value.selectedThreadId) {
+            "Expected a created thread"
+        }
+        syncService.forgetLocalResume(createdThreadId)
+
+        repository.sendPrompt(
+            threadId = createdThreadId,
+            prompt = "Materialize this thread after reconnect.",
+            attachments = emptyList(),
+        )
+        advanceUntilIdle()
+
+        assertEquals(1, syncService.resumeCalls)
+        assertEquals(createdThreadId, syncService.lastSendThreadId)
+        assertTrue(repository.session.value.selectedThread?.isRunning == true)
+    }
+
+    @Test
     fun `streaming selected thread updates reach session state before cache persistence finishes`() = runTest {
         val syncService = FakeThreadSyncService()
         val cacheStore = BlockingThreadCacheStore()
@@ -1609,6 +1643,49 @@ class DefaultRemodexAppRepositoryTest {
 
         override fun isThreadResumedLocally(threadId: String): Boolean {
             return delegate.isThreadResumedLocally(threadId)
+        }
+
+        override suspend fun sendPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            lastSendThreadId = threadId
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class MaterializationRaceOnResumeSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
+        private val forgottenLocalResumeThreadIds = mutableSetOf<String>()
+        var resumeCalls: Int = 0
+            private set
+        var lastSendThreadId: String? = null
+            private set
+
+        fun forgetLocalResume(threadId: String) {
+            forgottenLocalResumeThreadIds.add(threadId)
+        }
+
+        override suspend fun resumeThread(
+            threadId: String,
+            preferredProjectPath: String?,
+            modelIdentifier: String?,
+        ): ThreadSyncSnapshot? {
+            if (threadId in forgottenLocalResumeThreadIds) {
+                resumeCalls += 1
+                throw RpcError(
+                    code = -32000,
+                    message = "No rollout found for thread id $threadId",
+                )
+            }
+            return delegate.resumeThread(threadId, preferredProjectPath, modelIdentifier)
+        }
+
+        override fun isThreadResumedLocally(threadId: String): Boolean {
+            return threadId !in forgottenLocalResumeThreadIds && delegate.isThreadResumedLocally(threadId)
         }
 
         override suspend fun sendPrompt(
