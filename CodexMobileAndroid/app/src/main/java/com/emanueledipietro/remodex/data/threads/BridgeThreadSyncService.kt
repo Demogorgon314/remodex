@@ -61,6 +61,10 @@ import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
+import com.emanueledipietro.remodex.model.androidUserMessageText
+import com.emanueledipietro.remodex.model.fallbackConversationImageDisplayName
+import com.emanueledipietro.remodex.model.isInlineImageDataUrl
+import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CancellationException
@@ -2425,15 +2429,18 @@ class BridgeThreadSyncService(
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
         val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
         val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject)
-        val text = decodeItemText(itemObject).trim()
-        if (text.isBlank()) {
+        val attachments = decodeImageAttachments(itemObject)
+        val text = androidUserMessageText(
+            prompt = decodeItemText(itemObject),
+            attachmentCount = attachments.size,
+        )
+        if (text.isBlank() && attachments.isEmpty()) {
             return
         }
         if (resolvedTurnId != null) {
             threadIdByTurnId[resolvedTurnId] = threadId
         }
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
-        val attachments = decodeImageAttachments(itemObject)
         val existingItem = TurnTimelineReducer.reduce(snapshot.timelineMutations)
             .asReversed()
             .firstOrNull { candidate ->
@@ -2452,6 +2459,14 @@ class BridgeThreadSyncService(
                                 )
                         )
             }
+        val resolvedAttachments = when {
+            attachments.isEmpty() -> existingItem?.attachments.orEmpty()
+            shouldPreserveExistingPreviewAttachments(
+                existingAttachments = existingItem?.attachments.orEmpty(),
+                incomingAttachments = attachments,
+            ) -> existingItem?.attachments.orEmpty()
+            else -> attachments
+        }
         val messageId = existingItem?.id ?: itemId ?: "user-${UUID.randomUUID()}"
         upsertStreamingItem(
             threadId = threadId,
@@ -2462,7 +2477,7 @@ class BridgeThreadSyncService(
                 turnId = resolvedTurnId ?: existingItem?.turnId,
                 itemId = itemId ?: existingItem?.itemId,
                 deliveryState = RemodexMessageDeliveryState.CONFIRMED,
-                attachments = if (attachments.isNotEmpty()) attachments else existingItem?.attachments.orEmpty(),
+                attachments = resolvedAttachments,
                 orderIndex = existingItem?.orderIndex ?: resolveOrderIndex(
                     threadId = threadId,
                     messageId = messageId,
@@ -2474,6 +2489,25 @@ class BridgeThreadSyncService(
             ),
             isRunning = true,
         )
+    }
+
+    private fun shouldPreserveExistingPreviewAttachments(
+        existingAttachments: List<RemodexConversationAttachment>,
+        incomingAttachments: List<RemodexConversationAttachment>,
+    ): Boolean {
+        if (existingAttachments.isEmpty() || incomingAttachments.isEmpty()) {
+            return false
+        }
+        if (existingAttachments.size != incomingAttachments.size) {
+            return false
+        }
+        if (existingAttachments.none { attachment -> !attachment.previewDataUrl.isNullOrBlank() }) {
+            return false
+        }
+        return incomingAttachments.all { attachment ->
+            attachment.uriString.trim().equals("remodex://history-image-elided", ignoreCase = true) ||
+                isInlineImageDataUrl(attachment.uriString)
+        }
     }
 
     private fun handleStructuredItemLifecycle(
@@ -3205,13 +3239,10 @@ class BridgeThreadSyncService(
             .firstOrNull { item ->
                 item.speaker == ConversationSpeaker.USER &&
                     item.deliveryState == RemodexMessageDeliveryState.PENDING &&
-                    item.text == matchingText.ifBlank {
-                        when (matchingAttachments.size) {
-                            0 -> "Sent a prompt from Android."
-                            1 -> "Shared 1 image from Android."
-                            else -> "Shared ${matchingAttachments.size} images from Android."
-                        }
-                    } &&
+                    item.text == androidUserMessageText(
+                        prompt = matchingText,
+                        attachmentCount = matchingAttachments.size,
+                    ) &&
                     item.attachments.map(RemodexConversationAttachment::uriString) ==
                     matchingAttachments.map(RemodexComposerAttachment::uriString)
             } ?: return
@@ -4539,6 +4570,12 @@ class BridgeThreadSyncService(
                         itemObject = itemObject,
                     )
                     subagentAction != null -> subagentAction.summaryText
+                    speaker == ConversationSpeaker.USER && attachments.isNotEmpty() -> {
+                        androidUserMessageText(
+                            prompt = text,
+                            attachmentCount = attachments.size,
+                        )
+                    }
                     else -> text
                 }
                 if (kind == ConversationItemKind.COMMAND_EXECUTION) {
@@ -4672,7 +4709,11 @@ class BridgeThreadSyncService(
                             id = objectValue.firstString("id") ?: "${itemObject.firstString("id").orEmpty()}-attachment-$index",
                             uriString = uri,
                             displayName = objectValue.firstString("name", "fileName", "filename")
-                                ?: uri.substringAfterLast('/').ifBlank { "image-${index + 1}" },
+                                ?: fallbackConversationImageDisplayName(
+                                    uriString = uri,
+                                    attachmentIndex = index,
+                                ),
+                            previewDataUrl = uri.takeIf(::isInlineImageDataUrl),
                         )
                     }
                 }
@@ -5313,13 +5354,10 @@ class BridgeThreadSyncService(
             } else {
                 val orderIndex = nextOrderIndex(snapshot)
                 snapshot.copy(
-                    preview = prompt.ifBlank {
-                        when (attachments.size) {
-                            0 -> "Sent a prompt from Android."
-                            1 -> "Shared 1 image from Android."
-                            else -> "Shared ${attachments.size} images from Android."
-                        }
-                    },
+                    preview = androidUserMessageText(
+                        prompt = prompt,
+                        attachmentCount = attachments.size,
+                    ),
                     lastUpdatedEpochMs = now,
                     lastUpdatedLabel = relativeUpdatedLabel(now),
                     isRunning = true,
@@ -5328,22 +5366,13 @@ class BridgeThreadSyncService(
                         timelineItem(
                             id = "user-local-$now",
                             speaker = ConversationSpeaker.USER,
-                            text = prompt.ifBlank {
-                                when (attachments.size) {
-                                    0 -> "Sent a prompt from Android."
-                                    1 -> "Shared 1 image from Android."
-                                    else -> "Shared ${attachments.size} images from Android."
-                                }
-                            },
+                            text = androidUserMessageText(
+                                prompt = prompt,
+                                attachmentCount = attachments.size,
+                            ),
                             deliveryState = RemodexMessageDeliveryState.PENDING,
                             createdAtEpochMs = now,
-                            attachments = attachments.map { attachment ->
-                                RemodexConversationAttachment(
-                                    id = attachment.id,
-                                    uriString = attachment.uriString,
-                                    displayName = attachment.displayName,
-                                )
-                            },
+                            attachments = attachments.map { attachment -> attachment.toConversationAttachment() },
                             orderIndex = orderIndex,
                         ),
                     ),

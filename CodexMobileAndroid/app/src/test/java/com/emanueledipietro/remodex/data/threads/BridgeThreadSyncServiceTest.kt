@@ -18,9 +18,11 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -2163,6 +2165,165 @@ class BridgeThreadSyncServiceTest {
             coordinator.disconnect()
             advanceUntilIdle()
         }
+    }
+
+    @Test
+    fun `attachment only user lifecycle event confirms optimistic message instead of dropping to history placeholder`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-image-lifecycle",
+                    title = "Image lifecycle",
+                    preview = "Shared 1 image from Android.",
+                    projectPath = "/tmp/project-image-lifecycle",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-image",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Shared 1 image from Android.",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                attachments = listOf(
+                                    RemodexConversationAttachment(
+                                        id = "local-attachment",
+                                        uriString = "content://media/external/images/media/1",
+                                        displayName = "1000012658.jpg",
+                                        previewDataUrl = "data:image/jpeg;base64,LOCAL",
+                                    ),
+                                ),
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleUserMessageLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-image-lifecycle"))
+                put("turnId", JsonPrimitive("turn-image-lifecycle"))
+            },
+            buildJsonObject {
+                put("id", JsonPrimitive("item-user-image"))
+                put("type", JsonPrimitive("user_message"))
+                put(
+                    "content",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", JsonPrimitive("image"))
+                                put("url", JsonPrimitive("remodex://history-image-elided"))
+                            },
+                        )
+                    },
+                )
+            },
+        )
+
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        assertEquals(1, items.size)
+        assertEquals("user-local-image", items.single().id)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, items.single().deliveryState)
+        assertEquals("turn-image-lifecycle", items.single().turnId)
+        assertEquals("data:image/jpeg;base64,LOCAL", items.single().attachments.single().previewDataUrl)
+    }
+
+    @Test
+    fun `attachment only user lifecycle keeps local attachment metadata when incoming image is inline data url`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-image-inline-lifecycle",
+                    title = "Inline image lifecycle",
+                    preview = "Shared 1 image from Android.",
+                    projectPath = "/tmp/project-image-inline-lifecycle",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-inline-image",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Shared 1 image from Android.",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                attachments = listOf(
+                                    RemodexConversationAttachment(
+                                        id = "local-attachment",
+                                        uriString = "content://media/external/images/media/1",
+                                        displayName = "1000012658.jpg",
+                                        previewDataUrl = "data:image/jpeg;base64,LOCAL",
+                                    ),
+                                ),
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleUserMessageLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-image-inline-lifecycle"))
+                put("turnId", JsonPrimitive("turn-image-inline-lifecycle"))
+            },
+            buildJsonObject {
+                put("id", JsonPrimitive("item-user-inline-image"))
+                put("type", JsonPrimitive("user_message"))
+                put(
+                    "content",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("type", JsonPrimitive("image"))
+                                put("url", JsonPrimitive("data:image/jpeg;base64,/9k="))
+                            },
+                        )
+                    },
+                )
+            },
+        )
+
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        assertEquals(1, items.size)
+        assertEquals("user-local-inline-image", items.single().id)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, items.single().deliveryState)
+        assertEquals("turn-image-inline-lifecycle", items.single().turnId)
+        assertEquals("1000012658.jpg", items.single().attachments.single().displayName)
+        assertEquals("data:image/jpeg;base64,LOCAL", items.single().attachments.single().previewDataUrl)
     }
 
     @Test

@@ -32,6 +32,8 @@ import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
+import com.emanueledipietro.remodex.model.androidUserMessageText
+import com.emanueledipietro.remodex.model.toConversationAttachment
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -229,12 +231,13 @@ class FakeThreadSyncService(
                     val turnId = "turn-${UUID.randomUUID()}"
                     val reasoningMessageId = "reasoning-${UUID.randomUUID()}"
                     val assistantMessageId = "assistant-${UUID.randomUUID()}"
-                    val normalizedPrompt = prompt.ifBlank {
-                        when (attachments.size) {
-                            0 -> "Shared a follow-up from Android."
-                            1 -> "Shared 1 image from Android."
-                            else -> "Shared ${attachments.size} images from Android."
-                        }
+                    val normalizedPrompt = if (prompt.isBlank() && attachments.isEmpty()) {
+                        "Shared a follow-up from Android."
+                    } else {
+                        androidUserMessageText(
+                            prompt = prompt,
+                            attachmentCount = attachments.size,
+                        )
                     }
                     snapshot.copy(
                         preview = normalizedPrompt,
@@ -250,13 +253,7 @@ class FakeThreadSyncService(
                                     text = normalizedPrompt,
                                     turnId = turnId,
                                     deliveryState = RemodexMessageDeliveryState.PENDING,
-                                    attachments = attachments.map { attachment ->
-                                        RemodexConversationAttachment(
-                                            id = attachment.id,
-                                            uriString = attachment.uriString,
-                                            displayName = attachment.displayName,
-                                        )
-                                    },
+                                    attachments = attachments.map { attachment -> attachment.toConversationAttachment() },
                                     orderIndex = nextOrderIndex,
                                 ),
                             ),

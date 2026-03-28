@@ -21,7 +21,49 @@ data class RemodexConversationAttachment(
     val id: String,
     val uriString: String,
     val displayName: String,
-)
+    val previewDataUrl: String? = null,
+) {
+    val renderUriString: String
+        get() = previewDataUrl
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: uriString
+}
+
+fun RemodexComposerAttachment.toConversationAttachment(): RemodexConversationAttachment {
+    val previewDataUrl = payloadDataUrl
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: uriString
+            .trim()
+            .takeIf(::isInlineImageDataUrl)
+    return RemodexConversationAttachment(
+        id = id,
+        uriString = uriString,
+        displayName = displayName,
+        previewDataUrl = previewDataUrl,
+    )
+}
+
+fun androidUserMessageFallbackText(attachmentCount: Int): String {
+    return when (attachmentCount) {
+        0 -> "Sent a prompt from Android."
+        1 -> "Shared 1 image from Android."
+        else -> "Shared $attachmentCount images from Android."
+    }
+}
+
+fun androidUserMessageText(
+    prompt: String,
+    attachmentCount: Int,
+): String {
+    val trimmedPrompt = prompt.trim()
+    return if (trimmedPrompt.isNotEmpty()) {
+        trimmedPrompt
+    } else {
+        androidUserMessageFallbackText(attachmentCount)
+    }
+}
 
 @Serializable
 enum class RemodexPlanStepStatus {

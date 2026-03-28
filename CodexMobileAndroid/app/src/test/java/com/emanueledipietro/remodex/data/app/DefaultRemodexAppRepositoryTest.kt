@@ -920,6 +920,7 @@ class DefaultRemodexAppRepositoryTest {
                     id = "attachment-1",
                     uriString = "content://remodex/attachment-1",
                     displayName = "screenshot.png",
+                    payloadDataUrl = "data:image/jpeg;base64,AAAA",
                 ),
             ),
         )
@@ -929,7 +930,11 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals("Shared 1 image from Android.", selectedThread?.preview)
         assertTrue(
             selectedThread?.messages.orEmpty().any { item ->
-                item.attachments.any { attachment -> attachment.displayName == "screenshot.png" }
+                item.attachments.any { attachment ->
+                    attachment.displayName == "screenshot.png" &&
+                        attachment.previewDataUrl == "data:image/jpeg;base64,AAAA" &&
+                        attachment.renderUriString == "data:image/jpeg;base64,AAAA"
+                }
             },
         )
     }

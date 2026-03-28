@@ -5,6 +5,7 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.androidUserMessageFallbackText
 
 internal object ThreadHistoryReconciler {
     fun mergeHistoryItems(
@@ -154,7 +155,10 @@ internal object ThreadHistoryReconciler {
                 merged.indexOfLast { candidate ->
                     candidate.speaker == ConversationSpeaker.USER &&
                         candidate.deliveryState != RemodexMessageDeliveryState.FAILED &&
-                        normalizedText(candidate.text) == normalizedText(historyItem.text) &&
+                        userHistoryTextCompatible(
+                            localItem = candidate,
+                            historyItem = historyItem,
+                        ) &&
                         normalizedIdentifier(candidate.turnId) == turnId &&
                         userAttachmentsCompatible(
                             localAttachments = candidate.attachments,
@@ -165,7 +169,10 @@ internal object ThreadHistoryReconciler {
             merged.indexOfLast { candidate ->
                 candidate.speaker == ConversationSpeaker.USER &&
                     candidate.deliveryState != RemodexMessageDeliveryState.FAILED &&
-                    normalizedText(candidate.text) == normalizedText(historyItem.text) &&
+                    userHistoryTextCompatible(
+                        localItem = candidate,
+                        historyItem = historyItem,
+                    ) &&
                     attachmentSignature(candidate.attachments) == attachmentSignature(historyItem.attachments) &&
                     (candidate.turnId == null || candidate.turnId == turnId)
             }.takeIf { it >= 0 }?.let { return it }
@@ -388,6 +395,24 @@ internal object ThreadHistoryReconciler {
         return attachments.joinToString(separator = "|") { attachment ->
             listOf(attachment.id, attachment.uriString, attachment.displayName).joinToString(separator = ":")
         }
+    }
+
+    private fun userHistoryTextCompatible(
+        localItem: RemodexConversationItem,
+        historyItem: RemodexConversationItem,
+    ): Boolean {
+        val localText = normalizedText(localItem.text)
+        val historyText = normalizedText(historyItem.text)
+        if (localText == historyText) {
+            return true
+        }
+        if (!userAttachmentsCompatible(localItem.attachments, historyItem.attachments)) {
+            return false
+        }
+        if (!historyText.equals("usermessage", ignoreCase = true)) {
+            return false
+        }
+        return localText == normalizedText(androidUserMessageFallbackText(localItem.attachments.size))
     }
 
     private fun userAttachmentsCompatible(

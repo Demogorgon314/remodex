@@ -340,6 +340,7 @@ class ThreadHistoryReconcilerTest {
                         id = "local-attachment",
                         uriString = "content://media/external/images/media/1",
                         displayName = "1000012658.jpg",
+                        previewDataUrl = "data:image/jpeg;base64,LOCAL",
                     ),
                 ),
                 orderIndex = 20L,
@@ -373,5 +374,58 @@ class ThreadHistoryReconcilerTest {
         assertEquals("user-local-image", merged.single().id)
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
         assertEquals("turn-1", merged.single().turnId)
+        assertEquals("data:image/jpeg;base64,LOCAL", merged.single().attachments.single().previewDataUrl)
+        assertEquals("data:image/jpeg;base64,LOCAL", merged.single().attachments.single().renderUriString)
+    }
+
+    @Test
+    fun `merge history items keeps attachment only optimistic message when history text falls back to usermessage`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local-image",
+                speaker = ConversationSpeaker.USER,
+                text = "Shared 1 image from Android.",
+                turnId = "turn-1",
+                deliveryState = RemodexMessageDeliveryState.PENDING,
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "local-attachment",
+                        uriString = "content://media/external/images/media/1",
+                        displayName = "1000012658.jpg",
+                        previewDataUrl = "data:image/jpeg;base64,LOCAL",
+                    ),
+                ),
+                orderIndex = 20L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history-image",
+                speaker = ConversationSpeaker.USER,
+                text = "Usermessage",
+                turnId = "turn-1",
+                attachments = listOf(
+                    RemodexConversationAttachment(
+                        id = "history-attachment",
+                        uriString = "remodex://history-image-elided",
+                        displayName = "history-image-elided",
+                    ),
+                ),
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("user-local-image", merged.single().id)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
+        assertEquals("turn-1", merged.single().turnId)
+        assertEquals("data:image/jpeg;base64,LOCAL", merged.single().attachments.single().previewDataUrl)
     }
 }

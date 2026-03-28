@@ -54,7 +54,9 @@ import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.androidUserMessageText
 import com.emanueledipietro.remodex.model.remodexInitialGptAccountSnapshot
+import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -1353,13 +1355,7 @@ class DefaultRemodexAppRepository(
                         text = messageText,
                         deliveryState = RemodexMessageDeliveryState.PENDING,
                         createdAtEpochMs = now,
-                        attachments = attachments.map { attachment ->
-                            RemodexConversationAttachment(
-                                id = attachment.id,
-                                uriString = attachment.uriString,
-                                displayName = attachment.displayName,
-                            )
-                        },
+                        attachments = attachments.map { attachment -> attachment.toConversationAttachment() },
                         orderIndex = nextLocalOrderIndex(currentThread),
                     )).sortedBy(RemodexConversationItem::orderIndex),
                 )
@@ -1663,15 +1659,10 @@ private fun optimisticPendingUserMessageText(
     prompt: String,
     attachments: List<RemodexComposerAttachment>,
 ): String {
-    val trimmedPrompt = prompt.trim()
-    if (trimmedPrompt.isNotEmpty()) {
-        return trimmedPrompt
-    }
-    return when (attachments.size) {
-        0 -> "Sent a prompt from Android."
-        1 -> "Shared 1 image from Android."
-        else -> "Shared ${attachments.size} images from Android."
-    }
+    return androidUserMessageText(
+        prompt = prompt,
+        attachmentCount = attachments.size,
+    )
 }
 
 private fun nextLocalOrderIndex(thread: RemodexThreadSummary): Long {

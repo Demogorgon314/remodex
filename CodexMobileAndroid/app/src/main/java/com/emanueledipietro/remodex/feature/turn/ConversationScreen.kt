@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.feature.turn
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.graphics.BitmapFactory
 import android.text.format.DateFormat
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -28,6 +29,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -136,6 +138,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -186,6 +189,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
+import com.emanueledipietro.remodex.model.decodeInlineImageDataUrlBytes
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -7255,14 +7259,32 @@ private fun MessageAttachmentStrip(
                         modifier = Modifier.padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        AsyncImage(
-                            model = attachment.uriString,
-                            contentDescription = attachment.displayName,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(76.dp),
-                            contentScale = ContentScale.Crop,
-                        )
+                        val inlinePreviewBitmap = remember(attachment.renderUriString) {
+                            decodeInlineImageDataUrlBytes(attachment.renderUriString)
+                                ?.let { previewBytes ->
+                                    BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size)
+                                }
+                                ?.asImageBitmap()
+                        }
+                        if (inlinePreviewBitmap != null) {
+                            Image(
+                                bitmap = inlinePreviewBitmap,
+                                contentDescription = attachment.displayName,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(76.dp),
+                                contentScale = ContentScale.Crop,
+                            )
+                        } else {
+                            AsyncImage(
+                                model = attachment.renderUriString,
+                                contentDescription = attachment.displayName,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(76.dp),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
                         Text(
                             text = attachment.displayName,
                             style = MaterialTheme.typography.bodySmall,
