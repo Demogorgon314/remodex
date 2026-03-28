@@ -1632,115 +1632,120 @@ private fun GitContextCard(
     var worktreeDraft by rememberSaveable { mutableStateOf("") }
     var activeBranchPickerMode by rememberSaveable { mutableStateOf<GitBranchPickerMode?>(null) }
 
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = chrome.panelSurfaceStrong,
-        ),
-        shape = RemodexConversationShapes.panel,
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "Git & Worktree",
-                style = MaterialTheme.typography.titleMedium,
-                color = chrome.titleText,
+            Box(
+                modifier = Modifier
+                    .width(36.dp)
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(chrome.secondaryText.copy(alpha = 0.35f)),
             )
-            gitState.sync?.let { sync ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = buildString {
-                            append(sync.currentBranch ?: "Unknown branch")
-                            sync.trackingBranch?.takeIf(String::isNotBlank)?.let {
-                                append(" · ")
-                                append(it)
-                            }
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = chrome.titleText,
-                    )
-                    Text(
-                        text = buildString {
-                            append(sync.state.replace('_', ' '))
-                            if (sync.diffTotals != null) {
-                                append(" · +${sync.diffTotals.additions} / -${sync.diffTotals.deletions}")
-                            }
-                            if (sync.files.isNotEmpty()) {
-                                append(" · ${sync.files.size} files")
-                            }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = chrome.secondaryText,
-                    )
-                }
-            }
-            gitState.lastActionMessage?.let { message ->
+        }
+        Text(
+            text = "Git & Worktree",
+            style = MaterialTheme.typography.titleMedium,
+            color = chrome.titleText,
+        )
+        gitState.sync?.let { sync ->
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = chrome.accent,
-                )
-            }
-            GitBranchPickerTrigger(
-                title = "Compare Against",
-                value = selectedGitBaseBranchLabel(gitState, selectedBaseBranch),
-                modifier = Modifier.testTag(GitComparePickerTriggerTag),
-                onClick = { activeBranchPickerMode = GitBranchPickerMode.BASE_BRANCH },
-            )
-            GitBranchPickerTrigger(
-                title = "Checkout",
-                value = selectedGitCheckoutBranchLabel(gitState),
-                modifier = Modifier.testTag(GitCheckoutPickerTriggerTag),
-                onClick = { activeBranchPickerMode = GitBranchPickerMode.CHECKOUT },
-            )
-            OutlinedTextField(
-                value = worktreeDraft,
-                onValueChange = { worktreeDraft = it },
-                label = { Text("Worktree name") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(onClick = onRefresh) {
-                    Text(if (gitState.isLoading) "Refreshing..." else "Refresh")
-                }
-                OutlinedButton(onClick = onPull) {
-                    Text("Pull")
-                }
-                OutlinedButton(onClick = onPush) {
-                    Text("Push")
-                }
-                OutlinedButton(onClick = onCommit) {
-                    Text("Commit")
-                }
-                OutlinedButton(onClick = onCommitAndPush) {
-                    Text("Commit & Push")
-                }
-                OutlinedButton(
-                    onClick = {
-                        if (worktreeDraft.isNotBlank()) {
-                            onCreateWorktree(worktreeDraft.trim())
-                            worktreeDraft = ""
+                    text = buildString {
+                        append(sync.currentBranch ?: "Unknown branch")
+                        sync.trackingBranch?.takeIf(String::isNotBlank)?.let {
+                            append(" · ")
+                            append(it)
                         }
                     },
-                ) {
-                    Text("Create worktree")
-                }
-                OutlinedButton(onClick = onCreatePullRequest) {
-                    Text("Create PR")
-                }
-                if (shouldShowDiscardRuntimeChangesAndSync(gitState.sync)) {
-                    OutlinedButton(onClick = onDiscardRuntimeChangesAndSync) {
-                        Text("Discard & sync")
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                Text(
+                    text = buildString {
+                        append(sync.state.replace('_', ' '))
+                        if (sync.diffTotals != null) {
+                            append(" · +${sync.diffTotals.additions} / -${sync.diffTotals.deletions}")
+                        }
+                        if (sync.files.isNotEmpty()) {
+                            append(" · ${sync.files.size} files")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
+        }
+        gitState.lastActionMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.accent,
+            )
+        }
+        GitBranchPickerTrigger(
+            title = "Compare Against",
+            value = selectedGitBaseBranchLabel(gitState, selectedBaseBranch),
+            modifier = Modifier.testTag(GitComparePickerTriggerTag),
+            onClick = { activeBranchPickerMode = GitBranchPickerMode.BASE_BRANCH },
+        )
+        GitBranchPickerTrigger(
+            title = "Checkout",
+            value = selectedGitCheckoutBranchLabel(gitState),
+            modifier = Modifier.testTag(GitCheckoutPickerTriggerTag),
+            onClick = { activeBranchPickerMode = GitBranchPickerMode.CHECKOUT },
+        )
+        OutlinedTextField(
+            value = worktreeDraft,
+            onValueChange = { worktreeDraft = it },
+            label = { Text("Worktree name") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = onRefresh) {
+                Text(if (gitState.isLoading) "Refreshing..." else "Refresh")
+            }
+            OutlinedButton(onClick = onPull) {
+                Text("Pull")
+            }
+            OutlinedButton(onClick = onPush) {
+                Text("Push")
+            }
+            OutlinedButton(onClick = onCommit) {
+                Text("Commit")
+            }
+            OutlinedButton(onClick = onCommitAndPush) {
+                Text("Commit & Push")
+            }
+            OutlinedButton(
+                onClick = {
+                    if (worktreeDraft.isNotBlank()) {
+                        onCreateWorktree(worktreeDraft.trim())
+                        worktreeDraft = ""
                     }
+                },
+            ) {
+                Text("Create worktree")
+            }
+            OutlinedButton(onClick = onCreatePullRequest) {
+                Text("Create PR")
+            }
+            if (shouldShowDiscardRuntimeChangesAndSync(gitState.sync)) {
+                OutlinedButton(onClick = onDiscardRuntimeChangesAndSync) {
+                    Text("Discard & sync")
                 }
             }
         }
@@ -2537,9 +2542,13 @@ private fun DetailedGitSheet(
     onCreatePullRequest: () -> Unit,
     onDiscardRuntimeChangesAndSync: () -> Unit,
 ) {
+    val chrome = remodexConversationChrome()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         modifier = Modifier.testTag(GitSheetTag),
+        containerColor = chrome.panelSurfaceStrong,
+        dragHandle = null,
+        tonalElevation = 0.dp,
     ) {
         GitContextCard(
             gitState = gitState,
