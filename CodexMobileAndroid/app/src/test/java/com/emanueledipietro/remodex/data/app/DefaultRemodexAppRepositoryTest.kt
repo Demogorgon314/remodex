@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.app
 
 import com.emanueledipietro.remodex.data.connection.InMemorySecureStore
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
+import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.data.connection.SuccessfulQrBootstrapRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnexpectedRelayWebSocketFactory
@@ -214,6 +215,42 @@ class DefaultRemodexAppRepositoryTest {
 
         assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
         assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `duplicate encrypted snapshots in same attempt do not rerun selected thread recovery`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = ReconnectResumeSyncService()
+        syncService.updateThreads(
+            syncService.threads.value.map { snapshot ->
+                if (snapshot.id == "thread-notifications") snapshot.copy(isRunning = true) else snapshot
+            },
+        )
+        val coordinator = createConnectedSecureCoordinator()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val hydrateCallsAfterInitialRecovery = syncService.hydrateCalls
+        val resumeCallsAfterInitialRecovery = syncService.resumeCalls
+        val encryptedSnapshot = coordinator.state.value
+        emitSecureSnapshot(
+            coordinator = coordinator,
+            snapshot = encryptedSnapshot.copy(phaseMessage = "${encryptedSnapshot.phaseMessage} duplicate"),
+        )
+        advanceUntilIdle()
+
+        assertEquals(hydrateCallsAfterInitialRecovery, syncService.hydrateCalls)
+        assertEquals(resumeCallsAfterInitialRecovery, syncService.resumeCalls)
     }
 
     @Test
@@ -1104,6 +1141,17 @@ class DefaultRemodexAppRepositoryTest {
         fail("Expected $description but selected thread was ${repository.session.value.selectedThread?.id}")
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun emitSecureSnapshot(
+        coordinator: SecureConnectionCoordinator,
+        snapshot: SecureConnectionSnapshot,
+    ) {
+        val field = coordinator.javaClass.getDeclaredField("connectionState")
+        field.isAccessible = true
+        val state = field.get(coordinator) as MutableStateFlow<SecureConnectionSnapshot>
+        state.value = snapshot
+    }
+
     private class ResumeReportsRunningSyncService(
         private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
     ) : ThreadSyncService by delegate, ThreadCommandService by delegate, ThreadResumeService, ThreadLocalTimelineService by delegate {
@@ -1289,9 +1337,11 @@ class DefaultRemodexAppRepositoryTest {
         var hydrateCalls: Int = 0
             private set
         var resumeCalls: Int = 0
+        var refreshCalls: Int = 0
+            private set
 
         override suspend fun refreshThreads() {
-            hydrateCalls += 1
+            refreshCalls += 1
             if (clearRunningOnRefresh) {
                 delegate.updateThreads(
                     delegate.threads.value.map { snapshot ->

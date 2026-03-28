@@ -2,9 +2,11 @@ package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.data.connection.InMemorySecureStore
 import com.emanueledipietro.remodex.data.connection.RpcError
+import com.emanueledipietro.remodex.data.connection.RpcMessage
 import com.emanueledipietro.remodex.data.connection.ScriptedRpcRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.connection.UnexpectedRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnusedTrustedSessionResolver
 import com.emanueledipietro.remodex.data.connection.createTestMacIdentity
 import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
@@ -164,6 +166,130 @@ class BridgeThreadSyncServiceTest {
                 allowWhileRunning = true,
             ),
         )
+    }
+
+    @Test
+    fun `thread read merge uses latest live timeline instead of stale snapshot`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = ScriptedRpcRelayWebSocketFactory(
+                macDeviceId = "mac-stale-thread-read",
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        val staleSnapshot = ThreadSyncSnapshot(
+            id = "thread-live",
+            title = "Live thread",
+            preview = "Hello",
+            projectPath = "/tmp/project-live",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = 1L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = listOf(
+                TimelineMutation.Upsert(
+                    timelineItem(
+                        id = "assistant-1",
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        text = "Hello",
+                        turnId = "turn-1",
+                        itemId = "assistant-1",
+                        isStreaming = true,
+                        orderIndex = 0L,
+                    ),
+                ),
+            ),
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                staleSnapshot.copy(
+                    preview = "Hello world",
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                text = "Hello world",
+                                turnId = "turn-1",
+                                itemId = "assistant-1",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-live",
+            "turn-1",
+        )
+
+        val refreshedSnapshot = invokePrivateMethod(
+            service,
+            "mergeThreadSnapshotResponse",
+            "thread-live",
+            RpcMessage.response(
+                id = null,
+                result = buildJsonObject {
+                    put(
+                        "thread",
+                        buildJsonObject {
+                            put("id", JsonPrimitive("thread-live"))
+                            put("title", JsonPrimitive("Live thread"))
+                            put("cwd", JsonPrimitive("/tmp/project-live"))
+                            put(
+                                "turns",
+                                buildJsonArray {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("turn-1"))
+                                            put("status", JsonPrimitive("in_progress"))
+                                            put(
+                                                "items",
+                                                buildJsonArray {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("id", JsonPrimitive("assistant-1"))
+                                                            put("type", JsonPrimitive("agent_message"))
+                                                            put("text", JsonPrimitive("Hello"))
+                                                        },
+                                                    )
+                                                },
+                                            )
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            ),
+            staleSnapshot,
+            RemodexThreadSyncState.LIVE,
+            true,
+        ) as ThreadSyncSnapshot
+
+        val assistantItems = TurnTimelineReducer.reduceProjected(refreshedSnapshot.timelineMutations)
+            .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+        assertEquals(listOf("Hello world"), assistantItems.map(RemodexConversationItem::text))
+
+        val storedThread = service.threads.value.first { it.id == "thread-live" }
+        val storedAssistantText = TurnTimelineReducer.reduceProjected(storedThread.timelineMutations)
+            .first { item -> item.id == "assistant-1" }
+            .text
+        assertEquals("Hello world", storedAssistantText)
     }
 
     @Test
@@ -2261,6 +2387,102 @@ class BridgeThreadSyncServiceTest {
             coordinator.disconnect()
             advanceUntilIdle()
         }
+    }
+
+    @Test
+    fun `command status refresh keeps later command updates after the assistant reply in interleaved turns`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-command-refresh",
+                    title = "Command refresh thread",
+                    preview = "First response",
+                    projectPath = "/tmp/project-command-refresh",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Inspecting the repository",
+                                turnId = "turn-command-refresh",
+                                itemId = "thinking-1",
+                                isStreaming = false,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "command-item-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running git status --short",
+                                turnId = "turn-command-refresh",
+                                itemId = "command-item-1",
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "First response",
+                                turnId = "turn-command-refresh",
+                                itemId = "assistant-item-1",
+                                isStreaming = true,
+                                orderIndex = 2L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-command-refresh"))
+                put("turnId", JsonPrimitive("turn-command-refresh"))
+                put("itemId", JsonPrimitive("command-item-1"))
+                put("status", JsonPrimitive("completed"))
+                put("command", JsonPrimitive("git status --short"))
+                put("cwd", JsonPrimitive("/tmp/project-command-refresh"))
+                put("exitCode", JsonPrimitive(0))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-command-refresh" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(
+            listOf("thinking-1", "assistant-1", "command-item-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals(
+            "completed git status --short",
+            projected.last().text,
+        )
     }
 
     @Test

@@ -99,6 +99,7 @@ class DefaultRemodexAppRepository(
     private val timelineProjectionCacheByThread = mutableMapOf<String, ThreadTimelineProjectionCache>()
     private var threadCacheWriteJob: Job? = null
     private var threadListPublishJob: Job? = null
+    private var recoveredEncryptedAttempt: Int? = null
     private val initialBaseThreads = threadSyncService.threads.value
         .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
         .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
@@ -211,35 +212,42 @@ class DefaultRemodexAppRepository(
 
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             secureConnectionCoordinator.state.collectLatest { secureConnection ->
-                if (secureConnection.secureState == SecureConnectionState.ENCRYPTED) {
-                    val selectedThreadIdBeforeRefresh = sessionState.value.selectedThreadId
-                    val runningSelectedThreadBeforeRefresh = selectedThreadIdBeforeRefresh
-                        ?.let { selectedThreadId ->
-                            sessionState.value.selectedThread
-                                ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning }
-                        }
-                    runHydrationSafely {
-                        hydrationService()?.refreshThreads()
-                    }
-                    selectedThreadIdBeforeRefresh
-                        ?.let { selectedThreadId ->
-                            runHydrationSafely {
-                                hydrationService()?.hydrateThread(selectedThreadId)
-                            }
-                            (runningSelectedThreadBeforeRefresh
-                                ?: sessionState.value.selectedThread
-                                    ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning })
-                                ?.let { selectedThread ->
-                                    runHydrationSafely {
-                                        resumeService()?.resumeThread(
-                                            threadId = selectedThread.id,
-                                            preferredProjectPath = selectedThread.projectPath.ifBlank { null },
-                                            modelIdentifier = selectedThread.runtimeConfig.selectedModelId,
-                                        )
-                                    }
-                                }
-                        }
+                if (secureConnection.secureState != SecureConnectionState.ENCRYPTED) {
+                    recoveredEncryptedAttempt = null
+                    return@collectLatest
                 }
+
+                val currentAttempt = secureConnection.attempt
+                if (recoveredEncryptedAttempt == currentAttempt) {
+                    return@collectLatest
+                }
+                recoveredEncryptedAttempt = currentAttempt
+
+                val selectedThreadIdBeforeRecovery = sessionState.value.selectedThreadId
+                val runningSelectedThreadBeforeRecovery = selectedThreadIdBeforeRecovery
+                    ?.let { selectedThreadId ->
+                        sessionState.value.selectedThread
+                            ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning }
+                    }
+
+                selectedThreadIdBeforeRecovery
+                    ?.let { selectedThreadId ->
+                        runHydrationSafely {
+                            hydrationService()?.hydrateThread(selectedThreadId)
+                        }
+                        (runningSelectedThreadBeforeRecovery
+                            ?: sessionState.value.selectedThread
+                                ?.takeIf { thread -> thread.id == selectedThreadId && thread.isRunning })
+                            ?.let { selectedThread ->
+                                runHydrationSafely {
+                                    resumeService()?.resumeThread(
+                                        threadId = selectedThread.id,
+                                        preferredProjectPath = selectedThread.projectPath.ifBlank { null },
+                                        modelIdentifier = selectedThread.runtimeConfig.selectedModelId,
+                                    )
+                                }
+                            }
+                    }
             }
         }
 

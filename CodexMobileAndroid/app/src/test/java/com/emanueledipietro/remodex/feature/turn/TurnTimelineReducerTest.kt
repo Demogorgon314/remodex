@@ -569,6 +569,46 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project preserves later command activity after assistant in partial interleaved turns`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "thinking-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Inspecting the repository",
+                    turnId = "turn-1",
+                    itemId = "thinking-item-1",
+                    orderIndex = 0,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                ),
+                RemodexConversationItem(
+                    id = "command-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "completed git status --short",
+                    turnId = "turn-1",
+                    itemId = "command-item-1",
+                    orderIndex = 2,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("thinking-1", "assistant-1", "command-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `project filters hidden push reset markers`() {
         val projected = TurnTimelineReducer.project(
             listOf(

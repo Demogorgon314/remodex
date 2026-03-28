@@ -305,21 +305,19 @@ class BridgeThreadSyncService(
             return
         }
 
-        val existingSnapshot = backingThreads.value.firstOrNull { it.id == threadId }
+        val existingSnapshot = currentThreadSnapshot(threadId)
         val response = runCatching {
             retryAfterThreadMaterialization {
                 requestThreadRead(threadId)
             }
         }.getOrNull() ?: return
-        val refreshedSnapshot = applyThreadSnapshotResponse(
+        mergeThreadSnapshotResponse(
             threadId = threadId,
             response = response,
             existingSnapshot = existingSnapshot,
             syncState = currentSyncState(threadId),
             allowHistoryMergeWhileRunning = true,
-        ) ?: return
-
-        upsertThreadSnapshot(refreshedSnapshot)
+        )
     }
 
     override suspend fun resumeThread(
@@ -331,13 +329,13 @@ class BridgeThreadSyncService(
             return null
         }
 
-        val existingSnapshot = backingThreads.value.firstOrNull { it.id == threadId }
+        val existingSnapshot = currentThreadSnapshot(threadId)
         val response = runThreadResume(
             threadId = threadId,
             preferredProjectPath = preferredProjectPath,
             modelIdentifier = modelIdentifier,
         ) ?: return existingSnapshot
-        val refreshedSnapshot = applyThreadSnapshotResponse(
+        val refreshedSnapshot = mergeThreadSnapshotResponse(
             threadId = threadId,
             response = response,
             existingSnapshot = existingSnapshot,
@@ -350,11 +348,8 @@ class BridgeThreadSyncService(
             } else {
                 snapshot
             }
-        } ?: existingSnapshot
+        } ?: currentThreadSnapshot(threadId)
         resumedThreadIds.add(threadId)
-        if (refreshedSnapshot != null) {
-            upsertThreadSnapshot(refreshedSnapshot)
-        }
         return refreshedSnapshot
     }
 
@@ -372,6 +367,10 @@ class BridgeThreadSyncService(
 
     override fun isThreadResumedLocally(threadId: String): Boolean {
         return threadId in resumedThreadIds
+    }
+
+    private fun currentThreadSnapshot(threadId: String): ThreadSyncSnapshot? {
+        return backingThreads.value.firstOrNull { snapshot -> snapshot.id == threadId }
     }
 
     private fun upsertThreadSnapshot(refreshedSnapshot: ThreadSyncSnapshot) {
@@ -394,7 +393,7 @@ class BridgeThreadSyncService(
         backingThreads.value = updatedThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
     }
 
-    private fun applyThreadSnapshotResponse(
+    private fun mergeThreadSnapshotResponse(
         threadId: String,
         response: RpcMessage,
         existingSnapshot: ThreadSyncSnapshot?,
@@ -406,34 +405,57 @@ class BridgeThreadSyncService(
         indexTurnIds(threadId = threadId, threadObject = threadObject)
         val turnReadState = resolveTurnReadState(threadObject)
         applyTurnReadState(threadId = threadId, turnReadState = turnReadState)
-        val threadIsRunning = threadHasKnownRunningState(threadId)
-        val existingItems = existingSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty()
-        val mergedHistoryItems = if (
-            shouldMergeThreadReadHistory(
-                threadIsRunning = threadIsRunning,
-                existingHasTimeline = existingSnapshot?.timelineMutations?.isNotEmpty() == true,
-                allowWhileRunning = allowHistoryMergeWhileRunning,
+        val decodedHistoryItems by lazy(LazyThreadSafetyMode.NONE) {
+            TurnTimelineReducer.reduce(
+                decodeHistoryItems(
+                    threadId = threadId,
+                    threadObject = threadObject,
+                ),
             )
-        ) {
-            val historyItems = decodeHistoryItems(threadId = threadId, threadObject = threadObject)
-            ThreadHistoryReconciler.mergeHistoryItems(
-                existing = existingItems,
-                history = TurnTimelineReducer.reduce(historyItems),
-                threadIsActive = threadIsRunning,
-                threadIsRunning = threadIsRunning,
-            )
-        } else {
-            existingItems
         }
-        val refreshedSnapshot = parseThreadSnapshot(
-            threadObject = threadObject,
-            syncState = syncState,
-            existing = existingSnapshot,
-        )?.copy(
-            timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
-            isRunning = threadIsRunning,
-        ) ?: return null
-        return refreshedSnapshot
+
+        fun mergedSnapshot(baseSnapshot: ThreadSyncSnapshot?): ThreadSyncSnapshot? {
+            val threadIsRunning = threadHasKnownRunningState(threadId)
+            val existingItems = baseSnapshot?.timelineMutations?.let(TurnTimelineReducer::reduce).orEmpty()
+            val mergedHistoryItems = if (
+                shouldMergeThreadReadHistory(
+                    threadIsRunning = threadIsRunning,
+                    existingHasTimeline = baseSnapshot?.timelineMutations?.isNotEmpty() == true,
+                    allowWhileRunning = allowHistoryMergeWhileRunning,
+                )
+            ) {
+                ThreadHistoryReconciler.mergeHistoryItems(
+                    existing = existingItems,
+                    history = decodedHistoryItems,
+                    threadIsActive = threadIsRunning,
+                    threadIsRunning = threadIsRunning,
+                )
+            } else {
+                existingItems
+            }
+            return parseThreadSnapshot(
+                threadObject = threadObject,
+                syncState = syncState,
+                existing = baseSnapshot,
+            )?.copy(
+                timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
+                isRunning = threadIsRunning,
+            )
+        }
+
+        var refreshedSnapshot: ThreadSyncSnapshot? = null
+        updateThread(threadId) { latestSnapshot ->
+            val merged = mergedSnapshot(latestSnapshot) ?: latestSnapshot
+            refreshedSnapshot = merged
+            merged
+        }
+        if (refreshedSnapshot != null) {
+            return refreshedSnapshot
+        }
+
+        val createdSnapshot = mergedSnapshot(currentThreadSnapshot(threadId) ?: existingSnapshot) ?: return null
+        upsertThreadSnapshot(createdSnapshot)
+        return createdSnapshot
     }
 
     override suspend fun appendLocalSystemMessage(
@@ -3002,14 +3024,66 @@ class BridgeThreadSyncService(
         kind: ConversationItemKind,
     ): Long {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return 0L
-        return projectedTimelineItem(
+        val existingItem = projectedTimelineItem(
             threadId = threadId,
             messageId = messageId,
             turnId = turnId,
             itemId = itemId,
             speaker = speaker,
             kind = kind,
-        )?.orderIndex ?: nextOrderIndex(snapshot)
+        )
+        return when {
+            existingItem == null -> nextOrderIndex(snapshot)
+            shouldAdvanceInterleavedSystemActivityOrderIndex(
+                snapshot = snapshot,
+                existingItem = existingItem,
+                turnId = turnId,
+                speaker = speaker,
+                kind = kind,
+            ) -> nextOrderIndex(snapshot)
+
+            else -> existingItem.orderIndex
+        }
+    }
+
+    private fun shouldAdvanceInterleavedSystemActivityOrderIndex(
+        snapshot: ThreadSyncSnapshot,
+        existingItem: com.emanueledipietro.remodex.model.RemodexConversationItem,
+        turnId: String?,
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): Boolean {
+        val resolvedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        if (speaker != ConversationSpeaker.SYSTEM) {
+            return false
+        }
+        if (!isInterleavableSystemActivityKind(kind)) {
+            return false
+        }
+
+        return TurnTimelineReducer.reduce(snapshot.timelineMutations).any { candidate ->
+            candidate.turnId == resolvedTurnId &&
+                candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                candidate.orderIndex > existingItem.orderIndex
+        }
+    }
+
+    private fun isInterleavableSystemActivityKind(
+        kind: ConversationItemKind,
+    ): Boolean {
+        return when (kind) {
+            ConversationItemKind.REASONING,
+            ConversationItemKind.TOOL_ACTIVITY,
+            ConversationItemKind.COMMAND_EXECUTION,
+            -> true
+
+            ConversationItemKind.CHAT,
+            ConversationItemKind.FILE_CHANGE,
+            ConversationItemKind.SUBAGENT_ACTION,
+            ConversationItemKind.PLAN,
+            ConversationItemKind.USER_INPUT_PROMPT,
+            -> false
+        }
     }
 
     private fun projectedTimelineItem(
