@@ -6,6 +6,34 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+fun propOrEnv(propName: String, envName: String): String? {
+    val propValue = providers.gradleProperty(propName).orNull?.trim()
+    if (!propValue.isNullOrEmpty()) {
+        return propValue
+    }
+
+    val envValue = providers.environmentVariable(envName).orNull?.trim()
+    if (!envValue.isNullOrEmpty()) {
+        return envValue
+    }
+
+    return null
+}
+
+val configuredVersionCode = propOrEnv("remodexAndroidVersionCode", "ANDROID_VERSION_CODE")?.toInt() ?: 1
+val configuredVersionName = propOrEnv("remodexAndroidVersionName", "ANDROID_VERSION_NAME") ?: "1.0"
+
+val releaseKeystorePath = propOrEnv("remodexAndroidKeystorePath", "ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = propOrEnv("remodexAndroidKeystorePassword", "ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = propOrEnv("remodexAndroidKeyAlias", "ANDROID_KEY_ALIAS")
+val releaseKeyPassword = propOrEnv("remodexAndroidKeyPassword", "ANDROID_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.emanueledipietro.remodex"
     compileSdk {
@@ -16,15 +44,29 @@ android {
         applicationId = "com.emanueledipietro.remodex"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = configuredVersionCode
+        versionName = configuredVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseKeystorePath))
+                storePassword = requireNotNull(releaseKeystorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -46,6 +88,19 @@ android {
             isIncludeAndroidResources = true
         }
     }
+}
+
+val requestedTasks = gradle.startParameter.taskNames
+val releaseTaskRequested = requestedTasks.any { taskName ->
+    taskName.contains("Release", ignoreCase = true)
+}
+
+if (releaseTaskRequested && !hasReleaseSigning) {
+    throw GradleException(
+        "Release signing is required for release tasks. Set remodexAndroidKeystorePath/remodexAndroidKeystorePassword/" +
+            "remodexAndroidKeyAlias/remodexAndroidKeyPassword or the ANDROID_KEYSTORE_PATH/" +
+            "ANDROID_KEYSTORE_PASSWORD/ANDROID_KEY_ALIAS/ANDROID_KEY_PASSWORD environment variables."
+    )
 }
 
 dependencies {

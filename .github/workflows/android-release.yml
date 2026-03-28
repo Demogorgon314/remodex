@@ -1,0 +1,159 @@
+name: Android Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Android version name to release, for example 1.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  android-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Validate input and bump Android version locally
+        id: bump_version
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_FILE: CodexMobileAndroid/gradle.properties
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BRANCH_NAME}" ]]; then
+            echo "::error::This workflow must be triggered from a branch."
+            exit 1
+          fi
+
+          if ! [[ "${VERSION_NAME}" =~ ^[0-9]+(\.[0-9]+){1,2}([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version_name must look like 1.2.3 or 1.2.3-rc1."
+            exit 1
+          fi
+
+          TAG="v${VERSION_NAME}"
+
+          git fetch origin "${BRANCH_NAME}" --tags
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists on origin."
+            exit 1
+          fi
+
+          CURRENT_VERSION_CODE="$(grep '^remodexAndroidVersionCode=' "${VERSION_FILE}" | cut -d= -f2)"
+          if ! [[ "${CURRENT_VERSION_CODE}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to read a numeric remodexAndroidVersionCode from ${VERSION_FILE}."
+            exit 1
+          fi
+
+          NEXT_VERSION_CODE="$((CURRENT_VERSION_CODE + 1))"
+          NEXT_VERSION_CODE="${NEXT_VERSION_CODE}" VERSION_NAME="${VERSION_NAME}" perl -0pi -e 's/^remodexAndroidVersionCode=.*/remodexAndroidVersionCode=$ENV{NEXT_VERSION_CODE}/m; s/^remodexAndroidVersionName=.*/remodexAndroidVersionName=$ENV{VERSION_NAME}/m' "${VERSION_FILE}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${VERSION_FILE}"
+          git commit -m "chore(android): release ${TAG}"
+
+          COMMIT_SHA="$(git rev-parse HEAD)"
+
+          {
+            echo "tag=${TAG}"
+            echo "version_code=${NEXT_VERSION_CODE}"
+            echo "version_name=${VERSION_NAME}"
+            echo "commit_sha=${COMMIT_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Decode Android signing keystore
+        id: signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error::Missing required repository secret ${secret_name}."
+              exit 1
+            fi
+          done
+
+          KEYSTORE_PATH="${RUNNER_TEMP}/remodex-android-release.keystore"
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${KEYSTORE_PATH}"
+          echo "keystore_path=${KEYSTORE_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build signed release APK
+        working-directory: CodexMobileAndroid
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease
+
+      - name: Prepare release assets
+        id: assets
+        env:
+          VERSION_NAME: ${{ steps.bump_version.outputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          APK_SOURCE="CodexMobileAndroid/app/build/outputs/apk/release/app-release.apk"
+          if [[ ! -f "${APK_SOURCE}" ]]; then
+            echo "::error::Expected APK not found at ${APK_SOURCE}."
+            exit 1
+          fi
+
+          APK_DEST="${RUNNER_TEMP}/remodex-android-${VERSION_NAME}.apk"
+          cp "${APK_SOURCE}" "${APK_DEST}"
+          sha256sum "${APK_DEST}" > "${APK_DEST}.sha256"
+
+          {
+            echo "apk_path=${APK_DEST}"
+            echo "sha256_path=${APK_DEST}.sha256"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Push branch release commit
+        env:
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:${BRANCH_NAME}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.bump_version.outputs.tag }}
+          COMMIT_SHA: ${{ steps.bump_version.outputs.commit_sha }}
+          APK_PATH: ${{ steps.assets.outputs.apk_path }}
+          SHA256_PATH: ${{ steps.assets.outputs.sha256_path }}
+        run: |
+          set -euo pipefail
+          gh release create "${TAG}" "${APK_PATH}" "${SHA256_PATH}" --target "${COMMIT_SHA}" --title "${TAG}" --generate-notes
