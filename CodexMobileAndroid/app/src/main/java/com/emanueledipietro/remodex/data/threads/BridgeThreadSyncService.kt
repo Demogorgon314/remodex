@@ -5308,13 +5308,7 @@ class BridgeThreadSyncService(
             val normalizedStatus = normalizeStatus(
                 turnObject.firstString("status", "turnStatus", "turn_status").orEmpty(),
             )
-            if (normalizedStatus.contains("complete")
-                || normalizedStatus.contains("fail")
-                || normalizedStatus.contains("error")
-                || normalizedStatus.contains("interrupt")
-                || normalizedStatus.contains("cancel")
-                || normalizedStatus.contains("stopped")
-            ) {
+            if (!isInterruptibleTurnStatus(normalizedStatus)) {
                 null
             } else {
                 turnObject.firstString("id", "turnId", "turn_id")
@@ -5328,6 +5322,36 @@ class BridgeThreadSyncService(
             interruptibleTurnId = interruptibleTurnId,
             hasInterruptibleTurnWithoutId = hasInterruptibleTurnWithoutId,
         )
+    }
+
+    private fun isInterruptibleTurnStatus(normalizedStatus: String): Boolean {
+        if (
+            normalizedStatus.contains("inprogress") ||
+            normalizedStatus.contains("running") ||
+            normalizedStatus.contains("pending") ||
+            normalizedStatus.contains("started")
+        ) {
+            return true
+        }
+
+        if (
+            normalizedStatus.contains("complete") ||
+            normalizedStatus.contains("done") ||
+            normalizedStatus.contains("finish") ||
+            normalizedStatus.contains("idle") ||
+            normalizedStatus.contains("notloaded") ||
+            normalizedStatus.contains("success") ||
+            normalizedStatus.contains("succeed") ||
+            normalizedStatus.contains("fail") ||
+            normalizedStatus.contains("error") ||
+            normalizedStatus.contains("interrupt") ||
+            normalizedStatus.contains("cancel") ||
+            normalizedStatus.contains("stopped")
+        ) {
+            return false
+        }
+
+        return true
     }
 
     private fun applyTurnReadState(

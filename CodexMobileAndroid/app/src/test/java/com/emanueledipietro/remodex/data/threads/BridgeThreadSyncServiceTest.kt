@@ -3081,6 +3081,119 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `hydrate thread clears stale active turn when thread read reports the turn idle`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-turn-idle-status",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-turn-idle-status"))
+                                            put("title", JsonPrimitive("Idle turn status thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-turn-idle-status"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_420))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-turn-idle-status"))
+                                put("title", JsonPrimitive("Idle turn status thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-turn-idle-status"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-turn-idle-status"))
+                                                put("status", JsonPrimitive("idle"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-turn-idle"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Finished response after idle turn status"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-turn-idle-status",
+                "turn-turn-idle-status",
+            )
+            service.hydrateThread("thread-turn-idle-status")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-turn-idle-status" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            assertFalse(thread.isRunning)
+            assertNull(thread.activeTurnId)
+            assertEquals(
+                listOf("Finished response after idle turn status"),
+                projected.map(RemodexConversationItem::text),
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `hydrate thread decodes reasoning summary and content fields`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
