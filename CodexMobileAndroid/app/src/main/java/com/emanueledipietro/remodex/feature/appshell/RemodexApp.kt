@@ -288,6 +288,14 @@ fun RemodexApp(
         }
     }
 
+    LaunchedEffect(uiState.transientBanner) {
+        val banner = uiState.transientBanner ?: return@LaunchedEffect
+        delay(3_500)
+        if (uiState.transientBanner == banner) {
+            viewModel.dismissTransientBanner()
+        }
+    }
+
     LaunchedEffect(uiState.completionHapticSignal) {
         if (uiState.completionHapticSignal <= 0L) {
             return@LaunchedEffect

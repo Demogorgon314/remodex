@@ -1,6 +1,5 @@
 package com.emanueledipietro.remodex.feature.appshell
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -103,6 +102,7 @@ data class AppUiState(
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
     val composer: ComposerUiState = ComposerUiState(),
     val conversationBanner: String? = null,
+    val transientBanner: String? = null,
     val gitSyncAlert: RemodexGitSyncAlertUiState? = null,
     val threadCompletionBanner: ThreadCompletionBannerUiState? = null,
     val completionHapticSignal: Long = 0L,
@@ -241,6 +241,7 @@ class AppViewModel(
     private val revertedAssistantMessageIds = MutableStateFlow<Set<String>>(emptySet())
     private val assistantRevertSheetState = MutableStateFlow<RemodexAssistantRevertSheetState?>(null)
     private val gitSyncAlerts = MutableStateFlow<Map<String, RemodexGitSyncAlertUiState>>(emptyMap())
+    private val transientBannerState = MutableStateFlow<String?>(null)
     private val threadCompletionBannerState = MutableStateFlow<ThreadCompletionBannerUiState?>(null)
     private val completionHapticSignalState = MutableStateFlow(0L)
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
@@ -442,8 +443,9 @@ class AppViewModel(
         combine(
             threadCompletionBannerState,
             completionHapticSignalState,
-        ) { threadCompletionBanner: ThreadCompletionBannerUiState?, completionHapticSignal: Long ->
-            threadCompletionBanner to completionHapticSignal
+            transientBannerState,
+        ) { threadCompletionBanner: ThreadCompletionBannerUiState?, completionHapticSignal: Long, transientBanner: String? ->
+            Triple(threadCompletionBanner, completionHapticSignal, transientBanner)
         }
 
     private val decoratedUiState =
@@ -455,12 +457,13 @@ class AppViewModel(
             settingsRenderState,
         ) {
             baseState: AppUiState,
-            threadChrome: Pair<ThreadCompletionBannerUiState?, Long>,
+            threadChrome: Triple<ThreadCompletionBannerUiState?, Long, String?>,
             isRefreshingThreads: Boolean,
             isRefreshingUsage: Boolean,
             settingsState: SettingsRenderState,
             ->
             baseState.copy(
+                transientBanner = threadChrome.third,
                 threadCompletionBanner = threadChrome.first,
                 completionHapticSignal = threadChrome.second,
                 isRefreshingThreads = isRefreshingThreads,
@@ -543,6 +546,10 @@ class AppViewModel(
 
     fun dismissThreadCompletionBanner() {
         threadCompletionBannerState.value = null
+    }
+
+    fun dismissTransientBanner() {
+        transientBannerState.value = null
     }
 
     fun completeOnboarding() {
@@ -978,12 +985,6 @@ class AppViewModel(
         val draftBefore = composerDrafts.value[threadId].orEmpty()
         val draftAfter = RemodexComposerCommandLogic.removeTrailingSlashCommandToken(draftBefore)
             ?: draftBefore
-        runCatching {
-            Log.d(
-                ForkDebugTag,
-                "prepareForkDestinationSelection threadId=$threadId draftBefore='$draftBefore' draftAfter='$draftAfter' panel=${uiState.value.composer.autocomplete.panel}",
-            )
-        }
         composerDrafts.update { draftsByThread ->
             draftsByThread.toMutableMap().apply {
                 this[threadId] = draftAfter
@@ -1366,6 +1367,7 @@ class AppViewModel(
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
             clearGitSyncAlert(threadId)
+            dismissTransientBanner()
             updateGitState(threadId) { currentState ->
                 currentState.copy(isLoading = true, errorMessage = null)
             }
@@ -1385,11 +1387,13 @@ class AppViewModel(
                     threadId = threadId,
                     projectPath = worktreeResult.worktreePath,
                 )
-            }.onSuccess { nextThreadId ->
+                worktreeResult
+            }.onSuccess { worktreeResult ->
                 updateGitState(threadId) { currentState ->
                     currentState.copy(isLoading = false, errorMessage = null)
                 }
-                nextThreadId?.let(::refreshGitState)
+                presentTransientBanner("Now in worktree ${worktreeResult.branch}.")
+                repository.session.value.selectedThread?.id?.let(::refreshGitState)
             }.onFailure { error ->
                 updateGitState(threadId) { currentState ->
                     currentState.copy(isLoading = false, errorMessage = null)
@@ -2336,6 +2340,10 @@ class AppViewModel(
         }
     }
 
+    private fun presentTransientBanner(message: String) {
+        transientBannerState.value = message
+    }
+
     private fun maybeRunGitBranchOperation(
         threadId: String,
         operation: PendingGitBranchOperation,
@@ -2405,6 +2413,7 @@ class AppViewModel(
                                     errorMessage = null,
                                 )
                             }
+                            presentTransientBanner("Now in worktree ${result.branch}.")
                         }.onFailure { error ->
                             updateGitState(threadId) { currentState ->
                                 currentState.copy(
@@ -2923,7 +2932,6 @@ class AppViewModel(
     }
 
     companion object {
-        const val ForkDebugTag = "RemodexForkDebug"
         const val MaxComposerImages = 4
         const val MaxAutocompleteItems = 6
         const val MinAutocompleteQueryLength = 2

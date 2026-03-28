@@ -1244,6 +1244,10 @@ class AppViewModelTest {
             "/tmp/remodex/.codex/worktrees/feature/handoff",
             viewModel.uiState.value.selectedThread?.projectPath,
         )
+        assertEquals(
+            "Now in worktree feature/handoff.",
+            viewModel.uiState.value.transientBanner,
+        )
     }
 
     @Test
@@ -1281,6 +1285,10 @@ class AppViewModelTest {
         assertEquals(
             listOf("thread-1" to "/tmp/remodex/.codex/worktrees/feature/forked"),
             repository.forkThreadIntoProjectPathRequests,
+        )
+        assertEquals(
+            "Now in worktree feature/forked.",
+            viewModel.uiState.value.transientBanner,
         )
     }
 

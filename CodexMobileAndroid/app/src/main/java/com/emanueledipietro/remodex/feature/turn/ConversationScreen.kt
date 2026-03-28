@@ -1,6 +1,5 @@
 package com.emanueledipietro.remodex.feature.turn
 
-import android.util.Log
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.text.format.DateFormat
@@ -237,8 +236,6 @@ private val ComposerMentionFileTint = Color(0xFF2563EB)
 private val ComposerMentionSkillTint = Color(0xFF4F46E5)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
-private const val ForkDebugTag = "RemodexForkDebug"
-
 private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
     com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject(projectPath)
 
@@ -523,32 +520,12 @@ fun ConversationScreen(
         }
     }
     val handleForkThread: (RemodexComposerForkDestination) -> Unit = { destination ->
-        runCatching {
-            Log.d(
-                ForkDebugTag,
-                "handleForkThread destination=$destination autocompleteVisible=$autocompleteVisible draft='${uiState.composer.draftText}' panel=${uiState.composer.autocomplete.panel}",
-            )
-        }
         onPrepareForkDestinationSelection()
         if (destination == RemodexComposerForkDestination.NEW_WORKTREE) {
             worktreeSheetMode = WorktreeSheetMode.FORK
             worktreeHandoffSheetExpanded = true
-            runCatching {
-                Log.d(
-                    ForkDebugTag,
-                    "handleForkThread opening dialog mode=$worktreeSheetMode expanded=$worktreeHandoffSheetExpanded",
-                )
-            }
         } else {
             onForkThread(destination)
-        }
-    }
-    LaunchedEffect(worktreeHandoffSheetExpanded, worktreeSheetMode, autocompleteVisible, uiState.composer.draftText) {
-        runCatching {
-            Log.d(
-                ForkDebugTag,
-                "ConversationScreen dialogState expanded=$worktreeHandoffSheetExpanded mode=$worktreeSheetMode autocompleteVisible=$autocompleteVisible draft='${uiState.composer.draftText}' panel=${uiState.composer.autocomplete.panel}",
-            )
         }
     }
     LaunchedEffect(thread.id, lastTimelineItemId) {
@@ -1147,7 +1124,7 @@ private fun ConversationTopOverlays(
     onRetryConnection: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    if (uiState.conversationBanner == null && uiState.isConnected) {
+    if (uiState.transientBanner == null && uiState.conversationBanner == null && uiState.isConnected) {
         return
     }
 
@@ -1157,6 +1134,10 @@ private fun ConversationTopOverlays(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        uiState.transientBanner?.let { banner ->
+            BannerCard(text = banner)
+        }
+
         uiState.conversationBanner?.let { banner ->
             BannerCard(text = banner)
         }
@@ -2463,12 +2444,6 @@ private fun WorktreeHandoffSheet(
     val trimmedBranchName = branchDraft.trim()
 
     LaunchedEffect(mode) {
-        runCatching {
-            Log.d(
-                ForkDebugTag,
-                "WorktreeHandoffSheet composed mode=$mode preferredBaseBranch='$preferredBaseBranch'",
-            )
-        }
         focusRequester.requestFocus()
     }
 
