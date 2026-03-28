@@ -68,7 +68,9 @@ import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -221,6 +223,7 @@ class BridgeThreadSyncService(
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
     private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
     private val resumedThreadIds = mutableSetOf<String>()
+    private val lifecycleCatchupJobByThread = mutableMapOf<String, Job>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
 
@@ -243,6 +246,8 @@ class BridgeThreadSyncService(
                 } else {
                     initializedAttempt = null
                     supportsServiceTier = true
+                    lifecycleCatchupJobByThread.values.forEach(Job::cancel)
+                    lifecycleCatchupJobByThread.clear()
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
                     runningThreadFallbackIds.clear()
@@ -1906,6 +1911,7 @@ class BridgeThreadSyncService(
                     runningThreadFallbackIds.contains(threadId) ||
                     hasStreamingMessage(threadId)
                 ) {
+                    scheduleLifecycleCatchup(threadId)
                     return
                 }
                 terminalStateForNormalizedStatus(normalizedStatus)?.let { state ->
@@ -1953,23 +1959,38 @@ class BridgeThreadSyncService(
             eventObject = eventObject,
             itemObject = extractIncomingItemObject(paramsObject, eventObject),
         )
-        val messageId = streamingMessageId(
+        val preferredMessageId = streamingMessageId(
             itemId = itemId,
             turnId = resolvedTurnId,
             fallbackPrefix = "assistant",
         )
+        val existingItem = projectedTimelineItem(
+            threadId = threadId,
+            messageId = preferredMessageId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+        ) ?: reusableAssistantStreamingItem(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            preferredMessageId = preferredMessageId,
+        )
+        val effectiveMessageId = existingItem?.id ?: preferredMessageId
+        val effectiveItemId = itemId ?: existingItem?.itemId
         appendTimelineMutation(
             threadId = threadId,
             mutation = TimelineMutation.AssistantTextDelta(
-                messageId = messageId,
+                messageId = effectiveMessageId,
                 turnId = resolvedTurnId.orEmpty(),
-                itemId = itemId,
+                itemId = effectiveItemId,
                 delta = delta,
                 orderIndex = resolveOrderIndex(
                     threadId = threadId,
-                    messageId = messageId,
+                    messageId = effectiveMessageId,
                     turnId = resolvedTurnId,
-                    itemId = itemId,
+                    itemId = effectiveItemId,
                     speaker = ConversationSpeaker.ASSISTANT,
                     kind = ConversationItemKind.CHAT,
                 ),
@@ -2328,19 +2349,26 @@ class BridgeThreadSyncService(
         if (resolvedTurnId != null) {
             threadIdByTurnId[resolvedTurnId] = threadId
         }
-        val messageId = streamingMessageId(
+        val preferredMessageId = streamingMessageId(
             itemId = itemId,
             turnId = resolvedTurnId,
             fallbackPrefix = "assistant",
         )
         val existingItem = projectedTimelineItem(
             threadId = threadId,
-            messageId = messageId,
+            messageId = preferredMessageId,
             turnId = resolvedTurnId,
             itemId = itemId,
             speaker = ConversationSpeaker.ASSISTANT,
             kind = ConversationItemKind.CHAT,
+        ) ?: reusableAssistantStreamingItem(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            preferredMessageId = preferredMessageId,
         )
+        val resolvedMessageId = existingItem?.id ?: preferredMessageId
+        val effectiveItemId = itemId ?: existingItem?.itemId
         if (!isCompleted) {
             if (resolvedTurnId.isNullOrBlank()) {
                 return
@@ -2348,18 +2376,18 @@ class BridgeThreadSyncService(
             upsertStreamingItem(
                 threadId = threadId,
                 item = timelineItem(
-                    id = messageId,
+                    id = resolvedMessageId,
                     speaker = ConversationSpeaker.ASSISTANT,
                     text = assistantLifecycleStartedText(existingItem?.text),
                     kind = ConversationItemKind.CHAT,
                     turnId = resolvedTurnId,
-                    itemId = itemId,
+                    itemId = effectiveItemId,
                     isStreaming = true,
                     orderIndex = resolveOrderIndex(
                         threadId = threadId,
-                        messageId = messageId,
+                        messageId = resolvedMessageId,
                         turnId = resolvedTurnId,
-                        itemId = itemId,
+                        itemId = effectiveItemId,
                         speaker = ConversationSpeaker.ASSISTANT,
                         kind = ConversationItemKind.CHAT,
                     ),
@@ -2383,15 +2411,15 @@ class BridgeThreadSyncService(
                 turnId = resolvedTurnId,
                 itemId = itemId,
                 text = body,
-                preferredMessageId = messageId,
+                preferredMessageId = resolvedMessageId,
             )
             val effectiveTurnId = resolvedTurnId ?: completionItem?.turnId
             val effectiveItemId = itemId ?: completionItem?.itemId
-            val resolvedMessageId = completionItem?.id ?: messageId
+            val completionMessageId = completionItem?.id ?: resolvedMessageId
             upsertStreamingItem(
                 threadId = threadId,
                 item = timelineItem(
-                    id = resolvedMessageId,
+                    id = completionMessageId,
                     speaker = ConversationSpeaker.ASSISTANT,
                     text = body,
                     kind = ConversationItemKind.CHAT,
@@ -2400,7 +2428,7 @@ class BridgeThreadSyncService(
                     isStreaming = false,
                     orderIndex = completionItem?.orderIndex ?: resolveOrderIndex(
                         threadId = threadId,
-                        messageId = resolvedMessageId,
+                        messageId = completionMessageId,
                         turnId = effectiveTurnId,
                         itemId = effectiveItemId,
                         speaker = ConversationSpeaker.ASSISTANT,
@@ -2413,7 +2441,7 @@ class BridgeThreadSyncService(
         } else {
             appendTimelineMutation(
                 threadId = threadId,
-                mutation = TimelineMutation.Complete(messageId = messageId),
+                mutation = TimelineMutation.Complete(messageId = resolvedMessageId),
             )
         }
     }
@@ -2627,6 +2655,12 @@ class BridgeThreadSyncService(
             itemId = itemId,
             speaker = ConversationSpeaker.SYSTEM,
             kind = kind,
+        ) ?: reusableSystemStreamingItem(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            itemId = itemId,
+            kind = kind,
+            text = body,
         )
         if (kind == ConversationItemKind.COMMAND_EXECUTION) {
             upsertCommandExecutionDetails(
@@ -2659,7 +2693,7 @@ class BridgeThreadSyncService(
             )
             appendTimelineMutation(
                 threadId = threadId,
-                mutation = TimelineMutation.Complete(messageId = messageId),
+                mutation = TimelineMutation.Complete(messageId = existingItem.id),
             )
             return true
         }
@@ -2692,7 +2726,7 @@ class BridgeThreadSyncService(
         upsertStreamingItem(
             threadId = threadId,
             item = timelineItem(
-                id = messageId,
+                id = existingItem?.id ?: messageId,
                 speaker = ConversationSpeaker.SYSTEM,
                 text = when {
                     subagentAction != null -> subagentAction.summaryText
@@ -2707,15 +2741,15 @@ class BridgeThreadSyncService(
                 },
                 kind = kind,
                 turnId = resolvedTurnId,
-                itemId = itemId,
+                itemId = itemId ?: existingItem?.itemId,
                 isStreaming = !isCompleted,
                 planState = planState,
                 subagentAction = subagentAction,
                 orderIndex = resolveOrderIndex(
                     threadId = threadId,
-                    messageId = messageId,
+                    messageId = existingItem?.id ?: messageId,
                     turnId = resolvedTurnId,
-                    itemId = itemId,
+                    itemId = itemId ?: existingItem?.itemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = kind,
                 ),
@@ -2844,17 +2878,6 @@ class BridgeThreadSyncService(
             turnId = context.turnId,
             fallbackPrefix = "commandexecution",
         )
-        val existingItem = projectedTimelineItem(
-            threadId = context.threadId,
-            messageId = messageId,
-            turnId = context.turnId,
-            itemId = context.itemId,
-            speaker = ConversationSpeaker.SYSTEM,
-            kind = ConversationItemKind.COMMAND_EXECUTION,
-        )
-        if (onlyIfMissing && existingItem != null) {
-            return
-        }
         val statusText = commandExecutionStatusText(
             decodeCommandExecutionRunState(
                 payloadObject = payloadObject,
@@ -2862,24 +2885,41 @@ class BridgeThreadSyncService(
                 isCompleted = isCompleted,
             ),
         )
+        val existingItem = projectedTimelineItem(
+            threadId = context.threadId,
+            messageId = messageId,
+            turnId = context.turnId,
+            itemId = context.itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+        ) ?: reusableSystemStreamingItem(
+            threadId = context.threadId,
+            turnId = context.turnId,
+            itemId = context.itemId,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+            text = statusText,
+        )
+        if (onlyIfMissing && existingItem != null) {
+            return
+        }
         if (statusText.isBlank()) {
             return
         }
         upsertStreamingItem(
             threadId = context.threadId,
             item = timelineItem(
-                id = messageId,
+                id = existingItem?.id ?: messageId,
                 speaker = ConversationSpeaker.SYSTEM,
                 text = statusText,
                 kind = ConversationItemKind.COMMAND_EXECUTION,
                 turnId = context.turnId,
-                itemId = context.itemId,
+                itemId = context.itemId ?: existingItem?.itemId,
                 isStreaming = !isCompleted,
                 orderIndex = resolveOrderIndex(
                     threadId = context.threadId,
-                    messageId = messageId,
+                    messageId = existingItem?.id ?: messageId,
                     turnId = context.turnId,
-                    itemId = context.itemId,
+                    itemId = context.itemId ?: existingItem?.itemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = ConversationItemKind.COMMAND_EXECUTION,
                 ),
@@ -3142,6 +3182,35 @@ class BridgeThreadSyncService(
         }
     }
 
+    private fun reusableSystemStreamingItem(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        kind: ConversationItemKind,
+        text: String,
+    ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
+        if (kind != ConversationItemKind.COMMAND_EXECUTION) {
+            return null
+        }
+
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        val normalizedItemId = itemId?.trim()?.takeIf(String::isNotEmpty)
+        val commandKey = normalizedCommandExecutionPreviewKey(text) ?: return null
+
+        return TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+            .asReversed()
+            .firstOrNull { candidate ->
+                candidate.speaker == ConversationSpeaker.SYSTEM &&
+                    candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                    candidate.turnId == normalizedTurnId &&
+                    (
+                        (normalizedItemId != null && candidate.itemId == normalizedItemId) ||
+                            normalizedCommandExecutionPreviewKey(candidate.text) == commandKey
+                        )
+            }
+    }
+
     private fun reusableAssistantCompletionItem(
         threadId: String,
         turnId: String?,
@@ -3160,6 +3229,12 @@ class BridgeThreadSyncService(
         if (exact != null) {
             return exact
         }
+        reusableAssistantStreamingItem(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = itemId,
+            preferredMessageId = preferredMessageId,
+        )?.let { return it }
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
         return findReusableAssistantCompletionItemValue(
             items = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations),
@@ -3167,6 +3242,40 @@ class BridgeThreadSyncService(
             itemId = itemId,
             text = text,
         )
+    }
+
+    private fun reusableAssistantStreamingItem(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        preferredMessageId: String,
+    ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
+        val exact = projectedTimelineItem(
+            threadId = threadId,
+            messageId = preferredMessageId,
+            turnId = turnId,
+            itemId = itemId,
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+        )
+        if (exact != null) {
+            return exact
+        }
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        val normalizedItemId = itemId?.trim()?.takeIf(String::isNotEmpty)
+        return TurnTimelineReducer.reduce(snapshot.timelineMutations)
+            .asReversed()
+            .firstOrNull { candidate ->
+                candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                    candidate.kind == ConversationItemKind.CHAT &&
+                    candidate.turnId == normalizedTurnId &&
+                    candidate.isStreaming &&
+                    (
+                        candidate.itemId == null ||
+                            (normalizedItemId != null && candidate.itemId == normalizedItemId)
+                        )
+            }
     }
 
     private fun shouldSuppressAssistantCompletion(
@@ -4092,6 +4201,24 @@ class BridgeThreadSyncService(
 
     private fun commandExecutionStatusText(state: CommandExecutionRunState): String {
         return "${state.phase.label} ${state.shortCommand}"
+    }
+
+    private fun normalizedCommandExecutionPreviewKey(text: String): String? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) {
+            return null
+        }
+        val tokens = trimmed.split(Regex("\\s+")).filter(String::isNotEmpty)
+        if (tokens.isEmpty()) {
+            return null
+        }
+        val statusPrefixes = setOf("running", "completed", "failed", "stopped")
+        val commandTokens = if (tokens.first().lowercase(Locale.ROOT) in statusPrefixes) {
+            tokens.drop(1)
+        } else {
+            tokens
+        }
+        return commandTokens.joinToString(separator = " ").trim().ifEmpty { null }?.lowercase(Locale.ROOT)
     }
 
     private fun commandExecutionRunPhase(
@@ -5269,6 +5396,22 @@ class BridgeThreadSyncService(
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.remove(threadId)
         syncThreadLifecycleState(threadId = threadId, isRunning = false)
+    }
+
+    private fun scheduleLifecycleCatchup(threadId: String) {
+        val existingJob = lifecycleCatchupJobByThread[threadId]
+        if (existingJob?.isActive == true) {
+            return
+        }
+
+        lifecycleCatchupJobByThread[threadId] = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                refreshThreads()
+                hydrateThread(threadId)
+            } finally {
+                lifecycleCatchupJobByThread.remove(threadId)
+            }
+        }
     }
 
     private fun syncThreadLifecycleState(

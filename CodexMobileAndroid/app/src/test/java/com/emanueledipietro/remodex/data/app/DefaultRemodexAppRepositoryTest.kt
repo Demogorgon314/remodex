@@ -169,6 +169,85 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `thread projection cache falls back to full reprojection when assistant deltas can change intra-turn order`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        val baselineSnapshot = ThreadSyncSnapshot(
+            id = "thread-fast-path-order",
+            title = "Fast path order",
+            preview = "First response",
+            projectPath = "/tmp/project-fast-path-order",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = 1L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = listOf(
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "thinking-1",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.REASONING,
+                        text = "Inspecting repository state",
+                        turnId = "turn-fast-path-order",
+                        itemId = "thinking-item-1",
+                        isStreaming = false,
+                        orderIndex = 0L,
+                    ),
+                ),
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "assistant-1",
+                        speaker = ConversationSpeaker.ASSISTANT,
+                        kind = ConversationItemKind.CHAT,
+                        text = "First response",
+                        turnId = "turn-fast-path-order",
+                        itemId = "assistant-item-1",
+                        isStreaming = true,
+                        orderIndex = 1L,
+                    ),
+                ),
+                TimelineMutation.Upsert(
+                    RemodexConversationItem(
+                        id = "command-1",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.COMMAND_EXECUTION,
+                        text = "completed git status --short",
+                        turnId = "turn-fast-path-order",
+                        itemId = "command-item-1",
+                        isStreaming = false,
+                        orderIndex = 2L,
+                    ),
+                ),
+            ),
+        )
+        val nextSnapshot = baselineSnapshot.copy(
+            timelineMutations = baselineSnapshot.timelineMutations + TimelineMutation.AssistantTextDelta(
+                messageId = "assistant-1",
+                turnId = "turn-fast-path-order",
+                itemId = "assistant-item-1",
+                delta = " with more detail",
+                orderIndex = 3L,
+            ),
+        )
+
+        val initialProjected = invokePrivateMethod<List<RemodexConversationItem>>(
+            repository,
+            "projectThreadTimelineItems",
+            baselineSnapshot,
+        )
+        val cachedProjected = invokePrivateMethod<List<RemodexConversationItem>>(
+            repository,
+            "projectThreadTimelineItems",
+            nextSnapshot,
+        )
+        val fullProjected = com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
+            .reduceProjected(nextSnapshot.timelineMutations)
+
+        assertEquals(initialProjected.map(RemodexConversationItem::id), listOf("thinking-1", "assistant-1", "command-1"))
+        assertEquals(fullProjected.map(RemodexConversationItem::id), cachedProjected.map(RemodexConversationItem::id))
+        assertEquals(fullProjected.map(RemodexConversationItem::text), cachedProjected.map(RemodexConversationItem::text))
+    }
+
+    @Test
     fun `encrypted reconnect resumes selected running thread to recover live output`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
         val syncService = ReconnectResumeSyncService(clearRunningOnRefresh = true)
@@ -1144,6 +1223,19 @@ class DefaultRemodexAppRepositoryTest {
             Thread.sleep(20)
         }
         fail("Expected $description but selected thread was ${repository.session.value.selectedThread?.id}")
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> invokePrivateMethod(
+        target: Any,
+        methodName: String,
+        vararg args: Any?,
+    ): T {
+        val method = target.javaClass.declaredMethods.firstOrNull { candidate ->
+            candidate.name == methodName && candidate.parameterCount == args.size
+        } ?: error("Missing method $methodName with ${args.size} parameters")
+        method.isAccessible = true
+        return method.invoke(target, *args) as T
     }
 
     @Suppress("UNCHECKED_CAST")

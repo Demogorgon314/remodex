@@ -2647,6 +2647,287 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `command status rebind keeps the same row when item id arrives after turn scoped placeholder`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-command-rebind",
+                    title = "Command rebind thread",
+                    preview = "First response",
+                    projectPath = "/tmp/project-command-rebind",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Inspecting the repository",
+                                turnId = "turn-command-rebind",
+                                itemId = "thinking-1",
+                                isStreaming = false,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "First response",
+                                turnId = "turn-command-rebind",
+                                itemId = "assistant-item-1",
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendCommandExecutionDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-command-rebind"))
+                put("turnId", JsonPrimitive("turn-command-rebind"))
+                put("status", JsonPrimitive("running"))
+                put("command", JsonPrimitive("git status --short"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-command-rebind"))
+                put("turnId", JsonPrimitive("turn-command-rebind"))
+                put("itemId", JsonPrimitive("command-item-1"))
+                put("status", JsonPrimitive("completed"))
+                put("command", JsonPrimitive("git status --short"))
+                put("cwd", JsonPrimitive("/tmp/project-command-rebind"))
+                put("exitCode", JsonPrimitive(0))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-command-rebind" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val commandItems = projected.filter { it.kind == ConversationItemKind.COMMAND_EXECUTION }
+
+        assertEquals(1, commandItems.size)
+        assertEquals("command-item-1", commandItems.single().itemId)
+        assertEquals(
+            listOf("thinking-1", "assistant-1", commandItems.single().id),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals("completed git status --short", commandItems.single().text)
+    }
+
+    @Test
+    fun `assistant delta rebind keeps the same row when item id arrives after turn scoped placeholder`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-assistant-rebind",
+                    title = "Assistant rebind thread",
+                    preview = "现在这个文件同时负责环境变量校验",
+                    projectPath = "/tmp/project-assistant-rebind",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Inspecting the repository",
+                                turnId = "turn-assistant-rebind",
+                                itemId = "thinking-1",
+                                isStreaming = false,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-rebind"))
+                put("turnId", JsonPrimitive("turn-assistant-rebind"))
+                put("delta", JsonPrimitive("现在这个文件同时负责环境变量校验"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-rebind"))
+                put("turnId", JsonPrimitive("turn-assistant-rebind"))
+                put("itemId", JsonPrimitive("assistant-item-1"))
+                put("delta", JsonPrimitive("环境变量"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-assistant-rebind" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals(1, assistantItems.size)
+        assertEquals("assistant-item-1", assistantItems.single().itemId)
+        assertEquals(
+            "现在这个文件同时负责环境变量校验环境变量",
+            assistantItems.single().text,
+        )
+        assertEquals(
+            listOf("thinking-1", assistantItems.single().id),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `hydrate thread clears stale active turn when history shows the turn completed`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-idle-catchup",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-idle-catchup"))
+                                            put("title", JsonPrimitive("Idle catchup thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-idle-catchup"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_220))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-idle-catchup"))
+                                put("title", JsonPrimitive("Idle catchup thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-idle-catchup"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-idle-catchup"))
+                                                put("status", JsonPrimitive("completed"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-idle"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Finished response"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-idle-catchup",
+                "turn-idle-catchup",
+            )
+            service.hydrateThread("thread-idle-catchup")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-idle-catchup" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            assertFalse(thread.isRunning)
+            assertNull(thread.activeTurnId)
+            assertEquals(listOf("Finished response"), projected.map(RemodexConversationItem::text))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `hydrate thread decodes reasoning summary and content fields`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
