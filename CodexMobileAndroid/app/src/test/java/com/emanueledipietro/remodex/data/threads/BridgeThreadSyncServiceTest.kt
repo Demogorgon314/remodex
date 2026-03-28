@@ -1642,6 +1642,159 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `archive thread keeps optimistic archived state when archive rpc fails`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-archive-thread",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-archive"))
+                                        put("title", JsonPrimitive("Archive me"))
+                                        put("cwd", JsonPrimitive("/tmp/project-archive"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_440))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/archive" to {
+                    throw RpcError(
+                        code = -32600,
+                        message = "No rollout found for thread id thread-archive",
+                    )
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.archiveThread("thread-archive", unarchive = false)
+            advanceUntilIdle()
+
+            val archivedThread = service.threads.value.first { it.id == "thread-archive" }
+            assertEquals(RemodexThreadSyncState.ARCHIVED_LOCAL, archivedThread.syncState)
+            assertTrue(
+                relayFactory.receivedRequests.any { request ->
+                    request.method == "thread/archive"
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `delete thread keeps local removal when archive rpc fails`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-delete-thread",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-delete"))
+                                        put("title", JsonPrimitive("Delete me"))
+                                        put("cwd", JsonPrimitive("/tmp/project-delete"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_440))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/archive" to {
+                    throw RpcError(
+                        code = -32600,
+                        message = "No rollout found for thread id thread-delete",
+                    )
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.deleteThread("thread-delete")
+            advanceUntilIdle()
+
+            assertTrue(service.threads.value.none { thread -> thread.id == "thread-delete" })
+            assertTrue(
+                relayFactory.receivedRequests.any { request ->
+                    request.method == "thread/archive"
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `resume thread uses thread resume and refreshes snapshot history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

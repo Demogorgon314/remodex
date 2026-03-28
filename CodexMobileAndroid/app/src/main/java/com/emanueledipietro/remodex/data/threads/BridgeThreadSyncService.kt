@@ -572,12 +572,19 @@ class BridgeThreadSyncService(
         if (!isConnected()) {
             return
         }
-        secureConnectionCoordinator.sendRequest(
-            method = if (unarchive) "thread/unarchive" else "thread/archive",
-            params = buildJsonObject {
-                put("threadId", JsonPrimitive(threadId))
-            },
-        )
+        val method = if (unarchive) "thread/unarchive" else "thread/archive"
+        runCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = method,
+                params = buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                },
+            )
+        }.onFailure { error ->
+            runCatching {
+                Log.w("RemodexThreadSync", "$method failed (non-fatal) for $threadId", error)
+            }
+        }
         updateThread(threadId) { snapshot ->
             snapshot.copy(
                 syncState = if (unarchive) {
@@ -596,12 +603,18 @@ class BridgeThreadSyncService(
         if (!isConnected()) {
             return
         }
-        secureConnectionCoordinator.sendRequest(
-            method = "thread/archive",
-            params = buildJsonObject {
-                put("threadId", JsonPrimitive(threadId))
-            },
-        )
+        runCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = "thread/archive",
+                params = buildJsonObject {
+                    put("threadId", JsonPrimitive(threadId))
+                },
+            )
+        }.onFailure { error ->
+            runCatching {
+                Log.w("RemodexThreadSync", "thread/archive failed (non-fatal) for $threadId", error)
+            }
+        }
         activeTurnIdByThread.remove(threadId)
         resumedThreadIds.remove(threadId)
         backingThreads.value = backingThreads.value.filterNot { snapshot -> snapshot.id == threadId }

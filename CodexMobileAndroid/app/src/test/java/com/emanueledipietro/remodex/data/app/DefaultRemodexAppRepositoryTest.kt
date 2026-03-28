@@ -348,6 +348,12 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.createThread(preferredProjectPath = "/tmp/local-main")
         advanceUntilIdle()
+        awaitSelectedThread(
+            repository = repository,
+            description = "the newly created local thread before moving its project path",
+        ) { thread ->
+            thread?.projectPath == "/tmp/local-main"
+        }
         val createdThreadId = requireNotNull(repository.session.value.selectedThread?.id) {
             "Expected a created thread"
         }
@@ -363,6 +369,108 @@ class DefaultRemodexAppRepositoryTest {
             "/tmp/.codex/worktrees/feature-empty",
             repository.session.value.selectedThread?.projectPath,
         )
+    }
+
+    @Test
+    fun `delete thread persists deleted root and keeps descendants archived locally`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = FakeThreadSyncService(
+            initialThreads = listOf(
+                testThreadSnapshot(
+                    id = "thread-parent",
+                    title = "Parent thread",
+                    projectPath = "/tmp/project-delete-parent",
+                    lastUpdatedEpochMs = 3L,
+                ),
+                testThreadSnapshot(
+                    id = "thread-child",
+                    title = "Child thread",
+                    projectPath = "/tmp/project-delete-parent",
+                    lastUpdatedEpochMs = 2L,
+                    parentThreadId = "thread-parent",
+                ),
+                testThreadSnapshot(
+                    id = "thread-sibling",
+                    title = "Sibling thread",
+                    projectPath = "/tmp/project-delete-sibling",
+                    lastUpdatedEpochMs = 1L,
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            preferencesRepository = preferencesRepository,
+            syncService = syncService,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-parent")
+        advanceUntilIdle()
+        repository.deleteThread("thread-parent")
+        advanceUntilIdle()
+
+        assertEquals(
+            setOf("thread-child", "thread-sibling"),
+            repository.session.value.threads.map(RemodexThreadSummary::id).toSet(),
+        )
+        assertEquals(
+            RemodexThreadSyncState.ARCHIVED_LOCAL,
+            repository.session.value.threads.first { thread -> thread.id == "thread-child" }.syncState,
+        )
+        assertEquals(setOf("thread-parent"), preferencesRepository.preferencesState.value.deletedThreadIds)
+        assertEquals("thread-sibling", repository.session.value.selectedThread?.id)
+    }
+
+    @Test
+    fun `persisted deleted thread ids keep sync results hidden`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = FakeThreadSyncService(
+            initialThreads = listOf(
+                testThreadSnapshot(
+                    id = "thread-deleted",
+                    title = "Deleted thread",
+                    projectPath = "/tmp/project-deleted",
+                    lastUpdatedEpochMs = 2L,
+                ),
+                testThreadSnapshot(
+                    id = "thread-visible",
+                    title = "Visible thread",
+                    projectPath = "/tmp/project-visible",
+                    lastUpdatedEpochMs = 1L,
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            preferencesRepository = preferencesRepository,
+            syncService = syncService,
+        )
+        advanceUntilIdle()
+
+        repository.deleteThread("thread-deleted")
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-visible"), repository.session.value.threads.map(RemodexThreadSummary::id))
+
+        syncService.updateThreads(
+            listOf(
+                testThreadSnapshot(
+                    id = "thread-deleted",
+                    title = "Deleted thread restored remotely",
+                    projectPath = "/tmp/project-deleted",
+                    lastUpdatedEpochMs = 4L,
+                ),
+                testThreadSnapshot(
+                    id = "thread-visible",
+                    title = "Visible thread",
+                    projectPath = "/tmp/project-visible",
+                    lastUpdatedEpochMs = 3L,
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-visible"), repository.session.value.threads.map(RemodexThreadSummary::id))
     }
 
     @Test
@@ -1056,6 +1164,20 @@ class DefaultRemodexAppRepositoryTest {
             backingState.value = backingState.value.copy(selectedThreadId = threadId)
         }
 
+        override suspend fun setThreadDeleted(
+            threadId: String,
+            deleted: Boolean,
+        ) {
+            val updatedDeletedThreadIds = backingState.value.deletedThreadIds.toMutableSet().apply {
+                if (deleted) {
+                    add(threadId)
+                } else {
+                    remove(threadId)
+                }
+            }
+            backingState.value = backingState.value.copy(deletedThreadIds = updatedDeletedThreadIds)
+        }
+
         override suspend fun setQueuedDrafts(
             threadId: String,
             drafts: List<com.emanueledipietro.remodex.model.RemodexQueuedDraft>,
@@ -1122,6 +1244,28 @@ class DefaultRemodexAppRepositoryTest {
             threadCommandService = syncService,
             threadHydrationService = null,
             scope = scope,
+        )
+    }
+
+    private fun testThreadSnapshot(
+        id: String,
+        title: String,
+        projectPath: String,
+        lastUpdatedEpochMs: Long,
+        parentThreadId: String? = null,
+    ): ThreadSyncSnapshot {
+        return ThreadSyncSnapshot(
+            id = id,
+            title = title,
+            preview = "$title preview",
+            projectPath = projectPath,
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = lastUpdatedEpochMs,
+            isRunning = false,
+            syncState = RemodexThreadSyncState.LIVE,
+            parentThreadId = parentThreadId,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = emptyList(),
         )
     }
 

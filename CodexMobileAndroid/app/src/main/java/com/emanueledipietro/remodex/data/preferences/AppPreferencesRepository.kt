@@ -16,6 +16,11 @@ interface AppPreferencesRepository {
 
     suspend fun setSelectedThreadId(threadId: String?)
 
+    suspend fun setThreadDeleted(
+        threadId: String,
+        deleted: Boolean,
+    )
+
     suspend fun setQueuedDrafts(
         threadId: String,
         drafts: List<RemodexQueuedDraft>,

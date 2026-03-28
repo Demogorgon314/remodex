@@ -20,6 +20,7 @@ import kotlinx.serialization.json.Json
 private const val RemodexPreferencesName = "remodex_preferences"
 private val OnboardingCompletedKey = booleanPreferencesKey("onboarding_completed")
 private val SelectedThreadIdKey = stringPreferencesKey("selected_thread_id")
+private val DeletedThreadIdsJsonKey = stringPreferencesKey("deleted_thread_ids_json")
 private val QueuedDraftsJsonKey = stringPreferencesKey("queued_drafts_json")
 private val RuntimeOverridesJsonKey = stringPreferencesKey("runtime_overrides_json")
 private val RuntimeDefaultsJsonKey = stringPreferencesKey("runtime_defaults_json")
@@ -41,6 +42,10 @@ class DataStoreAppPreferencesRepository(
             val queuedDrafts = preferences[QueuedDraftsJsonKey]
                 ?.let { raw -> json.decodeFromString<QueuedDraftsEnvelope>(raw).threads }
                 ?: emptyMap()
+            val deletedThreadIds = preferences[DeletedThreadIdsJsonKey]
+                ?.let { raw -> json.decodeFromString<DeletedThreadIdsEnvelope>(raw).threadIds }
+                ?.toSet()
+                ?: emptySet()
             val runtimeOverrides = preferences[RuntimeOverridesJsonKey]
                 ?.let { raw -> json.decodeFromString<RuntimeOverridesEnvelope>(raw).threads }
                 ?: emptyMap()
@@ -53,6 +58,7 @@ class DataStoreAppPreferencesRepository(
             AppPreferences(
                 onboardingCompleted = preferences[OnboardingCompletedKey] ?: false,
                 selectedThreadId = preferences[SelectedThreadIdKey],
+                deletedThreadIds = deletedThreadIds,
                 queuedDraftsByThread = queuedDrafts,
                 runtimeOverridesByThread = runtimeOverrides,
                 runtimeDefaults = runtimeDefaults,
@@ -79,6 +85,30 @@ class DataStoreAppPreferencesRepository(
             } else {
                 preferences[SelectedThreadIdKey] = threadId
             }
+        }
+    }
+
+    override suspend fun setThreadDeleted(
+        threadId: String,
+        deleted: Boolean,
+    ) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            val normalizedThreadId = threadId.trim()
+            if (normalizedThreadId.isEmpty()) {
+                return@edit
+            }
+            val current = preferences[DeletedThreadIdsJsonKey]
+                ?.let { raw -> json.decodeFromString<DeletedThreadIdsEnvelope>(raw).threadIds }
+                ?.toMutableSet()
+                ?: mutableSetOf()
+            if (deleted) {
+                current.add(normalizedThreadId)
+            } else {
+                current.remove(normalizedThreadId)
+            }
+            preferences[DeletedThreadIdsJsonKey] = json.encodeToString(
+                DeletedThreadIdsEnvelope(current.toList().sorted()),
+            )
         }
     }
 
@@ -163,6 +193,11 @@ class DataStoreAppPreferencesRepository(
 @Serializable
 private data class QueuedDraftsEnvelope(
     val threads: Map<String, List<RemodexQueuedDraft>> = emptyMap(),
+)
+
+@Serializable
+private data class DeletedThreadIdsEnvelope(
+    val threadIds: List<String> = emptyList(),
 )
 
 @Serializable

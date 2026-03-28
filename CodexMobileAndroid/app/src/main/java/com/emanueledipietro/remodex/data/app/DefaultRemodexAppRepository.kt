@@ -330,6 +330,37 @@ class DefaultRemodexAppRepository(
         )
     }
 
+    private suspend fun persistSelectedThreadIdLocally(threadId: String?) {
+        appPreferencesRepository.setSelectedThreadId(threadId)
+        preferencesState.value = preferencesState.value.copy(selectedThreadId = threadId)
+    }
+
+    private suspend fun setThreadDeletedLocally(
+        threadId: String,
+        deleted: Boolean,
+    ) {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return
+        }
+        appPreferencesRepository.setThreadDeleted(
+            threadId = normalizedThreadId,
+            deleted = deleted,
+        )
+        val updatedDeletedThreadIds = preferencesState.value.deletedThreadIds.toMutableSet().apply {
+            if (deleted) {
+                add(normalizedThreadId)
+            } else {
+                remove(normalizedThreadId)
+            }
+        }
+        applyPreferencesLocally(
+            preferencesState.value.copy(
+                deletedThreadIds = updatedDeletedThreadIds,
+            ),
+        )
+    }
+
     override suspend fun completeOnboarding() {
         appPreferencesRepository.setOnboardingCompleted(true)
         applyPreferencesLocally(
@@ -356,7 +387,7 @@ class DefaultRemodexAppRepository(
         val threadExists = session.value.threads.any { it.id == threadId } ||
             threadSyncService.threads.value.any { it.id == threadId }
         if (threadExists) {
-            appPreferencesRepository.setSelectedThreadId(threadId)
+            persistSelectedThreadIdLocally(threadId)
             sessionState.update { snapshot ->
                 snapshot.copy(
                     selectedThreadId = threadId,
@@ -386,8 +417,14 @@ class DefaultRemodexAppRepository(
                 destinationThreadId = createdThread.id,
             )
         }
-        appPreferencesRepository.setSelectedThreadId(createdThread.id)
+        persistSelectedThreadIdLocally(createdThread.id)
         val selectedThread = selectedThreadSnapshotForThreadId(createdThread.id)
+            ?: createdThread.toCachedThreadRecord(projectThreadTimelineItems(createdThread))
+                .toBaseThreadSummary()
+                .materialize(
+                    preferences = preferencesState.value,
+                    availableModels = resolveAvailableModels(baseThreadsState.value),
+                )
         sessionState.update { snapshot ->
             snapshot.copy(
                 selectedThreadId = createdThread.id,
@@ -432,7 +469,7 @@ class DefaultRemodexAppRepository(
         } else {
             sessionState.value.selectedThreadId
         }
-        appPreferencesRepository.setSelectedThreadId(nextSelectedThreadId)
+        persistSelectedThreadIdLocally(nextSelectedThreadId)
         sessionState.update { snapshot ->
             snapshot.copy(
                 selectedThreadId = nextSelectedThreadId,
@@ -462,23 +499,44 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun deleteThread(threadId: String) {
-        val subtreeIds = collectSubtreeThreadIds(baseThreadsState.value, threadId)
-        val updatedThreads = baseThreadsState.value.filterNot { thread -> thread.id in subtreeIds }
-        refreshThreadsLocally(updatedThreads)
-        val nextSelectedThreadId = if (sessionState.value.selectedThreadId in subtreeIds) {
+        val descendantIds = collectDescendantThreadIds(baseThreadsState.value, threadId)
+        val updatedThreads = baseThreadsState.value.mapNotNull { thread ->
+            when {
+                thread.id == threadId -> null
+                thread.id in descendantIds -> {
+                    thread.copy(
+                        syncState = RemodexThreadSyncState.ARCHIVED_LOCAL,
+                        isRunning = false,
+                        activeTurnId = null,
+                    )
+                }
+                else -> thread
+            }
+        }
+        val nextSelectedThreadId = if (sessionState.value.selectedThreadId == threadId) {
             updatedThreads.firstOrNull { it.syncState == RemodexThreadSyncState.LIVE }?.id
                 ?: updatedThreads.firstOrNull()?.id
         } else {
             sessionState.value.selectedThreadId
         }
-        appPreferencesRepository.setSelectedThreadId(nextSelectedThreadId)
-        sessionState.update { snapshot ->
-            snapshot.copy(
-                selectedThreadId = nextSelectedThreadId,
-                selectedThreadSnapshot = snapshot.threads.firstOrNull { thread -> thread.id == nextSelectedThreadId }
-                    ?: snapshot.threads.firstOrNull(),
-            )
-        }
+        baseThreadsState.value = updatedThreads
+        val resolvedAvailableModels = resolveAvailableModels(updatedThreads)
+        persistSelectedThreadIdLocally(nextSelectedThreadId)
+        publishSelectedThreadSnapshot(
+            baseThreads = updatedThreads,
+            preferences = preferencesState.value,
+            availableModels = resolvedAvailableModels,
+            selectedThreadId = nextSelectedThreadId,
+        )
+        cancelPendingThreadListPublish()
+        publishMaterializedThreads(
+            baseThreads = updatedThreads,
+            preferences = preferencesState.value,
+            availableModels = resolvedAvailableModels,
+            secureConnection = sessionState.value.secureConnection,
+            notificationRegistration = sessionState.value.notificationRegistration,
+        )
+        setThreadDeletedLocally(threadId = threadId, deleted = true)
         threadCommandService.deleteThread(threadId)
     }
 
@@ -960,7 +1018,7 @@ class DefaultRemodexAppRepository(
         forkedThread: ThreadSyncSnapshot,
     ): String {
         refreshBaseThreadsFromSync()
-        appPreferencesRepository.setSelectedThreadId(forkedThread.id)
+        persistSelectedThreadIdLocally(forkedThread.id)
         val selectedThread = selectedThreadSnapshotForThreadId(forkedThread.id)
             ?: forkedThread.toCachedThreadRecord(projectThreadTimelineItems(forkedThread))
                 .toBaseThreadSummary()
@@ -1237,8 +1295,14 @@ class DefaultRemodexAppRepository(
             text = "Continued from archived thread `${thread.id}`",
         )
         refreshBaseThreadsFromSync()
-        appPreferencesRepository.setSelectedThreadId(createdThread.id)
+        persistSelectedThreadIdLocally(createdThread.id)
         val selectedThread = selectedThreadSnapshotForThreadId(createdThread.id)
+            ?: createdThread.toCachedThreadRecord(projectThreadTimelineItems(createdThread))
+                .toBaseThreadSummary()
+                .materialize(
+                    preferences = preferencesState.value,
+                    availableModels = resolveAvailableModels(baseThreadsState.value),
+                )
         sessionState.update { snapshot ->
             snapshot.copy(
                 selectedThreadId = createdThread.id,
@@ -1609,9 +1673,13 @@ class DefaultRemodexAppRepository(
     private fun mergeBaseThreadsFromSync(
         syncedThreads: List<RemodexThreadSummary>,
     ): List<RemodexThreadSummary> {
+        val deletedThreadIds = preferencesState.value.deletedThreadIds
         val localById = baseThreadsState.value.associateBy(RemodexThreadSummary::id)
         val mergedById = linkedMapOf<String, RemodexThreadSummary>()
         syncedThreads.forEach { syncedThread ->
+            if (syncedThread.id in deletedThreadIds) {
+                return@forEach
+            }
             val localThread = localById[syncedThread.id]
             mergedById[syncedThread.id] = if (localThread != null) {
                 syncedThread.copy(
@@ -1626,7 +1694,7 @@ class DefaultRemodexAppRepository(
             }
         }
         baseThreadsState.value.forEach { localThread ->
-            if (mergedById[localThread.id] == null) {
+            if (localThread.id !in deletedThreadIds && mergedById[localThread.id] == null) {
                 mergedById[localThread.id] = localThread
             }
         }
@@ -1714,12 +1782,14 @@ private fun materializeThreads(
     preferences: AppPreferences,
     availableModels: List<RemodexModelOption>,
 ): List<RemodexThreadSummary> {
-    return baseThreads.map { thread ->
-        thread.materialize(
-            preferences = preferences,
-            availableModels = availableModels,
-        )
-    }
+    return baseThreads
+        .filterNot { thread -> thread.id in preferences.deletedThreadIds }
+        .map { thread ->
+            thread.materialize(
+                preferences = preferences,
+                availableModels = availableModels,
+            )
+        }
 }
 
 private fun RemodexThreadSummary.materialize(
@@ -1839,3 +1909,8 @@ private fun collectSubtreeThreadIds(
     collect(rootThreadId)
     return collectedIds
 }
+
+private fun collectDescendantThreadIds(
+    threads: List<RemodexThreadSummary>,
+    rootThreadId: String,
+): Set<String> = collectSubtreeThreadIds(threads, rootThreadId) - rootThreadId
