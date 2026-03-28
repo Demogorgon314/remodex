@@ -1,12 +1,13 @@
 package com.emanueledipietro.remodex.feature.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -30,8 +31,8 @@ fun AboutRemodexScreen(
         modifier = modifier
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(28.dp),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         AboutHeader()
         AboutSection(
@@ -155,23 +156,25 @@ fun AboutRemodexScreen(
 
 @Composable
 private fun AboutHeader() {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text(
-            text = "Remodex",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = "Control Codex from your Android phone.",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        AboutCalloutCard(
-            callout = AboutCallout(
-                accent = Color(0xFF52A7FF),
-                text = "The Codex runtime stays on your Mac. Your phone is a secure remote control connected through a relay.",
-            ),
-        )
+    AboutCard {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(
+                text = "Remodex",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Control Codex from your Android phone.",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            AboutCalloutCard(
+                callout = AboutCallout(
+                    accent = Color(0xFF52A7FF),
+                    text = "The Codex runtime stays on your Mac. Your phone is a secure remote control connected through a relay.",
+                ),
+            )
+        }
     }
 }
 
@@ -182,34 +185,40 @@ private data class AboutCallout(
 
 @Composable
 private fun AboutArchitectureSection() {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        AboutSectionTitle("Architecture")
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+    AboutCard {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            AboutSectionTitle("Architecture")
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.92f),
+                ),
             ) {
-                ArchitectureStep(
-                    from = "Remodex Android",
-                    via = "WebSocket",
-                    to = "Bridge (Mac)",
-                )
-                ArchitectureStep(
-                    from = "Bridge (Mac)",
-                    via = "JSON-RPC",
-                    to = "codex app-server",
-                )
-                ArchitectureStep(
-                    from = "codex app-server",
-                    via = "JSONL rollout",
-                    to = "~/.codex/sessions",
-                    isLast = true,
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ArchitectureStep(
+                        from = "Remodex Android",
+                        via = "WebSocket",
+                        to = "Bridge (Mac)",
+                    )
+                    ArchitectureStep(
+                        from = "Bridge (Mac)",
+                        via = "JSON-RPC",
+                        to = "codex app-server",
+                    )
+                    ArchitectureStep(
+                        from = "codex app-server",
+                        via = "JSONL rollout",
+                        to = "~/.codex/sessions",
+                        isLast = true,
+                    )
+                }
             }
         }
     }
@@ -264,58 +273,60 @@ private fun AboutSection(
     specs: List<Pair<String, String>> = emptyList(),
     callout: AboutCallout? = null,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        AboutSectionTitle(title)
-        paragraphs.forEach { paragraph ->
-            Text(
-                text = paragraph,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (bullets.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                bullets.forEach { bullet ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "->",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = bullet,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+    AboutCard {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            AboutSectionTitle(title)
+            paragraphs.forEach { paragraph ->
+                Text(
+                    text = paragraph,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (bullets.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    bullets.forEach { bullet ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                text = "->",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = bullet,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
-        }
-        if (specs.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                specs.forEach { (label, value) ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = label,
-                            modifier = Modifier.weight(0.4f),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = value,
-                            modifier = Modifier.weight(0.6f),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
+            if (specs.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    specs.forEach { (label, value) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = label,
+                                modifier = Modifier.weight(0.4f),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = value,
+                                modifier = Modifier.weight(0.6f),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
             }
+            callout?.let { AboutCalloutCard(callout = it) }
         }
-        callout?.let { AboutCalloutCard(callout = it) }
     }
 }
 
@@ -323,27 +334,32 @@ private fun AboutSection(
 private fun AboutCalloutCard(
     callout: AboutCallout,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = RoundedCornerShape(14.dp),
-            )
-            .padding(14.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f),
+        ),
     ) {
-        Box(
+        Row(
             modifier = Modifier
-                .size(28.dp)
-                .background(callout.accent.copy(alpha = 0.16f), RoundedCornerShape(8.dp)),
-        )
-        Text(
-            text = callout.text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .background(callout.accent.copy(alpha = 0.16f), RoundedCornerShape(8.dp)),
+            )
+            Text(
+                text = callout.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -353,7 +369,29 @@ private fun AboutSectionTitle(
 ) {
     Text(
         text = title,
-        style = MaterialTheme.typography.titleLarge,
+        style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
     )
+}
+
+@Composable
+private fun AboutCard(
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content,
+        )
+    }
 }
