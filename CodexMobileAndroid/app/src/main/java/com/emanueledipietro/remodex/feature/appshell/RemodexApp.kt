@@ -48,6 +48,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
@@ -962,16 +963,12 @@ private fun MainPane(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = viewModel::confirmContinueOnMac) {
+                    Button(onClick = viewModel::confirmContinueOnMac) {
                         Text("Force Close & Continue")
                     }
                 },
-                title = { Text("Hand off to Mac app") },
-                text = {
-                    Text(
-                        "Remodex will force close and reopen Codex.app on your Mac. Any desktop runs in progress will be stopped, and unsaved draft text there may be lost before this chat is opened.",
-                    )
-                },
+                title = { DesktopHandoffDialogTitle(title = "Hand off to Mac app") },
+                text = { DesktopHandoffConfirmBody() },
             )
         }
 
@@ -979,13 +976,150 @@ private fun MainPane(
             AlertDialog(
                 onDismissRequest = viewModel::dismissDesktopHandoffDialogs,
                 confirmButton = {
-                    TextButton(onClick = viewModel::dismissDesktopHandoffDialogs) {
+                    Button(onClick = viewModel::dismissDesktopHandoffDialogs) {
                         Text("OK")
                     }
                 },
-                title = { Text("Couldn't hand off to Mac app") },
-                text = { Text(message) },
+                title = { DesktopHandoffDialogTitle(title = "Couldn't hand off to Mac app") },
+                text = { DesktopHandoffErrorBody(message = message) },
             )
+        }
+    }
+}
+
+@Composable
+private fun DesktopHandoffDialogTitle(title: String) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            modifier = Modifier.size(44.dp),
+            shape = CircleShape,
+            color = chrome.sendButton.copy(alpha = 0.14f),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Outlined.Computer,
+                    contentDescription = null,
+                    tint = chrome.sendButton,
+                )
+            }
+        }
+        Column(
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "Mac handoff",
+                style = MaterialTheme.typography.labelMedium,
+                color = chrome.secondaryText,
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DesktopHandoffConfirmBody() {
+    val chrome = remodexConversationChrome()
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "Remodex will reopen Codex.app on your Mac and jump straight back into this chat.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.bodyText,
+        )
+        DesktopHandoffFactCard(
+            title = "Desktop run",
+            body = "Any run already in progress on your Mac will be stopped first so the handoff feels like a real device switch.",
+        )
+        DesktopHandoffFactCard(
+            title = "Draft safety",
+            body = "Unsaved draft text on Mac may be lost before the thread is reopened there.",
+        )
+    }
+}
+
+@Composable
+private fun DesktopHandoffErrorBody(message: String) {
+    val chrome = remodexConversationChrome()
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "We couldn't reopen the conversation on your Mac just yet.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.bodyText,
+        )
+        Surface(
+            color = chrome.panelSurface,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shape = RemodexConversationShapes.card,
+        ) {
+            Text(
+                text = message,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DesktopHandoffFactCard(
+    title: String,
+    body: String,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        color = chrome.panelSurface,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shape = RemodexConversationShapes.card,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Surface(
+                modifier = Modifier.size(10.dp),
+                shape = CircleShape,
+                color = chrome.sendButton,
+            ) {}
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                Text(
+                    text = body,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                )
+            }
         }
     }
 }
