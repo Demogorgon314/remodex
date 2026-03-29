@@ -274,6 +274,109 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun composerShowsReasoningTriggerIcon() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(RemodexComposerAutocompleteState()),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ComposerReasoningTriggerIconTag).assertIsDisplayed()
+    }
+
+    @Test
+    fun tappingExpandedReasoningTriggerCollapsesMenu() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(RemodexComposerAutocompleteState()),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ComposerReasoningTriggerTag).performClick()
+        composeRule.onNodeWithText("Speed").assertIsDisplayed()
+        composeRule.onNodeWithTag(ComposerReasoningTriggerTag).performClick()
+        composeRule.onAllNodesWithText("Speed").assertCountEquals(0)
+    }
+
+    @Test
     fun activeVoiceRecordingShowsCapsule() {
         composeRule.setContent {
             RemodexTheme {

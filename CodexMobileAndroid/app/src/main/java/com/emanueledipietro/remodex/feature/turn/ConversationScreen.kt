@@ -94,7 +94,7 @@ import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
@@ -162,6 +162,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -238,6 +239,7 @@ import kotlinx.coroutines.flow.drop
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import com.emanueledipietro.remodex.R
 
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
@@ -473,6 +475,8 @@ internal const val ComposerSendButtonTag = "composer_send_button"
 internal const val ComposerStopButtonTag = "composer_stop_button"
 internal const val ComposerVoiceButtonTag = "composer_voice_button"
 internal const val ComposerVoiceRecordingCapsuleTag = "composer_voice_recording_capsule"
+internal const val ComposerReasoningTriggerTag = "composer_reasoning_trigger"
+internal const val ComposerReasoningTriggerIconTag = "composer_reasoning_trigger_icon"
 internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
@@ -3696,7 +3700,7 @@ private fun ComposerCard(
                         Box {
                             ConversationCircleButton(
                                 modifier = Modifier.testTag(ComposerSendButtonTag),
-                                icon = Icons.Outlined.KeyboardArrowUp,
+                                icon = Icons.Outlined.ArrowUpward,
                                 contentDescription = composer.sendLabel,
                                 onClick = onSendPrompt,
                                 enabled = composer.canSend,
@@ -4662,7 +4666,16 @@ private fun <T> CompactRuntimeSelector(
     Box(modifier = modifier) {
         ComposerMenuTrigger(
             title = title,
-            leadingIcon = leadingIcon,
+            leadingIcon = leadingIcon?.let { icon ->
+                {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = chrome.secondaryText,
+                    )
+                }
+            },
             onClick = { expanded = !expanded },
         )
         ComposerDropdownMenu(
@@ -4717,6 +4730,17 @@ private fun ReasoningRuntimeSelector(
     Box(modifier = modifier) {
         ComposerMenuTrigger(
             title = title,
+            modifier = Modifier.testTag(ComposerReasoningTriggerTag),
+            leadingIcon = {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_reasoning_brain),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(12.dp)
+                        .testTag(ComposerReasoningTriggerIconTag),
+                    tint = chrome.secondaryText,
+                )
+            },
             onClick = { expanded = !expanded },
         )
         ComposerDropdownMenu(
@@ -4787,7 +4811,7 @@ private fun ComposerMenuTrigger(
     title: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    leadingIcon: ImageVector? = null,
+    leadingIcon: (@Composable () -> Unit)? = null,
 ) {
     val chrome = remodexConversationChrome()
     val performLightHaptic = rememberLightImpactHaptic()
@@ -4803,14 +4827,7 @@ private fun ComposerMenuTrigger(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        leadingIcon?.let { icon ->
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(12.dp),
-                tint = chrome.secondaryText,
-            )
-        }
+        leadingIcon?.invoke()
         Text(
             text = title,
             modifier = Modifier.weight(1f, fill = false),
@@ -4871,7 +4888,7 @@ private fun ComposerDropdownMenu(
             )
         },
         onDismissRequest = onDismissRequest,
-        properties = PopupProperties(focusable = false),
+        properties = PopupProperties(focusable = true),
     ) {
         AnimatedVisibility(
             visibleState = transitionState,
