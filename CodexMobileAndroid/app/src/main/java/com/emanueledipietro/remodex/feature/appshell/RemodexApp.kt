@@ -1001,6 +1001,7 @@ private fun MainPane(
                         onRefreshSettingsStatus = viewModel::refreshSettingsStatus,
                         onRefreshUsageStatus = viewModel::refreshUsageStatus,
                         onLogoutGptAccount = viewModel::logoutGptAccount,
+                        onOpenScanner = onOpenScanner,
                         onDisconnect = viewModel::disconnect,
                         onForgetTrustedMac = viewModel::forgetTrustedMac,
                         onSetMacNickname = viewModel::setMacNickname,

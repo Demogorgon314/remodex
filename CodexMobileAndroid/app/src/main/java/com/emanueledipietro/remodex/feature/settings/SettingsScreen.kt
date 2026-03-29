@@ -39,7 +39,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -102,6 +101,7 @@ fun SettingsScreen(
     onRefreshSettingsStatus: () -> Unit,
     onRefreshUsageStatus: () -> Unit,
     onLogoutGptAccount: () -> Unit,
+    onOpenScanner: () -> Unit,
     onDisconnect: () -> Unit,
     onForgetTrustedMac: () -> Unit,
     onSetMacNickname: (String, String?) -> Unit,
@@ -111,6 +111,7 @@ fun SettingsScreen(
 ) {
     val uriHandler = LocalUriHandler.current
     var isShowingGptInfo by rememberSaveable { mutableStateOf(false) }
+    var isShowingGptLogoutConfirm by rememberSaveable { mutableStateOf(false) }
     var isShowingMacNameDialog by rememberSaveable { mutableStateOf(false) }
     val archivedThreads = remember(uiState.threads) {
         uiState.threads.filter { thread -> thread.syncState.name == "ARCHIVED_LOCAL" }
@@ -150,6 +151,16 @@ fun SettingsScreen(
     if (isShowingGptInfo) {
         SettingsGptMacInfoDialog(
             onDismiss = { isShowingGptInfo = false },
+        )
+    }
+
+    if (isShowingGptLogoutConfirm) {
+        SettingsGptLogoutConfirmDialog(
+            onDismiss = { isShowingGptLogoutConfirm = false },
+            onConfirm = {
+                isShowingGptLogoutConfirm = false
+                onLogoutGptAccount()
+            },
         )
     }
 
@@ -228,64 +239,14 @@ fun SettingsScreen(
             }
         }
 
-        SettingsCard(title = "ChatGPT") {
-            SettingsStatusRow(
-                icon = gptStatusIcon(uiState.gptAccountSnapshot),
-                iconTint = gptStatusColor(uiState.gptAccountSnapshot),
-                title = "Status",
-                statusLabel = uiState.gptAccountSnapshot.statusLabel,
-            )
-
-            uiState.gptAccountSnapshot.detailText?.let { detail ->
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            gptHintText(
-                snapshot = uiState.gptAccountSnapshot,
-                isConnected = uiState.isConnected,
-            )?.let { hint ->
-                Text(
-                    text = hint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            uiState.gptAccountErrorMessage?.takeIf(String::isNotBlank)?.let { errorMessage ->
-                Text(
-                    text = errorMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            if (!uiState.gptAccountSnapshot.isAuthenticated) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    IconButton(onClick = { isShowingGptInfo = true }) {
-                        Icon(
-                            imageVector = Icons.Outlined.Info,
-                            contentDescription = "How ChatGPT voice sign-in works",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            if (uiState.gptAccountSnapshot.canLogout) {
-                SettingsButton(
-                    title = "Log out",
-                    role = SettingsButtonRole.DESTRUCTIVE,
-                    onClick = onLogoutGptAccount,
-                )
-            }
-        }
+        SettingsChatGptCard(
+            snapshot = uiState.gptAccountSnapshot,
+            errorMessage = uiState.gptAccountErrorMessage,
+            isConnected = uiState.isConnected,
+            onShowInfo = { isShowingGptInfo = true },
+            onRefresh = onRefreshSettingsStatus,
+            onRequestLogout = { isShowingGptLogoutConfirm = true },
+        )
 
         SettingsCard(title = "Bridge Version") {
             SettingsStatusRow(
@@ -490,9 +451,20 @@ fun SettingsScreen(
 
                 trustedMac != null -> {
                     SettingsButton(
+                        title = "Scan New QR Code",
+                        onClick = onOpenScanner,
+                    )
+                    SettingsButton(
                         title = "Forget Pair",
                         role = SettingsButtonRole.DESTRUCTIVE,
                         onClick = onForgetTrustedMac,
+                    )
+                }
+
+                else -> {
+                    SettingsButton(
+                        title = "Scan QR Code",
+                        onClick = onOpenScanner,
                     )
                 }
             }
@@ -530,6 +502,187 @@ private fun SettingsCard(
                 content = content,
             )
         }
+    }
+}
+
+@Composable
+private fun SettingsChatGptCard(
+    snapshot: RemodexGptAccountSnapshot,
+    errorMessage: String?,
+    isConnected: Boolean,
+    onShowInfo: () -> Unit,
+    onRefresh: () -> Unit,
+    onRequestLogout: () -> Unit,
+) {
+    val hintText = gptHintText(
+        snapshot = snapshot,
+        isConnected = isConnected,
+    )
+    val shouldShowRefreshAction = !snapshot.isAuthenticated ||
+        !snapshot.isVoiceTokenReady ||
+        !errorMessage.isNullOrBlank()
+
+    SettingsCard(title = "ChatGPT") {
+        SettingsGptHeroRow(
+            snapshot = snapshot,
+            summary = gptSummaryText(
+                snapshot = snapshot,
+                isConnected = isConnected,
+            ),
+        )
+
+        snapshot.detailText?.let { detail ->
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        hintText?.let { hint ->
+            SettingsInlineMessageCard(
+                text = hint,
+                tone = gptHintTone(snapshot = snapshot),
+            )
+        }
+
+        errorMessage?.takeIf(String::isNotBlank)?.let { message ->
+            SettingsInlineMessageCard(
+                text = message,
+                tone = SettingsInlineMessageTone.ERROR,
+            )
+        }
+
+        if (!snapshot.isAuthenticated) {
+            SettingsNavigationRow(
+                title = "How ChatGPT sign-in works",
+                onClick = onShowInfo,
+                leading = {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+            )
+        }
+
+        if (shouldShowRefreshAction) {
+            SettingsButton(
+                title = "Refresh status",
+                onClick = onRefresh,
+            )
+        }
+
+        if (snapshot.canLogout) {
+            SettingsButton(
+                title = "Log out on Mac",
+                role = SettingsButtonRole.DESTRUCTIVE,
+                onClick = onRequestLogout,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsGptHeroRow(
+    snapshot: RemodexGptAccountSnapshot,
+    summary: String,
+) {
+    val iconTint = gptStatusColor(snapshot)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = iconTint.copy(alpha = 0.12f),
+            border = BorderStroke(
+                width = 1.dp,
+                color = iconTint.copy(alpha = 0.18f),
+            ),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = gptStatusIcon(snapshot),
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                text = "Voice on your Mac",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SettingsStatusPill(label = snapshot.statusLabel)
+    }
+}
+
+private enum class SettingsInlineMessageTone {
+    NEUTRAL,
+    WARNING,
+    ERROR,
+}
+
+@Composable
+private fun SettingsInlineMessageCard(
+    text: String,
+    tone: SettingsInlineMessageTone,
+) {
+    val (containerColor, borderColor, textColor) = when (tone) {
+        SettingsInlineMessageTone.NEUTRAL -> Triple(
+            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.92f),
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f),
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SettingsInlineMessageTone.WARNING -> Triple(
+            Color(0xFFF29D38).copy(alpha = 0.12f),
+            Color(0xFFF29D38).copy(alpha = 0.24f),
+            MaterialTheme.colorScheme.onSurface,
+        )
+        SettingsInlineMessageTone.ERROR -> Triple(
+            MaterialTheme.colorScheme.error.copy(alpha = 0.08f),
+            MaterialTheme.colorScheme.error.copy(alpha = 0.18f),
+            MaterialTheme.colorScheme.error,
+        )
+    }
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = borderColor,
+        ),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = textColor,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+        )
     }
 }
 
@@ -1113,6 +1266,46 @@ private fun SettingsGptMacInfoDialog(
 }
 
 @Composable
+private fun SettingsGptLogoutConfirmDialog(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = "Log out",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        title = {
+            Text("Log out of ChatGPT?")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "This removes the ChatGPT session that Remodex reads from your paired Mac bridge.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "Voice transcription will stop working until you sign in again on your Mac.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+    )
+}
+
+@Composable
 private fun GptSetupStep(
     number: String,
     title: String,
@@ -1232,6 +1425,43 @@ private fun gptHintText(
         return "Connect to your bridge first."
     }
     return "ChatGPT voice uses the account already signed in on your Mac."
+}
+
+private fun gptSummaryText(
+    snapshot: RemodexGptAccountSnapshot,
+    isConnected: Boolean,
+): String {
+    if (snapshot.needsReauth) {
+        return "Refresh the ChatGPT sign-in on your paired Mac."
+    }
+    if (snapshot.isAuthenticated && snapshot.isVoiceTokenReady) {
+        return "Using the ChatGPT session from your paired Mac bridge."
+    }
+    if (snapshot.isAuthenticated) {
+        return "Signed in. Waiting for voice sync from your Mac."
+    }
+    if (snapshot.hasActiveLogin && isConnected) {
+        return "Finish the browser sign-in flow on your paired Mac."
+    }
+    if (snapshot.hasActiveLogin) {
+        return "Reconnect to your bridge to continue sign-in."
+    }
+    if (!isConnected) {
+        return "Connect to your paired Mac before checking ChatGPT voice."
+    }
+    return "Sign in to ChatGPT on the paired Mac, not on this phone."
+}
+
+private fun gptHintTone(
+    snapshot: RemodexGptAccountSnapshot,
+): SettingsInlineMessageTone {
+    return when {
+        snapshot.needsReauth -> SettingsInlineMessageTone.WARNING
+        snapshot.status == RemodexGptAccountStatus.EXPIRED -> SettingsInlineMessageTone.ERROR
+        snapshot.isAuthenticated && !snapshot.isVoiceTokenReady -> SettingsInlineMessageTone.NEUTRAL
+        snapshot.status == RemodexGptAccountStatus.LOGIN_PENDING -> SettingsInlineMessageTone.WARNING
+        else -> SettingsInlineMessageTone.NEUTRAL
+    }
 }
 
 private fun gptStatusIcon(
