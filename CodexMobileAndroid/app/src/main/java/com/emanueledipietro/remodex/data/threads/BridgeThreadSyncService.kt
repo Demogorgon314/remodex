@@ -226,6 +226,7 @@ class BridgeThreadSyncService(
     private val lifecycleCatchupJobByThread = mutableMapOf<String, Job>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
+    private var supportsTurnCollaborationMode = true
 
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
@@ -239,6 +240,7 @@ class BridgeThreadSyncService(
                     if (initializedAttempt != snapshot.attempt) {
                         initializedAttempt = snapshot.attempt
                         supportsServiceTier = true
+                        supportsTurnCollaborationMode = true
                         initializeSession()
                         refreshAvailableModels()
                         refreshThreads()
@@ -246,6 +248,7 @@ class BridgeThreadSyncService(
                 } else {
                     initializedAttempt = null
                     supportsServiceTier = true
+                    supportsTurnCollaborationMode = true
                     lifecycleCatchupJobByThread.values.forEach(Job::cancel)
                     lifecycleCatchupJobByThread.clear()
                     activeTurnIdByThread.clear()
@@ -647,6 +650,7 @@ class BridgeThreadSyncService(
         }
 
         var imageUrlKey = "url"
+        var includeCollaborationMode = shouldIncludeCollaborationMode(runtimeConfig.planningMode)
         var turnStartResponse: RpcMessage? = null
         val response = try {
             retryAfterThreadMaterialization {
@@ -664,6 +668,7 @@ class BridgeThreadSyncService(
                                     runtimeConfig = runtimeConfig,
                                     includeServiceTier = includeServiceTier,
                                     imageUrlKey = imageUrlKey,
+                                    includeCollaborationMode = includeCollaborationMode,
                                 )
                             },
                         )
@@ -673,6 +678,10 @@ class BridgeThreadSyncService(
                             shouldRetryWithImageUrlFieldFallback(error)
                         ) {
                             imageUrlKey = "image_url"
+                            continue
+                        }
+                        if (consumeUnsupportedCollaborationMode(error, includeCollaborationMode)) {
+                            includeCollaborationMode = false
                             continue
                         }
                         throw error
@@ -1681,6 +1690,10 @@ class BridgeThreadSyncService(
         return supportsServiceTier && serviceTier != null
     }
 
+    private fun shouldIncludeCollaborationMode(planningMode: RemodexPlanningMode): Boolean {
+        return supportsTurnCollaborationMode && planningMode == RemodexPlanningMode.PLAN
+    }
+
     private fun consumeUnsupportedServiceTier(
         error: Throwable,
         includeServiceTier: Boolean,
@@ -1713,6 +1726,17 @@ class BridgeThreadSyncService(
 
     private fun shouldRetryWithImageUrlFieldFallback(error: Throwable): Boolean {
         return shouldRetryWithImageUrlFieldFallbackValue(error)
+    }
+
+    private fun consumeUnsupportedCollaborationMode(
+        error: Throwable,
+        includeCollaborationMode: Boolean,
+    ): Boolean {
+        if (!includeCollaborationMode || !shouldRetryWithoutCollaborationMode(error)) {
+            return false
+        }
+        supportsTurnCollaborationMode = false
+        return true
     }
 
     private suspend fun <T> retryAfterThreadMaterialization(block: suspend () -> T): T {
@@ -5525,6 +5549,7 @@ class BridgeThreadSyncService(
         runtimeConfig: RemodexRuntimeConfig,
         includeServiceTier: Boolean,
         imageUrlKey: String,
+        includeCollaborationMode: Boolean,
     ): JsonObject {
         val inputItems = buildJsonArray {
             attachments.forEach { attachment ->
@@ -5566,8 +5591,32 @@ class BridgeThreadSyncService(
             if (includeServiceTier) {
                 runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
             }
-            if (runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
-                put("collaborationMode", JsonPrimitive("plan"))
+            if (includeCollaborationMode) {
+                buildCollaborationModePayload(runtimeConfig)?.let { put("collaborationMode", it) }
+            }
+        }
+    }
+
+    private fun buildCollaborationModePayload(
+        runtimeConfig: RemodexRuntimeConfig,
+    ): JsonObject? {
+        if (runtimeConfig.planningMode != RemodexPlanningMode.PLAN) {
+            return null
+        }
+
+        val settings = buildJsonObject {
+            runtimeConfig.selectedModelId?.takeIf(String::isNotBlank)?.let {
+                put("model", JsonPrimitive(it))
+            }
+            runtimeConfig.reasoningEffort?.takeIf(String::isNotBlank)?.let {
+                put("reasoning_effort", JsonPrimitive(it))
+            }
+        }
+
+        return buildJsonObject {
+            put("mode", JsonPrimitive("plan"))
+            if (settings.isNotEmpty()) {
+                put("settings", settings)
             }
         }
     }
@@ -6030,6 +6079,27 @@ internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolea
         || message.contains("unknown field")
         || message.contains("expected")
         || message.contains("invalid")
+}
+
+internal fun shouldRetryWithoutCollaborationMode(error: Throwable): Boolean {
+    val rpcError = error as? RpcError ?: return false
+    if (rpcError.code != -32600 && rpcError.code != -32602) {
+        return false
+    }
+    val message = rpcError.message.lowercase(Locale.ROOT)
+    if (!message.contains("collaborationmode") && !message.contains("collaboration_mode")) {
+        return false
+    }
+    return message.contains("experimentalapi")
+        || message.contains("unsupported")
+        || message.contains("unknown")
+        || message.contains("unexpected")
+        || message.contains("unrecognized")
+        || message.contains("invalid")
+        || message.contains("expected")
+        || message.contains("field")
+        || message.contains("mode")
+        || message.contains("type")
 }
 
 internal fun shouldRetryAfterThreadMaterializationValue(error: Throwable): Boolean {

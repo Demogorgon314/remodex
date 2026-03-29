@@ -23,6 +23,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -2141,6 +2142,179 @@ class BridgeThreadSyncServiceTest {
                     item.text.contains("Retry the first turn after rollout materializes.")
                 },
             )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `send prompt encodes plan collaboration mode using object payload like ios`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-plan-mode",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var capturedCollaborationMode: JsonObject? = null
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-plan-mode"))
+                                put("title", JsonPrimitive("Plan thread"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to { message ->
+                    capturedCollaborationMode = message.params
+                        ?.jsonObjectOrNull
+                        ?.get("collaborationMode")
+                        ?.jsonObjectOrNull
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-plan-mode"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.sendPrompt(
+                threadId = "thread-plan-mode",
+                prompt = "Plan the Android fix.",
+                runtimeConfig = RemodexRuntimeConfig(
+                    planningMode = RemodexPlanningMode.PLAN,
+                    selectedModelId = "gpt-5.4",
+                    reasoningEffort = "high",
+                ),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertEquals("plan", capturedCollaborationMode?.firstString("mode"))
+            val settings = capturedCollaborationMode
+                ?.get("settings")
+                ?.jsonObjectOrNull
+            assertEquals(
+                "gpt-5.4",
+                settings?.firstString("model"),
+            )
+            assertEquals(
+                "high",
+                settings?.firstString("reasoning_effort"),
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `send prompt retries without collaboration mode when runtime rejects field`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-plan-mode-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val capturedModes = mutableListOf<JsonObject?>()
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-plan-mode-fallback"))
+                                put("title", JsonPrimitive("Plan fallback thread"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to { message ->
+                    capturedModes += message.params
+                        ?.jsonObjectOrNull
+                        ?.get("collaborationMode")
+                        ?.jsonObjectOrNull
+                    if (capturedModes.size == 1) {
+                        throw RpcError(
+                            code = -32600,
+                            message = "Invalid request: invalid type for turn/start.collaborationMode, expected struct CollaborationMode",
+                        )
+                    }
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-plan-mode-fallback"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.sendPrompt(
+                threadId = "thread-plan-mode-fallback",
+                prompt = "Retry without plan payload if needed.",
+                runtimeConfig = RemodexRuntimeConfig(
+                    planningMode = RemodexPlanningMode.PLAN,
+                    selectedModelId = "gpt-5.4",
+                    reasoningEffort = "high",
+                ),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertEquals(2, capturedModes.size)
+            assertEquals("plan", capturedModes.first()?.firstString("mode"))
+            assertNull(capturedModes.last())
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
