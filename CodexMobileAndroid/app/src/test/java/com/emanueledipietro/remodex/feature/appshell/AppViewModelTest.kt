@@ -746,6 +746,28 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `create thread explicitly selects the new thread when repository leaves selection unchanged`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Existing thread")),
+                selectedThreadId = "thread-1",
+                selectedThreadSnapshot = threadSummary(id = "thread-1", title = "Existing thread"),
+            )
+            createThreadSelectsCreatedThread = false
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.createThread("/tmp/new-thread")
+        advanceUntilIdle()
+
+        assertEquals(listOf("/tmp/new-thread" to null), repository.createThreadRequests)
+        assertEquals(listOf("thread-created"), repository.selectedThreadRequests)
+        assertEquals("thread-created", viewModel.uiState.value.selectedThread?.id)
+        assertEquals("/tmp/new-thread", viewModel.uiState.value.selectedThread?.projectPath)
+    }
+
+    @Test
     fun `send clears composer immediately and restores full state on failure`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -1601,6 +1623,7 @@ class AppViewModelTest {
             alreadyExisted = false,
         )
         var nextCreatedThreadId = "thread-created"
+        var createThreadSelectsCreatedThread = true
         var previewResult = RemodexRevertPreviewResult(
             canRevert = true,
             affectedFiles = listOf("src/App.kt"),
@@ -1665,8 +1688,16 @@ class AppViewModelTest {
             )
             snapshot.value = snapshot.value.copy(
                 threads = listOf(createdThread) + snapshot.value.threads,
-                selectedThreadId = createdThread.id,
-                selectedThreadSnapshot = createdThread,
+                selectedThreadId = if (createThreadSelectsCreatedThread) {
+                    createdThread.id
+                } else {
+                    snapshot.value.selectedThreadId
+                },
+                selectedThreadSnapshot = if (createThreadSelectsCreatedThread) {
+                    createdThread
+                } else {
+                    snapshot.value.selectedThreadSnapshot
+                },
             )
         }
 

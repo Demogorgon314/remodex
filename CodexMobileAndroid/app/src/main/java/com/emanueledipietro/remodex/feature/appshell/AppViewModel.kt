@@ -640,8 +640,14 @@ class AppViewModel(
 
     fun createThread(preferredProjectPath: String? = null) {
         viewModelScope.launch {
+            val previousThreadIds = repository.session.value.threads
+                .mapTo(mutableSetOf(), RemodexThreadSummary::id)
             repository.createThread(preferredProjectPath)
-            repository.session.value.selectedThread?.id?.let(::refreshGitState)
+            val createdThreadId = resolveCreatedThreadId(previousThreadIds)
+            if (createdThreadId != null && repository.session.value.selectedThread?.id != createdThreadId) {
+                repository.selectThread(createdThreadId)
+            }
+            (createdThreadId ?: repository.session.value.selectedThread?.id)?.let(::refreshGitState)
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
         }
@@ -656,6 +662,14 @@ class AppViewModel(
                 repository.hydrateThread(threadId)
             }
         }
+    }
+
+    private fun resolveCreatedThreadId(previousThreadIds: Set<String>): String? {
+        return repository.session.value.selectedThread?.id
+            ?.takeIf { selectedThreadId -> selectedThreadId !in previousThreadIds }
+            ?: repository.session.value.threads.firstOrNull { thread ->
+                thread.id !in previousThreadIds
+            }?.id
     }
 
     private suspend fun withTrackedThreadHydration(
@@ -764,13 +778,17 @@ class AppViewModel(
                 bumpComposerSendDismissSignal(threadId)
                 clearComposer(threadId)
                 try {
+                    val previousThreadIds = repository.session.value.threads
+                        .mapTo(mutableSetOf(), RemodexThreadSummary::id)
                     repository.createThread(
                         preferredProjectPath = selectedThread.projectPath.ifBlank { null },
                         inheritRuntimeFromThreadId = threadId,
                     )
-                    val reviewThreadId = repository.session.value.selectedThread?.id
-                        ?.takeIf { createdThreadId -> createdThreadId != threadId }
+                    val reviewThreadId = resolveCreatedThreadId(previousThreadIds)
                         ?: error("Could not create a review thread.")
+                    if (repository.session.value.selectedThread?.id != reviewThreadId) {
+                        repository.selectThread(reviewThreadId)
+                    }
                     repository.startCodeReview(
                         threadId = reviewThreadId,
                         target = reviewSelection.target,
