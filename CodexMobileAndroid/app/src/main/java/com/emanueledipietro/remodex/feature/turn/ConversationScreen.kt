@@ -1243,6 +1243,34 @@ fun ConversationScreen(
                                     verticalArrangement = Arrangement.spacedBy(0.dp),
                                 ) {
                                     AnimatedVisibility(
+                                        visible = uiState.composer.voice.isRecording,
+                                        enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
+                                            slideInVertically(
+                                                animationSpec = tween(durationMillis = 180),
+                                                initialOffsetY = { fullHeight -> fullHeight / 6 },
+                                            ) +
+                                            scaleIn(
+                                                animationSpec = tween(durationMillis = 160),
+                                                initialScale = 0.98f,
+                                            ),
+                                        exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                                            slideOutVertically(
+                                                animationSpec = tween(durationMillis = 120),
+                                                targetOffsetY = { fullHeight -> fullHeight / 8 },
+                                            ) +
+                                            scaleOut(
+                                                animationSpec = tween(durationMillis = 110),
+                                                targetScale = 0.985f,
+                                            ),
+                                    ) {
+                                        VoiceRecordingCapsule(
+                                            voiceUiState = uiState.composer.voice,
+                                            onCancel = onCancelVoiceRecording,
+                                            modifier = Modifier.padding(bottom = 6.dp),
+                                        )
+                                    }
+
+                                    AnimatedVisibility(
                                         visible = autocompleteVisible,
                                         enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
                                             slideInVertically(
@@ -1289,7 +1317,6 @@ fun ConversationScreen(
                                         onOpenAttachmentPicker = onOpenAttachmentPicker,
                                         onOpenCameraCapture = onOpenCameraCapture,
                                         onTapVoiceButton = onTapVoiceButton,
-                                        onCancelVoiceRecording = onCancelVoiceRecording,
                                         onRemoveAttachment = onRemoveAttachment,
                                         onSelectFileAutocomplete = onSelectFileAutocomplete,
                                         onRemoveMentionedFile = onRemoveMentionedFile,
@@ -3452,7 +3479,6 @@ private fun ComposerCard(
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
     onTapVoiceButton: () -> Unit,
-    onCancelVoiceRecording: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
@@ -3527,14 +3553,6 @@ private fun ComposerCard(
                 .padding(top = 4.dp, bottom = 4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            AnimatedVisibility(visible = composer.voice.isRecording) {
-                VoiceRecordingCapsule(
-                    voiceUiState = composer.voice,
-                    onCancel = onCancelVoiceRecording,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
-            }
-
             if (composer.attachments.isNotEmpty() ||
                 composer.mentionedFiles.isNotEmpty() ||
                 composer.mentionedSkills.isNotEmpty() ||
