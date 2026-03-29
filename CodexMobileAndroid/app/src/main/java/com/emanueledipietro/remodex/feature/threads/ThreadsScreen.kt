@@ -41,6 +41,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -257,6 +258,7 @@ fun ThreadsScreen(
                                         onRevealAll = {
                                             revealedProjectGroupIds = revealedProjectGroupIds + group.id
                                         },
+                                        isCreatingThread = uiState.isCreatingThread,
                                         onCreateThread = { onCreateThread(group.projectPath) },
                                         onArchiveProject = {
                                             group.projectPath?.let(onArchiveProject)
@@ -321,8 +323,12 @@ fun ThreadsScreen(
     if (isNewChatSheetPresented) {
         SidebarNewChatSheet(
             projectGroups = newChatProjectGroups,
+            isCreatingThread = uiState.isCreatingThread,
             onDismiss = { isNewChatSheetPresented = false },
             onCreateThread = { projectPath ->
+                if (uiState.isCreatingThread) {
+                    return@SidebarNewChatSheet
+                }
                 isNewChatSheetPresented = false
                 onCreateThread(projectPath)
             },
@@ -393,6 +399,7 @@ private fun SidebarHeader(
 
         SidebarNewChatButton(
             enabled = uiState.isConnected,
+            isLoading = uiState.isCreatingThread,
             onClick = onOpenNewChat,
         )
 
@@ -421,29 +428,39 @@ private fun SidebarHeader(
 @Composable
 private fun SidebarNewChatButton(
     enabled: Boolean,
+    isLoading: Boolean,
     onClick: () -> Unit,
 ) {
+    val isEnabled = enabled && !isLoading
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .testTag(SidebarNewChatButtonTag)
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            .alpha(if (enabled) 1f else 0.35f)
+            .alpha(if (isEnabled) 1f else 0.35f)
             .combinedClickable(
-                enabled = enabled,
+                enabled = isEnabled,
                 role = Role.Button,
                 onClick = onClick,
             ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(
-            imageVector = Icons.Outlined.Add,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurface,
-        )
+        if (isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Outlined.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
         Text(
-            text = "New Chat",
+            text = if (isLoading) "Creating..." else "New Chat",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface,
@@ -454,6 +471,7 @@ private fun SidebarNewChatButton(
 @Composable
 private fun SidebarNewChatSheet(
     projectGroups: List<SidebarThreadGroup>,
+    isCreatingThread: Boolean,
     onDismiss: () -> Unit,
     onCreateThread: (String?) -> Unit,
 ) {
@@ -557,6 +575,7 @@ private fun SidebarNewChatSheet(
                                                 SidebarNewChatProjectRow(
                                                     label = group.label,
                                                     iconSystemName = group.iconSystemName,
+                                                    enabled = !isCreatingThread,
                                                     onClick = { onCreateThread(group.projectPath) },
                                                 )
                                                 if (index < projectGroups.lastIndex) {
@@ -574,6 +593,7 @@ private fun SidebarNewChatSheet(
 
                         item {
                             SidebarNewChatCloudCard(
+                                enabled = !isCreatingThread,
                                 onClick = { onCreateThread(null) },
                             )
                         }
@@ -596,12 +616,15 @@ private fun SidebarNewChatSheet(
 private fun SidebarNewChatProjectRow(
     label: String,
     iconSystemName: String,
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.4f)
             .combinedClickable(
+                enabled = enabled,
                 role = Role.Button,
                 onClick = onClick,
             )
@@ -624,6 +647,7 @@ private fun SidebarNewChatProjectRow(
 
 @Composable
 private fun SidebarNewChatCloudCard(
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
@@ -636,7 +660,9 @@ private fun SidebarNewChatCloudCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .alpha(if (enabled) 1f else 0.4f)
                 .combinedClickable(
+                    enabled = enabled,
                     role = Role.Button,
                     onClick = onClick,
                 )
@@ -765,6 +791,7 @@ private fun ProjectGroupSection(
     expanded: Boolean,
     revealAll: Boolean,
     expandedSubagentParentIds: Set<String>,
+    isCreatingThread: Boolean,
     onToggleExpanded: () -> Unit,
     onToggleSubagentExpansion: (String) -> Unit,
     onRevealAll: () -> Unit,
@@ -822,6 +849,8 @@ private fun ProjectGroupSection(
             ProjectHeaderActionButton(
                 icon = Icons.Outlined.Add,
                 contentDescription = "New conversation in ${group.label}",
+                enabled = !isCreatingThread,
+                isLoading = isCreatingThread,
                 onClick = onCreateThread,
                 modifier = Modifier.align(Alignment.CenterEnd),
             )
@@ -871,11 +900,15 @@ private fun ProjectGroupSection(
 private fun ProjectHeaderActionButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
+    enabled: Boolean,
+    isLoading: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
-        modifier = modifier.size(30.dp),
+        modifier = modifier
+            .size(30.dp)
+            .alpha(if (enabled) 1f else 0.45f),
         shape = CircleShape,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
     ) {
@@ -883,17 +916,26 @@ private fun ProjectHeaderActionButton(
             modifier = Modifier
                 .fillMaxSize()
                 .clickable(
+                    enabled = enabled,
                     onClickLabel = contentDescription,
                     onClick = onClick,
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                modifier = Modifier.size(12.dp),
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = MaterialTheme.colorScheme.onSurface,
-            )
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            } else {
+                Icon(
+                    modifier = Modifier.size(12.dp),
+                    imageVector = icon,
+                    contentDescription = contentDescription,
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }

@@ -888,6 +888,92 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `create thread keeps showing the current thread while creation is still in flight`() = runTest {
+        val existingThread = threadSummary(id = "thread-1", title = "Existing thread")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(existingThread),
+                selectedThreadId = existingThread.id,
+                selectedThreadSnapshot = existingThread,
+            )
+            createThreadDelayMs = 1_000L
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.createThread("/tmp/new-thread")
+        runCurrent()
+        advanceTimeBy(100L)
+
+        assertEquals(listOf("/tmp/new-thread" to null), repository.createThreadRequests)
+        assertTrue(viewModel.uiState.value.isCreatingThread)
+        assertEquals("thread-1", viewModel.uiState.value.selectedThread?.id)
+        assertEquals("Existing thread", viewModel.uiState.value.selectedThread?.title)
+
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isCreatingThread)
+        assertEquals("thread-created", viewModel.uiState.value.selectedThread?.id)
+        assertEquals("/tmp/new-thread", viewModel.uiState.value.selectedThread?.projectPath)
+    }
+
+    @Test
+    fun `create thread completion callback waits for the new thread id`() = runTest {
+        val existingThread = threadSummary(id = "thread-1", title = "Existing thread")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(existingThread),
+                selectedThreadId = existingThread.id,
+                selectedThreadSnapshot = existingThread,
+            )
+            createThreadDelayMs = 1_000L
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        var createdThreadId: String? = "sentinel"
+
+        viewModel.createThread("/tmp/new-thread") { createdThreadId = it }
+        createdThreadId = null
+        runCurrent()
+        advanceTimeBy(100L)
+
+        assertNull(createdThreadId)
+
+        advanceUntilIdle()
+
+        assertEquals("thread-created", createdThreadId)
+        assertEquals("thread-created", viewModel.uiState.value.selectedThread?.id)
+    }
+
+    @Test
+    fun `create thread completion callback stays null when creation fails`() = runTest {
+        val existingThread = threadSummary(id = "thread-1", title = "Existing thread")
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(existingThread),
+                selectedThreadId = existingThread.id,
+                selectedThreadSnapshot = existingThread,
+            )
+            createThreadDelayMs = 1_000L
+            createThreadError = IllegalStateException("Bridge down")
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        var createdThreadId = "sentinel"
+
+        viewModel.createThread("/tmp/new-thread") { createdThreadId = it ?: "failed" }
+        runCurrent()
+        advanceTimeBy(100L)
+
+        assertTrue(viewModel.uiState.value.isCreatingThread)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isCreatingThread)
+        assertEquals("failed", createdThreadId)
+        assertEquals("thread-1", viewModel.uiState.value.selectedThread?.id)
+    }
+
+    @Test
     fun `send clears composer immediately and restores full state on failure`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -1815,6 +1901,8 @@ class AppViewModelTest {
         var hydrateDelayMs = 0L
         var sendPromptDelayMs = 0L
         var continueOnMacDelayMs = 0L
+        var createThreadDelayMs = 0L
+        var createThreadError: Throwable? = null
         var sendPromptError: Throwable? = null
         var continueOnMacError: Throwable? = null
         var forkThreadError: Throwable? = null
@@ -1902,6 +1990,10 @@ class AppViewModelTest {
             inheritRuntimeFromThreadId: String?,
         ) {
             createThreadRequests += (preferredProjectPath to inheritRuntimeFromThreadId)
+            if (createThreadDelayMs > 0) {
+                delay(createThreadDelayMs)
+            }
+            createThreadError?.let { throw it }
             val createdThread = com.emanueledipietro.remodex.model.RemodexThreadSummary(
                 id = nextCreatedThreadId,
                 title = "Review current changes",

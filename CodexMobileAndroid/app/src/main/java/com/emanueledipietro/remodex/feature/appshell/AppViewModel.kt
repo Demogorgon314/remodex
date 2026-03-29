@@ -123,6 +123,7 @@ data class AppUiState(
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
     val supportsThreadFork: Boolean = true,
+    val isCreatingThread: Boolean = false,
     val isRefreshingThreads: Boolean = false,
     val isRefreshingUsage: Boolean = false,
     val isSelectedThreadHydrating: Boolean = false,
@@ -271,6 +272,12 @@ private data class ThreadChromeState(
     val desktopHandoff: DesktopHandoffUiState = DesktopHandoffUiState(),
 )
 
+private data class ThreadLoadingState(
+    val isCreatingThread: Boolean = false,
+    val isRefreshingThreads: Boolean = false,
+    val isRefreshingUsage: Boolean = false,
+)
+
 private object NoopVoiceRecorder : AndroidVoiceRecorder {
     override val meteringState = MutableStateFlow(com.emanueledipietro.remodex.platform.media.AndroidVoiceMeteringSnapshot())
 
@@ -310,6 +317,7 @@ class AppViewModel(
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
     private val planComposerSessions = MutableStateFlow<Map<String, PlanComposerSessionUiState>>(emptyMap())
     private val voiceButtonModeState = MutableStateFlow(ComposerVoiceButtonMode.IDLE)
+    private val isCreatingThreadState = MutableStateFlow(false)
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
     private val hydratingThreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -556,19 +564,30 @@ class AppViewModel(
             )
         }
 
+    private val threadLoadingState =
+        combine(
+            isCreatingThreadState,
+            isRefreshingThreadsState,
+            isRefreshingUsageState,
+        ) { isCreatingThread, isRefreshingThreads, isRefreshingUsage ->
+            ThreadLoadingState(
+                isCreatingThread = isCreatingThread,
+                isRefreshingThreads = isRefreshingThreads,
+                isRefreshingUsage = isRefreshingUsage,
+            )
+        }
+
     private val chromeDecoratedUiState =
         combine(
             baseUiState,
             hydratingThreadCounts,
             threadChromeState,
-            isRefreshingThreadsState,
-            isRefreshingUsageState,
+            threadLoadingState,
         ) {
             baseState: AppUiState,
             activeHydrations: Map<String, Int>,
             threadChrome: ThreadChromeState,
-            isRefreshingThreads: Boolean,
-            isRefreshingUsage: Boolean,
+            loadingState: ThreadLoadingState,
             ->
             val selectedThreadId = baseState.selectedThread?.id
             baseState.copy(
@@ -581,8 +600,9 @@ class AppViewModel(
                 desktopHandoffErrorMessage = threadChrome.desktopHandoff.errorMessage,
                 threadCompletionBanner = threadChrome.threadCompletionBanner,
                 completionHapticSignal = threadChrome.completionHapticSignal,
-                isRefreshingThreads = isRefreshingThreads,
-                isRefreshingUsage = isRefreshingUsage,
+                isCreatingThread = loadingState.isCreatingThread,
+                isRefreshingThreads = loadingState.isRefreshingThreads,
+                isRefreshingUsage = loadingState.isRefreshingUsage,
             )
         }
 
@@ -751,18 +771,39 @@ class AppViewModel(
         launchThreadHydration(threadId)
     }
 
-    fun createThread(preferredProjectPath: String? = null) {
+    fun createThread(
+        preferredProjectPath: String? = null,
+        onCreated: ((String?) -> Unit)? = null,
+    ) {
+        if (isCreatingThreadState.value) {
+            return
+        }
         viewModelScope.launch {
-            val previousThreadIds = repository.session.value.threads
-                .mapTo(mutableSetOf(), RemodexThreadSummary::id)
-            repository.createThread(preferredProjectPath)
-            val createdThreadId = resolveCreatedThreadId(previousThreadIds)
-            if (createdThreadId != null && repository.session.value.selectedThread?.id != createdThreadId) {
-                repository.selectThread(createdThreadId)
+            isCreatingThreadState.value = true
+            try {
+                runCatching {
+                    val previousThreadIds = repository.session.value.threads
+                        .mapTo(mutableSetOf(), RemodexThreadSummary::id)
+                    repository.createThread(preferredProjectPath)
+                    val createdThreadId = resolveCreatedThreadId(previousThreadIds)
+                    if (createdThreadId != null && repository.session.value.selectedThread?.id != createdThreadId) {
+                        repository.selectThread(createdThreadId)
+                    }
+                    (createdThreadId ?: repository.session.value.selectedThread?.id)?.let(::refreshGitState)
+                    clearComposerAutocomplete()
+                    dismissAssistantRevertSheet()
+                    createdThreadId
+                }.onSuccess { createdThreadId ->
+                    onCreated?.invoke(createdThreadId)
+                }.onFailure { error ->
+                    if (error is CancellationException) {
+                        throw error
+                    }
+                    onCreated?.invoke(null)
+                }
+            } finally {
+                isCreatingThreadState.value = false
             }
-            (createdThreadId ?: repository.session.value.selectedThread?.id)?.let(::refreshGitState)
-            clearComposerAutocomplete()
-            dismissAssistantRevertSheet()
         }
     }
 

@@ -694,8 +694,11 @@ private fun RemodexShell(
                         onRefreshThreads = viewModel::refreshThreads,
                         onRetryConnection = viewModel::retryConnection,
                         onCreateThread = { preferredProjectPath ->
-                            viewModel.createThread(preferredProjectPath)
-                            onShellRouteChange(ShellRoute.CONTENT)
+                            viewModel.createThread(preferredProjectPath) { createdThreadId ->
+                                if (createdThreadId != null) {
+                                    onShellRouteChange(ShellRoute.CONTENT)
+                                }
+                            }
                         },
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
@@ -810,9 +813,12 @@ private fun RemodexShell(
                         onRefreshThreads = viewModel::refreshThreads,
                         onRetryConnection = viewModel::retryConnection,
                         onCreateThread = { preferredProjectPath ->
-                            viewModel.createThread(preferredProjectPath)
-                            onShellRouteChange(ShellRoute.CONTENT)
-                            onSidebarOpenChange(false)
+                            viewModel.createThread(preferredProjectPath) { createdThreadId ->
+                                if (createdThreadId != null) {
+                                    onShellRouteChange(ShellRoute.CONTENT)
+                                    onSidebarOpenChange(false)
+                                }
+                            }
                         },
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,

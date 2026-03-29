@@ -559,8 +559,10 @@ class DefaultRemodexAppRepository(
                 destinationThreadId = createdThread.id,
             )
         }
-        persistSelectedThreadIdLocally(createdThread.id)
-        refreshBaseThreadsLocallyFromSnapshots(listOf(createdThread))
+        refreshBaseThreadsLocallyFromSnapshots(
+            snapshots = listOf(createdThread),
+            preferredSelectedThreadIdOverride = createdThread.id,
+        )
     }
 
     override suspend fun renameThread(
@@ -1192,8 +1194,10 @@ class DefaultRemodexAppRepository(
     private suspend fun selectForkedThread(
         forkedThread: ThreadSyncSnapshot,
     ): String {
-        persistSelectedThreadIdLocally(forkedThread.id)
-        refreshBaseThreadsLocallyFromSnapshots(listOf(forkedThread))
+        refreshBaseThreadsLocallyFromSnapshots(
+            snapshots = listOf(forkedThread),
+            preferredSelectedThreadIdOverride = forkedThread.id,
+        )
         return forkedThread.id
     }
 
@@ -1475,8 +1479,10 @@ class DefaultRemodexAppRepository(
         val continuationSnapshot = threadSyncService.threads.value.firstOrNull { snapshot ->
             snapshot.id == createdThread.id
         } ?: createdThread
-        persistSelectedThreadIdLocally(createdThread.id)
-        refreshBaseThreadsLocallyFromSnapshots(listOf(continuationSnapshot))
+        refreshBaseThreadsLocallyFromSnapshots(
+            snapshots = listOf(continuationSnapshot),
+            preferredSelectedThreadIdOverride = createdThread.id,
+        )
         return createdThread.id
     }
 
@@ -1487,9 +1493,13 @@ class DefaultRemodexAppRepository(
 
     private fun refreshBaseThreadsLocallyFromSnapshots(
         snapshots: List<ThreadSyncSnapshot>,
+        preferredSelectedThreadIdOverride: String? = null,
     ) {
         val mergedBaseThreads = mergeBaseThreadsFromSyncSnapshots(snapshots)
-        refreshThreadsLocally(mergedBaseThreads)
+        refreshThreadsLocally(
+            baseThreads = mergedBaseThreads,
+            preferredSelectedThreadIdOverride = preferredSelectedThreadIdOverride,
+        )
     }
 
     private fun mergeBaseThreadsFromSyncSnapshots(
@@ -1693,11 +1703,12 @@ class DefaultRemodexAppRepository(
     private fun refreshThreadsLocally(
         baseThreads: List<RemodexThreadSummary>,
         deferThreadListUpdate: Boolean = false,
+        preferredSelectedThreadIdOverride: String? = null,
     ) {
         baseThreadsState.value = baseThreads
         val resolvedAvailableModels = resolveAvailableModels(baseThreads)
         val selectedThreadId = resolveSelectedThreadId(
-            preferredThreadId = preferredSelectedThreadId(
+            preferredThreadId = preferredSelectedThreadIdOverride ?: preferredSelectedThreadId(
                 persistedSelectedThreadId = preferencesState.value.selectedThreadId,
                 sessionSelectedThreadId = sessionState.value.selectedThreadId,
             ),
