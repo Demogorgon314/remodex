@@ -1,6 +1,10 @@
 package com.emanueledipietro.remodex.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 @Serializable
 enum class RemodexMessageDeliveryState {
@@ -112,9 +116,16 @@ data class RemodexStructuredUserInputQuestion(
 
 @Serializable
 data class RemodexStructuredUserInputRequest(
-    val requestId: String,
+    val requestId: JsonElement,
     val questions: List<RemodexStructuredUserInputQuestion>,
-)
+) {
+    val requestIdKey: String
+        get() = when (requestId) {
+            JsonNull -> "null"
+            is JsonPrimitive -> requestId.contentOrNull ?: requestId.toString()
+            else -> requestId.toString()
+        }.trim().ifEmpty { requestId.toString() }
+}
 
 @Serializable
 data class RemodexSubagentRef(

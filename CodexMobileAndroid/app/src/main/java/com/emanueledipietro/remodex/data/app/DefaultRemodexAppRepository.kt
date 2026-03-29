@@ -74,6 +74,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -122,6 +123,19 @@ class DefaultRemodexAppRepository(
             selectedThreadSnapshot = initialBaseThreads.firstOrNull(),
         ),
     )
+
+    suspend fun sendPrompt(
+        threadId: String,
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
+    ) {
+        sendPrompt(
+            threadId = threadId,
+            prompt = prompt,
+            attachments = attachments,
+            planningModeOverride = null,
+        )
+    }
     private val gptAccountSnapshotState = MutableStateFlow(remodexInitialGptAccountSnapshot())
     private val gptAccountErrorMessageState = MutableStateFlow<String?>(null)
     private val bridgeVersionStatusState = MutableStateFlow(RemodexBridgeVersionStatus())
@@ -395,6 +409,14 @@ class DefaultRemodexAppRepository(
     private suspend fun persistSelectedThreadIdLocally(threadId: String?) {
         appPreferencesRepository.setSelectedThreadId(threadId)
         preferencesState.value = preferencesState.value.copy(selectedThreadId = threadId)
+        sessionState.update { snapshot ->
+            snapshot.copy(
+                selectedThreadId = threadId,
+                selectedThreadSnapshot = snapshot.selectedThreadSnapshot?.takeIf { selected ->
+                    selected.id == threadId
+                },
+            )
+        }
     }
 
     private suspend fun setThreadDeletedLocally(
@@ -472,7 +494,6 @@ class DefaultRemodexAppRepository(
             preferredProjectPath = preferredProjectPath,
             runtimeDefaults = runtimeDefaults,
         ) ?: return
-        refreshBaseThreadsLocallyFromSnapshots(listOf(createdThread))
         inheritRuntimeFromThreadId?.let { sourceThreadId ->
             inheritRuntimeOverride(
                 sourceThreadId = sourceThreadId,
@@ -480,19 +501,7 @@ class DefaultRemodexAppRepository(
             )
         }
         persistSelectedThreadIdLocally(createdThread.id)
-        val selectedThread = selectedThreadSnapshotForThreadId(createdThread.id)
-            ?: createdThread.toCachedThreadRecord(projectThreadTimelineItems(createdThread))
-                .toBaseThreadSummary()
-                .materialize(
-                    preferences = preferencesState.value,
-                    availableModels = resolveAvailableModels(baseThreadsState.value),
-                )
-        sessionState.update { snapshot ->
-            snapshot.copy(
-                selectedThreadId = createdThread.id,
-                selectedThreadSnapshot = selectedThread ?: snapshot.selectedThreadSnapshot,
-            )
-        }
+        refreshBaseThreadsLocallyFromSnapshots(listOf(createdThread))
     }
 
     override suspend fun renameThread(
@@ -619,12 +628,14 @@ class DefaultRemodexAppRepository(
         threadId: String,
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
+        planningModeOverride: RemodexPlanningMode?,
     ) {
         val trimmedPrompt = prompt.trim()
         if (trimmedPrompt.isEmpty() && attachments.isEmpty()) {
             return
         }
         var thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        val activePlanningMode = planningModeOverride ?: thread.runtimeConfig.planningMode
         if (!thread.isRunning) {
             try {
                 thread = resumeThreadBeforeSend(thread = thread)
@@ -643,7 +654,10 @@ class DefaultRemodexAppRepository(
                 sendPromptWithLocalOptimistic(
                     threadId = continuationThreadId,
                     prompt = trimmedPrompt,
-                    runtimeConfig = resumedContinuationThread.runtimeConfig,
+                    runtimeConfig = applyPlanningModeOverride(
+                        resumedContinuationThread.runtimeConfig,
+                        planningModeOverride,
+                    ),
                     attachments = attachments,
                 )
                 refreshBaseThreadsFromSync()
@@ -656,6 +670,9 @@ class DefaultRemodexAppRepository(
                 text = trimmedPrompt,
                 createdAtEpochMs = System.currentTimeMillis(),
                 attachments = attachments,
+                planningMode = planningModeOverride ?: activePlanningMode.takeIf {
+                    it == RemodexPlanningMode.PLAN
+                },
             )
             appPreferencesRepository.setQueuedDrafts(threadId, nextDrafts)
             applyPreferencesLocally(
@@ -664,7 +681,7 @@ class DefaultRemodexAppRepository(
                         .toMutableMap()
                         .apply {
                             this[threadId] = nextDrafts
-                        },
+                    },
                 ),
             )
             return
@@ -674,7 +691,10 @@ class DefaultRemodexAppRepository(
             sendPromptWithLocalOptimistic(
                 threadId = threadId,
                 prompt = trimmedPrompt,
-                runtimeConfig = thread.runtimeConfig,
+                runtimeConfig = applyPlanningModeOverride(
+                    thread.runtimeConfig,
+                    planningModeOverride,
+                ),
                 attachments = attachments,
             )
         } catch (error: Throwable) {
@@ -693,10 +713,20 @@ class DefaultRemodexAppRepository(
                 threadId = continuationThreadId,
                 prompt = trimmedPrompt,
                 attachments = attachments,
-                runtimeConfig = resumedContinuationThread.runtimeConfig,
+                runtimeConfig = applyPlanningModeOverride(
+                    resumedContinuationThread.runtimeConfig,
+                    planningModeOverride,
+                ),
             )
         }
         refreshBaseThreadsFromSync()
+    }
+
+    override suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
+    ) {
+        threadCommandService.respondToStructuredUserInput(requestId, answersByQuestionId)
     }
 
     override suspend fun stopTurn(threadId: String) {
@@ -731,7 +761,9 @@ class DefaultRemodexAppRepository(
         threadCommandService.sendPrompt(
             threadId = threadId,
             prompt = draft.text,
-            runtimeConfig = thread.runtimeConfig,
+            runtimeConfig = thread.runtimeConfig.copy(
+                planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
+            ),
             attachments = draft.attachments,
         )
         refreshBaseThreadsFromSync()
@@ -1079,21 +1111,8 @@ class DefaultRemodexAppRepository(
     private suspend fun selectForkedThread(
         forkedThread: ThreadSyncSnapshot,
     ): String {
-        refreshBaseThreadsFromSync()
         persistSelectedThreadIdLocally(forkedThread.id)
-        val selectedThread = selectedThreadSnapshotForThreadId(forkedThread.id)
-            ?: forkedThread.toCachedThreadRecord(projectThreadTimelineItems(forkedThread))
-                .toBaseThreadSummary()
-                .materialize(
-                    preferences = preferencesState.value,
-                    availableModels = resolveAvailableModels(baseThreadsState.value),
-                )
-        sessionState.update { snapshot ->
-            snapshot.copy(
-                selectedThreadId = forkedThread.id,
-                selectedThreadSnapshot = selectedThread,
-            )
-        }
+        refreshBaseThreadsLocallyFromSnapshots(listOf(forkedThread))
         return forkedThread.id
     }
 
@@ -1368,22 +1387,11 @@ class DefaultRemodexAppRepository(
             threadId = createdThread.id,
             text = "Continued from archived thread `${thread.id}`",
         )
-        refreshBaseThreadsFromSync()
+        val continuationSnapshot = threadSyncService.threads.value.firstOrNull { snapshot ->
+            snapshot.id == createdThread.id
+        } ?: createdThread
         persistSelectedThreadIdLocally(createdThread.id)
-        val selectedThread = selectedThreadSnapshotForThreadId(createdThread.id)
-            ?: createdThread.toCachedThreadRecord(projectThreadTimelineItems(createdThread))
-                .toBaseThreadSummary()
-                .materialize(
-                    preferences = preferencesState.value,
-                    availableModels = resolveAvailableModels(baseThreadsState.value),
-                )
-        sessionState.update { snapshot ->
-            snapshot.copy(
-                selectedThreadId = createdThread.id,
-                selectedThreadSnapshot = selectedThread ?: snapshot.selectedThreadSnapshot,
-            )
-        }
-        refreshBaseThreadsFromSync()
+        refreshBaseThreadsLocallyFromSnapshots(listOf(continuationSnapshot))
         return createdThread.id
     }
 
@@ -1407,14 +1415,6 @@ class DefaultRemodexAppRepository(
                 .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
                 .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
                 .map(CachedThreadRecord::toBaseThreadSummary),
-        )
-    }
-
-    private fun selectedThreadSnapshotForThreadId(threadId: String): RemodexThreadSummary? {
-        val selectedBaseThread = baseThreadsState.value.firstOrNull { thread -> thread.id == threadId } ?: return null
-        return selectedBaseThread.materialize(
-            preferences = preferencesState.value,
-            availableModels = resolveAvailableModels(baseThreadsState.value),
         )
     }
 
@@ -1530,6 +1530,13 @@ class DefaultRemodexAppRepository(
             }
             throw error
         }
+    }
+
+    private fun applyPlanningModeOverride(
+        runtimeConfig: RemodexRuntimeConfig,
+        planningModeOverride: RemodexPlanningMode?,
+    ): RemodexRuntimeConfig {
+        return planningModeOverride?.let { runtimeConfig.copy(planningMode = it) } ?: runtimeConfig
     }
 
     private fun markLocalOptimisticUserMessageFailed(

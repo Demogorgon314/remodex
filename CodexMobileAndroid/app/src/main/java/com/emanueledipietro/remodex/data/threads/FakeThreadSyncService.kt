@@ -37,6 +37,7 @@ import com.emanueledipietro.remodex.model.toConversationAttachment
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.JsonElement
 import java.io.File
 import java.util.UUID
 
@@ -287,6 +288,13 @@ class FakeThreadSyncService(
                 }
             }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
         }
+    }
+
+    override suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
+    ) {
+        // Fake mode accepts the response without changing timeline state.
     }
 
     override suspend fun startCodeReview(

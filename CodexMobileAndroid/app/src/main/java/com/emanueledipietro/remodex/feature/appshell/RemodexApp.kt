@@ -161,7 +161,8 @@ internal fun resolveShellBackAction(
     return when {
         isScannerPresented -> ShellBackAction.DISMISS_SCANNER
         isCompactSidebarOpen -> ShellBackAction.CLOSE_SIDEBAR
-        shellRoute == ShellRoute.ABOUT_REMODEX || shellRoute == ShellRoute.ARCHIVED_CHATS ->
+        shellRoute == ShellRoute.ABOUT_REMODEX ||
+            shellRoute == ShellRoute.ARCHIVED_CHATS ->
             ShellBackAction.NAVIGATE_TO_SETTINGS
         shellRoute == ShellRoute.SETTINGS -> ShellBackAction.NAVIGATE_TO_CONTENT
         else -> null
@@ -829,6 +830,9 @@ private fun MainPane(
                             onRetryConnection = viewModel::retryConnection,
                             onComposerInputChanged = viewModel::updateComposerInput,
                             onSendPrompt = viewModel::sendPrompt,
+                            onSubmitStructuredUserInput = viewModel::respondToStructuredUserInput,
+                            onSubmitPlanFollowUp = viewModel::sendPlanFollowUp,
+                            onDismissPlanComposerSession = viewModel::dismissPlanComposerSession,
                             onStopTurn = viewModel::stopTurn,
                             onSendQueuedDraft = viewModel::sendQueuedDraft,
                             onSelectModel = viewModel::selectModel,

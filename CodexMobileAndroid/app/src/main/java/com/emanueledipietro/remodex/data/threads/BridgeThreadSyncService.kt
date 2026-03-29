@@ -15,6 +15,7 @@ import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.firstValue
 import com.emanueledipietro.remodex.data.connection.jsonArrayOrNull
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
+import com.emanueledipietro.remodex.data.connection.rpcIdKey
 import com.emanueledipietro.remodex.data.connection.stringOrNull
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.ConversationItemKind
@@ -265,6 +266,10 @@ class BridgeThreadSyncService(
 
         scope.launch {
             secureConnectionCoordinator.notifications.collectLatest(::handleNotification)
+        }
+
+        scope.launch {
+            secureConnectionCoordinator.requests.collectLatest(::handleRequest)
         }
     }
 
@@ -711,6 +716,20 @@ class BridgeThreadSyncService(
         }
         refreshThreads()
         hydrateThread(threadId)
+    }
+
+    override suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
+    ) {
+        if (!isConnected()) {
+            throw IllegalStateException("Remodex is not connected. Reconnect and try sending your answer again.")
+        }
+
+        secureConnectionCoordinator.sendResponse(
+            id = requestId,
+            result = buildStructuredUserInputResponse(answersByQuestionId),
+        )
     }
 
     override suspend fun startCodeReview(
@@ -1691,7 +1710,10 @@ class BridgeThreadSyncService(
     }
 
     private fun shouldIncludeCollaborationMode(planningMode: RemodexPlanningMode): Boolean {
-        return supportsTurnCollaborationMode && planningMode == RemodexPlanningMode.PLAN
+        return supportsTurnCollaborationMode && (
+            planningMode == RemodexPlanningMode.PLAN ||
+                planningMode == RemodexPlanningMode.AUTO
+            )
     }
 
     private fun consumeUnsupportedServiceTier(
@@ -1778,6 +1800,7 @@ class BridgeThreadSyncService(
             "turn/completed" -> paramsObject?.let(::handleTurnCompletedNotification)
             "turn/plan/updated" -> paramsObject?.let(::handleTurnPlanUpdatedNotification)
             "thread/status/changed" -> paramsObject?.let(::handleThreadStatusChangedNotification)
+            "serverRequest/resolved" -> paramsObject?.let(::handleServerRequestResolvedNotification)
 
             "item/agentMessage/delta",
             "codex/event/agent_message_content_delta",
@@ -1824,6 +1847,28 @@ class BridgeThreadSyncService(
                 }
             }
         }
+    }
+
+    private suspend fun handleRequest(message: RpcMessage) {
+        val method = message.method?.trim().orEmpty()
+        val requestId = message.id
+        val paramsObject = message.params?.jsonObjectOrNull
+        when (method) {
+            "item/tool/requestUserInput" -> {
+                if (requestId != null && paramsObject != null) {
+                    handleStructuredUserInputRequest(
+                        requestId = requestId,
+                        paramsObject = paramsObject,
+                    )
+                    return
+                }
+            }
+        }
+        secureConnectionCoordinator.sendErrorResponse(
+            id = requestId,
+            code = -32601,
+            message = "Unsupported request method: $method",
+        )
     }
 
     private fun handleThreadNameUpdatedNotification(paramsObject: JsonObject) {
@@ -2095,6 +2140,40 @@ class BridgeThreadSyncService(
             paramsObject = paramsObject,
             kind = ConversationItemKind.PLAN,
             fallbackPrefix = "plan",
+        )
+    }
+
+    private fun handleStructuredUserInputRequest(
+        requestId: JsonElement,
+        paramsObject: JsonObject,
+    ) {
+        val threadId = resolveThreadId(paramsObject) ?: return
+        val turnId = extractTurnId(paramsObject)
+        if (turnId != null) {
+            threadIdByTurnId[turnId] = threadId
+        }
+        val itemId = extractItemId(
+            paramsObject = paramsObject,
+            eventObject = envelopeEventObject(paramsObject),
+        ) ?: "request-${rpcIdKey(requestId) ?: requestId}"
+        val request = decodeStructuredUserInputRequest(
+            requestId = requestId,
+            questionValues = paramsObject.firstArray("questions").orEmpty(),
+        ) ?: return
+        upsertStructuredUserInputPrompt(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = itemId,
+            request = request,
+        )
+    }
+
+    private fun handleServerRequestResolvedNotification(paramsObject: JsonObject) {
+        val requestId = paramsObject.firstValue("requestId", "request_id") ?: return
+        val threadId = resolveThreadId(paramsObject)
+        removeStructuredUserInputPrompt(
+            requestId = requestId,
+            threadIdHint = threadId,
         )
     }
 
@@ -2863,6 +2942,86 @@ class BridgeThreadSyncService(
             ),
             isRunning = true,
         )
+    }
+
+    private fun upsertStructuredUserInputPrompt(
+        threadId: String,
+        turnId: String?,
+        itemId: String,
+        request: RemodexStructuredUserInputRequest,
+    ) {
+        val fallbackText = request.questions.joinToString(separator = "\n\n") { question ->
+            val header = question.header.trim()
+            val prompt = question.question.trim()
+            if (header.isEmpty()) {
+                prompt
+            } else {
+                "$header\n$prompt"
+            }
+        }
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId }
+        val existingItem = snapshot?.let { existingSnapshot ->
+            TurnTimelineReducer.reduce(existingSnapshot.timelineMutations).lastOrNull { candidate ->
+                candidate.speaker == ConversationSpeaker.SYSTEM &&
+                candidate.kind == ConversationItemKind.USER_INPUT_PROMPT &&
+                candidate.structuredUserInputRequest?.requestIdKey == request.requestIdKey
+            }
+        }
+        val messageId = existingItem?.id ?: itemId
+        upsertStreamingItem(
+            threadId = threadId,
+            item = timelineItem(
+                id = messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = fallbackText,
+                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                turnId = turnId ?: existingItem?.turnId,
+                itemId = itemId,
+                structuredUserInputRequest = request,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = turnId ?: existingItem?.turnId,
+                    itemId = itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.USER_INPUT_PROMPT,
+                ),
+                assistantChangeSet = existingItem?.assistantChangeSet,
+            ),
+            isRunning = true,
+        )
+    }
+
+    private fun removeStructuredUserInputPrompt(
+        requestId: JsonElement,
+        threadIdHint: String?,
+    ) {
+        val resolvedRequestId = rpcIdKey(requestId) ?: return
+        val threadIds = threadIdHint?.let(::listOf) ?: backingThreads.value.map(ThreadSyncSnapshot::id)
+        threadIds.forEach { threadId ->
+            val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return@forEach
+            TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+                .firstOrNull { item ->
+                    item.kind == ConversationItemKind.USER_INPUT_PROMPT &&
+                        item.structuredUserInputRequest?.requestIdKey == resolvedRequestId
+                }?.let { item ->
+                    val request = item.structuredUserInputRequest
+                    val summaryText = request?.questions?.size?.let { questionCount ->
+                        if (questionCount == 1) {
+                            "Asked 1 question"
+                        } else {
+                            "Asked $questionCount questions"
+                        }
+                    } ?: item.text
+                    upsertStreamingItem(
+                        threadId = threadId,
+                        item = item.copy(
+                            text = summaryText,
+                            isStreaming = false,
+                        ),
+                    )
+                }
+        }
     }
 
     private fun appendSystemTextDelta(
@@ -4897,6 +5056,10 @@ class BridgeThreadSyncService(
     }
 
     private fun decodePlanItemText(itemObject: JsonObject): String {
+        val fullBody = decodeItemText(itemObject).trim()
+        if (fullBody.isNotEmpty()) {
+            return fullBody
+        }
         val planState = decodeHistoryPlanState(itemObject)
         val explanation = planState?.explanation?.trim().orEmpty()
         if (explanation.isNotEmpty()) {
@@ -4917,7 +5080,7 @@ class BridgeThreadSyncService(
     }
 
     private fun decodeHistoryPlanState(itemObject: JsonObject): RemodexPlanState? {
-        val explanation = itemObject.firstString("explanation", "text", "message", "summary")
+        val explanation = itemObject.firstString("explanation", "summary")
             ?.trim()
             ?.takeIf(String::isNotEmpty)
         val steps = itemObject.firstArray("plan").orEmpty().mapIndexedNotNull { index, value ->
@@ -4947,12 +5110,26 @@ class BridgeThreadSyncService(
     }
 
     private fun decodeStructuredUserInputRequest(itemObject: JsonObject): RemodexStructuredUserInputRequest? {
-        val questions = itemObject.firstArray("questions").orEmpty().mapIndexedNotNull { index, value ->
+        val requestId = itemObject.firstValue("requestId", "request_id", "id") ?: return null
+        if (rpcIdKey(requestId) == null) {
+            return null
+        }
+        return decodeStructuredUserInputRequest(
+            requestId = requestId,
+            questionValues = itemObject.firstArray("questions").orEmpty(),
+        )
+    }
+
+    private fun decodeStructuredUserInputRequest(
+        requestId: JsonElement,
+        questionValues: List<JsonElement>,
+    ): RemodexStructuredUserInputRequest? {
+        val questions = questionValues.mapIndexedNotNull { index, value ->
             val questionObject = value.jsonObjectOrNull ?: return@mapIndexedNotNull null
             val id = questionObject.firstString("id")?.trim().orEmpty()
-            val header = questionObject.firstString("header")?.trim().orEmpty()
-            val question = questionObject.firstString("question")?.trim().orEmpty()
-            if (id.isEmpty() || header.isEmpty() || question.isEmpty()) {
+            val header = questionObject.firstRawString("header")?.trim().orEmpty()
+            val question = questionObject.firstRawString("question")?.trim().orEmpty()
+            if (id.isEmpty() || question.isEmpty()) {
                 return@mapIndexedNotNull null
             }
             RemodexStructuredUserInputQuestion(
@@ -4977,10 +5154,6 @@ class BridgeThreadSyncService(
             )
         }
         if (questions.isEmpty()) {
-            return null
-        }
-        val requestId = itemObject.firstString("requestId", "request_id", "id")?.trim().orEmpty()
-        if (requestId.isEmpty()) {
             return null
         }
         return RemodexStructuredUserInputRequest(
@@ -5600,7 +5773,12 @@ class BridgeThreadSyncService(
     private fun buildCollaborationModePayload(
         runtimeConfig: RemodexRuntimeConfig,
     ): JsonObject? {
-        if (runtimeConfig.planningMode != RemodexPlanningMode.PLAN) {
+        val mode = when (runtimeConfig.planningMode) {
+            RemodexPlanningMode.PLAN -> "plan"
+            RemodexPlanningMode.AUTO -> "default"
+        }
+
+        if (!supportsTurnCollaborationMode) {
             return null
         }
 
@@ -5614,7 +5792,7 @@ class BridgeThreadSyncService(
         }
 
         return buildJsonObject {
-            put("mode", JsonPrimitive("plan"))
+            put("mode", JsonPrimitive(mode))
             if (settings.isNotEmpty()) {
                 put("settings", settings)
             }
@@ -6079,6 +6257,36 @@ internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolea
         || message.contains("unknown field")
         || message.contains("expected")
         || message.contains("invalid")
+}
+
+internal fun buildStructuredUserInputResponse(
+    answersByQuestionId: Map<String, List<String>>,
+): JsonObject {
+    return buildJsonObject {
+        put(
+            "answers",
+            buildJsonObject {
+                answersByQuestionId.forEach { (questionId, answers) ->
+                    val filteredAnswers = answers
+                        .map(String::trim)
+                        .filter(String::isNotEmpty)
+                    put(
+                        questionId,
+                        buildJsonObject {
+                            put(
+                                "answers",
+                                buildJsonArray {
+                                    filteredAnswers.forEach { answer ->
+                                        add(JsonPrimitive(answer))
+                                    }
+                                },
+                            )
+                        },
+                    )
+                }
+            },
+        )
+    }
 }
 
 internal fun shouldRetryWithoutCollaborationMode(error: Throwable): Boolean {
