@@ -19,7 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class ConversationScreenPlanAccessoryTest {
     @Test
-    fun `timeline layout pins only the latest active plan and keeps completed plans in timeline`() {
+    fun `timeline layout keeps active and completed plans in timeline without pinning`() {
         val completedPlan = planItem(
             id = "plan-complete",
             steps = listOf(
@@ -43,9 +43,9 @@ class ConversationScreenPlanAccessoryTest {
             listOf(completedPlan, chatItem, activePlan),
         )
 
-        assertEquals("plan-active", layout.pinnedPlanItem?.id)
+        assertNull(layout.pinnedPlanItem)
         assertEquals(
-            listOf("plan-complete", "assistant-chat"),
+            listOf("plan-complete", "assistant-chat", "plan-active"),
             layout.timelineItems.map(RemodexConversationItem::id),
         )
     }
@@ -208,6 +208,42 @@ class ConversationScreenPlanAccessoryTest {
         assertTrue(description.contains("In progress"))
         assertTrue(description.contains("0 of 2 complete"))
         assertTrue(description.contains("Investigate issue"))
+    }
+
+    @Test
+    fun `plan conversation row collapse heuristic keeps short plans expanded`() {
+        assertTrue(
+            shouldCollapsePlanConversationRow(
+                bodyText = "Short plan body",
+                explanationText = "Short explanation",
+                stepCount = 2,
+            ).not(),
+        )
+    }
+
+    @Test
+    fun `plan conversation row collapse heuristic collapses long plans`() {
+        assertTrue(
+            shouldCollapsePlanConversationRow(
+                bodyText = "x".repeat(421),
+                explanationText = "Short explanation",
+                stepCount = 2,
+            ),
+        )
+        assertTrue(
+            shouldCollapsePlanConversationRow(
+                bodyText = "Short body",
+                explanationText = "y".repeat(161),
+                stepCount = 2,
+            ),
+        )
+        assertTrue(
+            shouldCollapsePlanConversationRow(
+                bodyText = "Short body",
+                explanationText = "Short explanation",
+                stepCount = 5,
+            ),
+        )
     }
 
     private fun planItem(

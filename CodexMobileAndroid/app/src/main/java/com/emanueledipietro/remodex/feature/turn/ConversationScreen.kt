@@ -22,6 +22,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -333,15 +334,7 @@ internal fun buildConversationTimelineLayout(
 }
 
 private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(): Boolean {
-    if (kind != ConversationItemKind.PLAN) {
-        return false
-    }
-    if (isStreaming) {
-        return true
-    }
-
-    val steps = planState?.steps.orEmpty()
-    return steps.isNotEmpty() && steps.any { step -> step.status != RemodexPlanStepStatus.COMPLETED }
+    return false
 }
 
 private fun RemodexConversationItem.isCompletedPlanForComposerFlow(): Boolean {
@@ -438,6 +431,16 @@ private fun planExplanationText(planItem: RemodexConversationItem): String? {
 private fun planPrimaryBodyText(planItem: RemodexConversationItem): String? {
     return normalizedPlanText(planItem.text)
         ?: normalizedPlanText(planItem.planState?.explanation)
+}
+
+internal fun shouldCollapsePlanConversationRow(
+    bodyText: String,
+    explanationText: String?,
+    stepCount: Int,
+): Boolean {
+    return bodyText.length > 420 ||
+        (explanationText?.length ?: 0) > 160 ||
+        stepCount > 4
 }
 
 internal fun planAccessoryContentDescription(snapshot: PlanAccessorySnapshot): String {
@@ -1670,7 +1673,6 @@ private fun PlanAccessoryCard(
 @Composable
 private fun PlanConversationRow(
     item: RemodexConversationItem,
-    onOpenDetails: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val context = LocalContext.current
@@ -1684,10 +1686,13 @@ private fun PlanConversationRow(
         ).joinToString(separator = "\n\n")
     }
     val shouldCollapse = remember(bodyText, explanationText, item.planState?.steps?.size) {
-        bodyText.length > 420 ||
-            (explanationText?.length ?: 0) > 160 ||
-            item.planState?.steps.orEmpty().size > 4
+        shouldCollapsePlanConversationRow(
+            bodyText = bodyText,
+            explanationText = explanationText,
+            stepCount = item.planState?.steps.orEmpty().size,
+        )
     }
+    var expanded by rememberSaveable(item.id) { mutableStateOf(!shouldCollapse) }
     var didCopy by remember(item.id) { mutableStateOf(false) }
 
     LaunchedEffect(didCopy) {
@@ -1702,7 +1707,6 @@ private fun PlanConversationRow(
         messageRole = ConversationSpeaker.SYSTEM,
         usesMarkdownSelection = true,
         allowsSelectText = fullPlanText.isNotBlank(),
-        onClick = onOpenDetails,
     ) { showContextMenuAt ->
         Surface(
             color = chrome.panelSurface,
@@ -1747,14 +1751,22 @@ private fun PlanConversationRow(
                         )
                     }
                     IconButton(
-                        onClick = onOpenDetails,
+                        onClick = {
+                            if (shouldCollapse) {
+                                expanded = !expanded
+                            }
+                        },
                         modifier = Modifier.size(28.dp),
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.ExpandMore,
-                            contentDescription = "Expand plan",
+                            contentDescription = if (expanded) "Collapse plan" else "Expand plan",
                             tint = chrome.secondaryText,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier
+                                .size(18.dp)
+                                .graphicsLayer {
+                                    rotationZ = if (expanded) 180f else 0f
+                                },
                         )
                     }
                 }
@@ -1763,8 +1775,9 @@ private fun PlanConversationRow(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .animateContentSize()
                             .then(
-                                if (shouldCollapse) {
+                                if (shouldCollapse && !expanded) {
                                     Modifier
                                         .heightIn(max = 240.dp)
                                         .clipToBounds()
@@ -1789,7 +1802,7 @@ private fun PlanConversationRow(
                         }
                     }
 
-                    if (shouldCollapse) {
+                    if (shouldCollapse && !expanded) {
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -1804,13 +1817,22 @@ private fun PlanConversationRow(
                                     ),
                                 ),
                         )
-                        TextButton(
-                            onClick = onOpenDetails,
+                        Surface(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(bottom = 4.dp),
+                                .padding(bottom = 8.dp)
+                                .clickable { expanded = true },
+                            color = Color(0xFF121212),
+                            shape = CircleShape,
+                            shadowElevation = 0.dp,
+                            tonalElevation = 0.dp,
                         ) {
-                            Text("Expand plan")
+                            Text(
+                                text = "Expand plan",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                            )
                         }
                     }
                 }
@@ -6016,7 +6038,6 @@ private fun SystemConversationRow(
             )
             ConversationItemKind.PLAN -> PlanConversationRow(
                 item = item,
-                onOpenDetails = { onOpenPlanDetails(item.id) },
             )
             ConversationItemKind.CHAT -> DefaultSystemRow(
                 item = item,
@@ -8387,6 +8408,8 @@ private enum class PlanFollowUpChoice {
     REVISE,
 }
 
+private const val StructuredOtherAnswerPlaceholder = "No, and tell Codex what to do differently"
+
 private fun resolvedStructuredUserInputAnswer(
     questionId: String,
     selectedOptionsByQuestionId: Map<String, String>,
@@ -8494,6 +8517,83 @@ private fun StructuredAnswerField(
             androidx.compose.ui.text.input.VisualTransformation.None
         },
     )
+}
+
+@Composable
+private fun StructuredInlineOtherAnswerRow(
+    index: Int,
+    value: String,
+    placeholder: String = StructuredOtherAnswerPlaceholder,
+    enabled: Boolean,
+    isSecret: Boolean = false,
+    onActivate: () -> Unit,
+    onValueChange: (String) -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val focusRequester = remember { FocusRequester() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled) {
+                onActivate()
+                focusRequester.requestFocus()
+            }
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text = "$index.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = chrome.secondaryText,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        BasicTextField(
+            value = value,
+            onValueChange = {
+                onActivate()
+                onValueChange(it)
+            },
+            enabled = enabled,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                color = chrome.bodyText,
+                fontWeight = FontWeight.Normal,
+            ),
+            keyboardOptions = KeyboardOptions(
+                capitalization = if (isSecret) {
+                    KeyboardCapitalization.None
+                } else {
+                    KeyboardCapitalization.Sentences
+                },
+                keyboardType = if (isSecret) {
+                    KeyboardType.Password
+                } else {
+                    KeyboardType.Text
+                },
+            ),
+            visualTransformation = if (isSecret) {
+                PasswordVisualTransformation()
+            } else {
+                androidx.compose.ui.text.input.VisualTransformation.None
+            },
+            cursorBrush = SolidColor(chrome.accent),
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(focusRequester),
+            decorationBox = { innerTextField ->
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (value.isBlank()) {
+                        Text(
+                            text = placeholder,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = chrome.secondaryText,
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -8634,7 +8734,25 @@ private fun PlanStructuredUserInputComposerCard(
                     )
                 }
 
-                if (currentQuestion.options.isEmpty() || currentQuestion.isOther || currentQuestion.isSecret) {
+                if (currentQuestion.isOther) {
+                    StructuredInlineOtherAnswerRow(
+                        index = currentQuestion.options.size + 1,
+                        value = typedAnswersByQuestionId[currentQuestion.id].orEmpty(),
+                        enabled = !isSubmitting,
+                        onActivate = {
+                            submissionError = null
+                            selectedOptionsByQuestionId = selectedOptionsByQuestionId
+                                .toMutableMap()
+                                .apply { remove(currentQuestion.id) }
+                        },
+                        onValueChange = { updatedValue ->
+                            submissionError = null
+                            typedAnswersByQuestionId = typedAnswersByQuestionId
+                                .toMutableMap()
+                                .apply { this[currentQuestion.id] = updatedValue }
+                        },
+                    )
+                } else if (currentQuestion.options.isEmpty() || currentQuestion.isSecret) {
                     StructuredAnswerField(
                         value = typedAnswersByQuestionId[currentQuestion.id].orEmpty(),
                         onValueChange = { updatedValue ->
@@ -8644,7 +8762,7 @@ private fun PlanStructuredUserInputComposerCard(
                                 .apply { this[currentQuestion.id] = updatedValue }
                         },
                         enabled = !isSubmitting,
-                        isOther = currentQuestion.isOther || currentQuestion.options.isEmpty(),
+                        isOther = currentQuestion.options.isEmpty(),
                         isSecret = currentQuestion.isSecret,
                     )
                 }
@@ -8966,7 +9084,25 @@ private fun StructuredUserInputRow(
                             }
                         }
                     }
-                    if (question.options.isEmpty() || question.isOther || question.isSecret) {
+                    if (question.isOther) {
+                        StructuredInlineOtherAnswerRow(
+                            index = question.options.size + 1,
+                            value = typedAnswersByQuestionId[question.id].orEmpty(),
+                            enabled = !isSubmitting,
+                            onActivate = {
+                                submissionError = null
+                                selectedOptionsByQuestionId = selectedOptionsByQuestionId
+                                    .toMutableMap()
+                                    .apply { remove(question.id) }
+                            },
+                            onValueChange = { updatedValue ->
+                                submissionError = null
+                                typedAnswersByQuestionId = typedAnswersByQuestionId
+                                    .toMutableMap()
+                                    .apply { this[question.id] = updatedValue }
+                            },
+                        )
+                    } else if (question.options.isEmpty() || question.isSecret) {
                         StructuredAnswerField(
                             value = typedAnswersByQuestionId[question.id].orEmpty(),
                             onValueChange = { updatedValue ->
@@ -8976,7 +9112,7 @@ private fun StructuredUserInputRow(
                                     .apply { this[question.id] = updatedValue }
                             },
                             enabled = !isSubmitting,
-                            isOther = question.isOther,
+                            isOther = false,
                             isSecret = question.isSecret,
                         )
                     }
