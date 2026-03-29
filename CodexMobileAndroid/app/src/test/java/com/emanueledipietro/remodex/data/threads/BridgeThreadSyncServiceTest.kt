@@ -2539,7 +2539,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `server request resolved notification removes structured user input prompt immediately`() = runTest {
+    fun `server request resolved notification keeps structured user input prompt as collapsed summary`() = runTest {
         val coordinator = SecureConnectionCoordinator(
             store = InMemorySecureStore(),
             trustedSessionResolver = UnusedTrustedSessionResolver,
@@ -2601,7 +2601,10 @@ class BridgeThreadSyncServiceTest {
         )
 
         val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
-        assertTrue(items.none { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT })
+        val prompt = items.singleOrNull { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT }
+        assertNotNull(prompt)
+        assertEquals(false, prompt?.isStreaming)
+        assertEquals("Asked 1 question", prompt?.text)
     }
 
 

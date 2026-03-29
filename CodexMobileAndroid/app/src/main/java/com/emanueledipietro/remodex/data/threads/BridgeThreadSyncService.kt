@@ -3005,7 +3005,21 @@ class BridgeThreadSyncService(
                     item.kind == ConversationItemKind.USER_INPUT_PROMPT &&
                         item.structuredUserInputRequest?.requestIdKey == resolvedRequestId
                 }?.let { item ->
-                    removeTimelineMessage(threadId = threadId, messageId = item.id)
+                    val request = item.structuredUserInputRequest
+                    val summaryText = request?.questions?.size?.let { questionCount ->
+                        if (questionCount == 1) {
+                            "Asked 1 question"
+                        } else {
+                            "Asked $questionCount questions"
+                        }
+                    } ?: item.text
+                    upsertStreamingItem(
+                        threadId = threadId,
+                        item = item.copy(
+                            text = summaryText,
+                            isStreaming = false,
+                        ),
+                    )
                 }
         }
     }

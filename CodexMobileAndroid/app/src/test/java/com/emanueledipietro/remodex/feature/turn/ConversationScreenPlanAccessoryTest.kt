@@ -107,6 +107,26 @@ class ConversationScreenPlanAccessoryTest {
     }
 
     @Test
+    fun `plan composer flow does not keep resolved prompt in composer takeover`() {
+        val anchor = assistantMessage(id = "anchor")
+        val resolvedPrompt = promptItem(id = "prompt").copy(
+            text = "Asked 1 question",
+            isStreaming = false,
+        )
+
+        val snapshot = resolvePlanComposerFlow(
+            messages = listOf(anchor, resolvedPrompt),
+            session = PlanComposerSessionUiState(anchorMessageId = "anchor"),
+            latestTurnTerminalState = null,
+            activePlanningMode = RemodexPlanningMode.PLAN,
+            hasQueuedFollowUps = false,
+        )
+
+        assertNull(snapshot.takeoverPromptItem)
+        assertNull(snapshot.completedPlanItem)
+    }
+
+    @Test
     fun `plan composer flow surfaces completed plan only after turn completion`() {
         val anchor = assistantMessage(id = "anchor")
         val completedPlan = planItem(
@@ -244,6 +264,12 @@ class ConversationScreenPlanAccessoryTest {
                 stepCount = 5,
             ),
         )
+    }
+
+    @Test
+    fun `structured user input summary label pluralizes by request question count`() {
+        assertEquals("Asked 1 question", structuredUserInputSummaryLabel(1))
+        assertEquals("Asked 3 questions", structuredUserInputSummaryLabel(3))
     }
 
     private fun planItem(

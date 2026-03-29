@@ -367,6 +367,7 @@ internal fun resolvePlanComposerFlow(
     val flowItems = messages.drop(anchorIndex.coerceAtLeast(0))
     val takeoverPromptItem = flowItems.lastOrNull { item ->
         item.kind == ConversationItemKind.USER_INPUT_PROMPT &&
+            !item.isResolvedStructuredUserInputSummary() &&
             item.structuredUserInputRequest?.requestIdKey !in dismissedPromptRequestKeys
     }
     if (takeoverPromptItem != null) {
@@ -6032,10 +6033,14 @@ private fun SystemConversationRow(
                 onOpenSubagentThread = onOpenSubagentThread,
                 onHydrateSubagentThread = onHydrateSubagentThread,
             )
-            ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(
-                request = item.structuredUserInputRequest,
-                onSubmit = onSubmitStructuredUserInput,
-            )
+            ConversationItemKind.USER_INPUT_PROMPT -> if (item.isStreaming) {
+                StructuredUserInputRow(
+                    request = item.structuredUserInputRequest,
+                    onSubmit = onSubmitStructuredUserInput,
+                )
+            } else {
+                StructuredUserInputSummaryRow(item = item)
+            }
             ConversationItemKind.PLAN -> PlanConversationRow(
                 item = item,
             )
@@ -8426,6 +8431,19 @@ private fun resolvedStructuredUserInputAnswer(
     return null
 }
 
+internal fun structuredUserInputSummaryLabel(questionCount: Int): String {
+    return if (questionCount == 1) {
+        "Asked 1 question"
+    } else {
+        "Asked $questionCount questions"
+    }
+}
+
+private fun RemodexConversationItem.isResolvedStructuredUserInputSummary(): Boolean {
+    val request = structuredUserInputRequest ?: return false
+    return text == structuredUserInputSummaryLabel(request.questions.size)
+}
+
 @Composable
 private fun PlanComposerOptionCard(
     index: Int,
@@ -8593,6 +8611,78 @@ private fun StructuredInlineOtherAnswerRow(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun StructuredUserInputSummaryRow(item: RemodexConversationItem) {
+    val chrome = remodexConversationChrome()
+    val request = item.structuredUserInputRequest
+    if (request == null) {
+        DefaultSystemRow(item = item, accessoryState = null)
+        return
+    }
+    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    val summaryLabel = remember(request.requestIdKey, request.questions.size) {
+        structuredUserInputSummaryLabel(request.questions.size)
+    }
+
+    ConversationMessageActionContainer(
+        text = summaryLabel,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = false,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+    ) { _ ->
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = summaryLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = chrome.secondaryText,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "Collapse asked questions" else "Expand asked questions",
+                    tint = chrome.secondaryText,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .graphicsLayer {
+                            rotationZ = if (expanded) 180f else 0f
+                        },
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    request.questions.forEach { question ->
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            question.header.trim().takeIf(String::isNotEmpty)?.let { header ->
+                                Text(
+                                    text = header,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = chrome.bodyText,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                            Text(
+                                text = question.question,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = chrome.secondaryText,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -8801,6 +8891,7 @@ private fun PlanStructuredUserInputComposerCard(
                         coroutineScope.launch {
                             runCatching {
                                 onSubmit(request.requestId, answersByQuestionId)
+                                onDismiss()
                             }.onFailure { error ->
                                 submissionError = error.message ?: "Could not submit this response."
                                 hasSubmittedResponse = false
