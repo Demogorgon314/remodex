@@ -471,6 +471,8 @@ internal const val ComposerAutocompletePanelTag = "composer_autocomplete_panel"
 internal const val ComposerAutocompleteDismissLayerTag = "composer_autocomplete_dismiss_layer"
 internal const val ComposerSendButtonTag = "composer_send_button"
 internal const val ComposerStopButtonTag = "composer_stop_button"
+internal const val ComposerVoiceButtonTag = "composer_voice_button"
+internal const val ComposerVoiceRecordingCapsuleTag = "composer_voice_recording_capsule"
 internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
@@ -670,6 +672,8 @@ fun ConversationScreen(
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
+    onTapVoiceButton: () -> Unit = {},
+    onCancelVoiceRecording: () -> Unit = {},
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
@@ -1234,6 +1238,8 @@ fun ConversationScreen(
                                         onSelectServiceTier = onSelectServiceTier,
                                         onOpenAttachmentPicker = onOpenAttachmentPicker,
                                         onOpenCameraCapture = onOpenCameraCapture,
+                                        onTapVoiceButton = onTapVoiceButton,
+                                        onCancelVoiceRecording = onCancelVoiceRecording,
                                         onRemoveAttachment = onRemoveAttachment,
                                         onSelectFileAutocomplete = onSelectFileAutocomplete,
                                         onRemoveMentionedFile = onRemoveMentionedFile,
@@ -3384,6 +3390,8 @@ private fun ComposerCard(
     onSelectServiceTier: (RemodexServiceTier?) -> Unit,
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
+    onTapVoiceButton: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
@@ -3453,6 +3461,14 @@ private fun ComposerCard(
                 .padding(top = 6.dp, bottom = 6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            AnimatedVisibility(visible = composer.voice.isRecording) {
+                VoiceRecordingCapsule(
+                    voiceUiState = composer.voice,
+                    onCancel = onCancelVoiceRecording,
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                )
+            }
+
             if (composer.attachments.isNotEmpty() ||
                 composer.mentionedFiles.isNotEmpty() ||
                 composer.mentionedSkills.isNotEmpty() ||
@@ -3666,6 +3682,11 @@ private fun ComposerCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        ConversationVoiceButton(
+                            modifier = Modifier.testTag(ComposerVoiceButtonTag),
+                            voiceUiState = composer.voice,
+                            onClick = onTapVoiceButton,
+                        )
                         if (composer.canStop) {
                             ConversationStopButton(
                                 modifier = Modifier.testTag(ComposerStopButtonTag),

@@ -24,6 +24,7 @@ import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import kotlinx.serialization.json.JsonElement
+import java.io.File
 
 interface RemodexAppRepository {
     val session: StateFlow<RemodexSessionSnapshot>
@@ -124,6 +125,13 @@ interface RemodexAppRepository {
     suspend fun refreshGptAccountState()
 
     suspend fun logoutGptAccount()
+
+    suspend fun transcribeVoiceAudioFile(
+        file: File,
+        durationSeconds: Double,
+    ): String {
+        throw UnsupportedOperationException("Voice transcription is not available.")
+    }
 
     suspend fun refreshUsageStatus(threadId: String?)
 

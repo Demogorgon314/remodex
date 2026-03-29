@@ -7,6 +7,7 @@ import com.emanueledipietro.remodex.data.app.RemodexAppRepository
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.platform.media.AndroidVoiceRecorder
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
@@ -66,6 +67,7 @@ data class ComposerUiState(
     val sendLabel: String = "Send",
     val canSend: Boolean = false,
     val canStop: Boolean = false,
+    val voice: ComposerVoiceUiState = ComposerVoiceUiState(),
     val mentionedFiles: List<RemodexComposerMentionedFile> = emptyList(),
     val mentionedSkills: List<RemodexComposerMentionedSkill> = emptyList(),
     val reviewSelection: RemodexComposerReviewSelection? = null,
@@ -80,6 +82,23 @@ data class ComposerUiState(
     val gitState: RemodexGitState = RemodexGitState(),
     val selectedGitBaseBranch: String = "",
 )
+
+enum class ComposerVoiceButtonMode {
+    IDLE,
+    PREFLIGHTING,
+    RECORDING,
+    TRANSCRIBING,
+}
+
+data class ComposerVoiceUiState(
+    val buttonMode: ComposerVoiceButtonMode = ComposerVoiceButtonMode.IDLE,
+    val isConnected: Boolean = false,
+    val audioLevels: List<Float> = emptyList(),
+    val durationSeconds: Double = 0.0,
+) {
+    val isRecording: Boolean
+        get() = buttonMode == ComposerVoiceButtonMode.RECORDING
+}
 
 data class PlanComposerSessionUiState(
     val anchorMessageId: String? = null,
@@ -247,8 +266,23 @@ private data class ThreadChromeState(
     val desktopHandoff: DesktopHandoffUiState = DesktopHandoffUiState(),
 )
 
+private object NoopVoiceRecorder : AndroidVoiceRecorder {
+    override val meteringState = MutableStateFlow(com.emanueledipietro.remodex.platform.media.AndroidVoiceMeteringSnapshot())
+
+    override suspend fun startRecording() {
+        throw UnsupportedOperationException("Voice recording is not configured.")
+    }
+
+    override suspend fun stopRecording(): com.emanueledipietro.remodex.platform.media.AndroidVoiceRecordingClip? {
+        return null
+    }
+
+    override fun cancelRecording() = Unit
+}
+
 class AppViewModel(
     private val repository: RemodexAppRepository,
+    private val voiceRecorder: AndroidVoiceRecorder = NoopVoiceRecorder,
 ) : ViewModel() {
     private val composerDrafts = MutableStateFlow<Map<String, String>>(emptyMap())
     private val composerAttachments = MutableStateFlow<Map<String, List<RemodexComposerAttachment>>>(emptyMap())
@@ -270,6 +304,7 @@ class AppViewModel(
     private val completionHapticSignalState = MutableStateFlow(0L)
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
     private val planComposerSessions = MutableStateFlow<Map<String, PlanComposerSessionUiState>>(emptyMap())
+    private val voiceButtonModeState = MutableStateFlow(ComposerVoiceButtonMode.IDLE)
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
     private val hydratingThreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -280,6 +315,7 @@ class AppViewModel(
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
     private var lastHydrationConnected = false
+    private var voiceOperationGeneration = 0
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
     private var isAppForeground = false
     private var isManualScannerActive = false
@@ -396,13 +432,26 @@ class AppViewModel(
             Triple(gitUiState, sendSignalsByThread, planSessionsByThread)
         }
 
+    private val voiceUiRenderState =
+        combine(
+            voiceButtonModeState,
+            voiceRecorder.meteringState,
+        ) { buttonMode, metering ->
+            ComposerVoiceUiState(
+                buttonMode = buttonMode,
+                audioLevels = metering.audioLevels,
+                durationSeconds = metering.durationSeconds,
+            )
+        }
+
     private val baseUiState =
         combine(
             sessionRenderState,
             composerRenderStateA,
             composerRenderStateB,
             baseUiTransientState,
-        ) { sessionRenderState, renderStateA, renderStateB, transientState ->
+            voiceUiRenderState,
+        ) { sessionRenderState, renderStateA, renderStateB, transientState, voiceUiState ->
             val (gitUiState, sendSignalsByThread, planSessionsByThread) = transientState
             val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
@@ -453,6 +502,8 @@ class AppViewModel(
                         reviewSelection = reviewSelection,
                         isSubagentsSelectionArmed = isSubagentsSelectionArmed,
                     ),
+                    voiceUiState = voiceUiState,
+                    isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED,
                     gitState = gitState,
                     selectedGitBaseBranch = selectedGitBaseBranch,
                     thread = selectedThread,
@@ -583,6 +634,14 @@ class AppViewModel(
             repository.session.collect { snapshot ->
                 val selectedThreadId = snapshot.selectedThread?.id
                 val isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED
+                if ((selectedThreadId == null || selectedThreadId != lastObservedThreadId) &&
+                    voiceButtonModeState.value != ComposerVoiceButtonMode.IDLE
+                ) {
+                    invalidateVoiceCapture()
+                }
+                if (!isConnected && voiceButtonModeState.value != ComposerVoiceButtonMode.IDLE) {
+                    invalidateVoiceCapture()
+                }
                 if (selectedThreadId != null && selectedThreadId != lastObservedThreadId) {
                     lastObservedThreadId = selectedThreadId
                     refreshGitState(selectedThreadId)
@@ -623,6 +682,7 @@ class AppViewModel(
     fun onAppForegroundChanged(isForeground: Boolean) {
         isAppForeground = isForeground
         if (!isForeground) {
+            invalidateVoiceCapture()
             return
         }
         maybeStartAutoReconnect(repository.session.value)
@@ -1238,6 +1298,123 @@ class AppViewModel(
 
     fun presentComposerMessage(message: String?) {
         val threadId = uiState.value.selectedThread?.id ?: return
+        setComposerMessage(threadId, message)
+    }
+
+    fun startVoiceRecording() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        if (voiceButtonModeState.value != ComposerVoiceButtonMode.IDLE) {
+            return
+        }
+        if (!uiState.value.isConnected) {
+            setComposerMessage(threadId, "Connect to your Mac before using voice transcription.")
+            return
+        }
+
+        clearComposerAutocomplete()
+        clearComposerMessage(threadId)
+        val generation = nextVoiceOperationGeneration()
+        voiceButtonModeState.value = ComposerVoiceButtonMode.PREFLIGHTING
+        viewModelScope.launch {
+            try {
+                voiceRecorder.startRecording()
+                val isStillCurrent = isVoiceOperationCurrent(generation) &&
+                    uiState.value.isConnected &&
+                    uiState.value.selectedThread?.id == threadId
+                if (!isStillCurrent) {
+                    voiceRecorder.cancelRecording()
+                    return@launch
+                }
+                voiceButtonModeState.value = ComposerVoiceButtonMode.RECORDING
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (isVoiceOperationCurrent(generation)) {
+                    voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = error.message ?: "Could not start voice transcription.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun stopVoiceRecording() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        if (voiceButtonModeState.value != ComposerVoiceButtonMode.RECORDING) {
+            return
+        }
+        val generation = voiceOperationGeneration
+        voiceButtonModeState.value = ComposerVoiceButtonMode.TRANSCRIBING
+        viewModelScope.launch {
+            var didResetState = false
+            val clip = try {
+                voiceRecorder.stopRecording()
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (isVoiceOperationCurrent(generation)) {
+                    voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
+                    didResetState = true
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = error.message ?: "Could not finish voice recording.",
+                    )
+                }
+                null
+            }
+
+            if (clip == null) {
+                if (isVoiceOperationCurrent(generation) && !didResetState) {
+                    voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
+                }
+                return@launch
+            }
+
+            try {
+                val transcript = repository.transcribeVoiceAudioFile(
+                    file = clip.file,
+                    durationSeconds = clip.durationSeconds,
+                )
+                val isStillCurrent = isVoiceOperationCurrent(generation) &&
+                    uiState.value.isConnected &&
+                    uiState.value.selectedThread?.id == threadId
+                if (isStillCurrent) {
+                    appendVoiceTranscript(threadId, transcript)
+                }
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (isVoiceOperationCurrent(generation)) {
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = error.message ?: "Could not transcribe this voice note.",
+                    )
+                }
+            } finally {
+                clip.file.delete()
+                if (isVoiceOperationCurrent(generation)) {
+                    voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
+                }
+            }
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        invalidateVoiceCapture()
+    }
+
+    fun handleVoicePermissionDenied(requiresSettings: Boolean) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val message = if (requiresSettings) {
+            "Microphone permission was denied. Enable microphone access in Android Settings to use voice transcription."
+        } else {
+            "Microphone permission was denied. Tap the mic again to allow voice transcription."
+        }
         setComposerMessage(threadId, message)
     }
 
@@ -2525,6 +2702,33 @@ class AppViewModel(
         setComposerMessage(threadId, null)
     }
 
+    private fun appendVoiceTranscript(
+        threadId: String,
+        transcript: String,
+    ) {
+        composerDrafts.update { draftsByThread ->
+            draftsByThread.toMutableMap().apply {
+                val currentDraft = this[threadId].orEmpty()
+                this[threadId] = appendVoiceTranscriptToDraft(currentDraft, transcript)
+            }
+        }
+    }
+
+    private fun invalidateVoiceCapture() {
+        nextVoiceOperationGeneration()
+        voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
+        voiceRecorder.cancelRecording()
+    }
+
+    private fun nextVoiceOperationGeneration(): Int {
+        voiceOperationGeneration += 1
+        return voiceOperationGeneration
+    }
+
+    private fun isVoiceOperationCurrent(generation: Int): Boolean {
+        return generation == voiceOperationGeneration
+    }
+
     private fun clearReviewSelectionIfConfirmed(threadId: String) {
         if (composerReviewSelections.value[threadId]?.target != null) {
             composerReviewSelections.update { selectionsByThread ->
@@ -3126,6 +3330,8 @@ class AppViewModel(
         attachmentLimitMessage: String?,
         composerMessage: String?,
         autocomplete: RemodexComposerAutocompleteState,
+        voiceUiState: ComposerVoiceUiState,
+        isConnected: Boolean,
         gitState: RemodexGitState,
         selectedGitBaseBranch: String,
         thread: RemodexThreadSummary?,
@@ -3151,6 +3357,7 @@ class AppViewModel(
             },
             canSend = canSend,
             canStop = showsRunningUi,
+            voice = voiceUiState.copy(isConnected = isConnected),
             mentionedFiles = mentionedFiles,
             mentionedSkills = mentionedSkills,
             reviewSelection = reviewSelection,
@@ -3175,6 +3382,24 @@ class AppViewModel(
     }
 }
 
+internal fun appendVoiceTranscriptToDraft(
+    currentDraft: String,
+    transcript: String,
+): String {
+    val normalizedTranscript = transcript.trim()
+    if (normalizedTranscript.isEmpty()) {
+        return currentDraft
+    }
+    if (currentDraft.isEmpty()) {
+        return normalizedTranscript
+    }
+    return if (currentDraft.last().isWhitespace()) {
+        currentDraft + normalizedTranscript
+    } else {
+        "$currentDraft $normalizedTranscript"
+    }
+}
+
 private fun com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot.isConnectedForRecovery(): Boolean {
     return connectionStatus.phase == RemodexConnectionPhase.CONNECTED ||
         secureConnection.secureState == SecureConnectionState.ENCRYPTED
@@ -3182,13 +3407,17 @@ private fun com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot.isConne
 
 class AppViewModelFactory(
     private val repository: RemodexAppRepository,
+    private val voiceRecorder: AndroidVoiceRecorder,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(AppViewModel::class.java)) {
             "Unsupported ViewModel class: ${modelClass.name}"
         }
-        return AppViewModel(repository) as T
+        return AppViewModel(
+            repository = repository,
+            voiceRecorder = voiceRecorder,
+        ) as T
     }
 }
 

@@ -18,6 +18,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadSyncService
 import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
 import com.emanueledipietro.remodex.data.threads.shouldRetryAfterThreadMaterializationValue
 import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
+import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
@@ -78,7 +79,17 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import java.io.File
 import java.util.UUID
+
+private object NoopVoiceTranscriptionService : RemodexVoiceTranscriptionService {
+    override suspend fun transcribeVoiceAudioFile(
+        file: File,
+        durationSeconds: Double,
+    ): String {
+        throw UnsupportedOperationException("Voice transcription is not configured.")
+    }
+}
 
 class DefaultRemodexAppRepository(
     private val appPreferencesRepository: AppPreferencesRepository,
@@ -87,6 +98,7 @@ class DefaultRemodexAppRepository(
     private val threadSyncService: ThreadSyncService,
     private val threadCommandService: ThreadCommandService,
     private val threadHydrationService: ThreadHydrationService? = null,
+    private val voiceTranscriptionService: RemodexVoiceTranscriptionService = NoopVoiceTranscriptionService,
     private val managedPushRegistrationState: Flow<RemodexNotificationRegistrationState> = flowOf(
         RemodexNotificationRegistrationState(),
     ),
@@ -972,6 +984,24 @@ class DefaultRemodexAppRepository(
         gptAccountSnapshotState.value = loggedOutGptAccountSnapshot(gptAccountSnapshotState.value)
         gptAccountErrorMessageState.value = null
         refreshGptAccountState()
+    }
+
+    override suspend fun transcribeVoiceAudioFile(
+        file: File,
+        durationSeconds: Double,
+    ): String {
+        return try {
+            voiceTranscriptionService.transcribeVoiceAudioFile(
+                file = file,
+                durationSeconds = durationSeconds,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            runCatching { refreshGptAccountState() }
+            throw error
+        }
     }
 
     override suspend fun refreshUsageStatus(threadId: String?) {

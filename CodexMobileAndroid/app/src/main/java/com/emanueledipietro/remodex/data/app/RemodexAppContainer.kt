@@ -11,9 +11,12 @@ import com.emanueledipietro.remodex.data.preferences.DataStoreAppPreferencesRepo
 import com.emanueledipietro.remodex.data.threads.BridgeThreadSyncService
 import com.emanueledipietro.remodex.data.threads.RemodexThreadCacheDatabase
 import com.emanueledipietro.remodex.data.threads.RoomThreadCacheStore
+import com.emanueledipietro.remodex.data.voice.DefaultRemodexVoiceTranscriptionService
+import com.emanueledipietro.remodex.data.voice.OkHttpVoiceTranscriptionClient
 import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotificationManager
 import com.emanueledipietro.remodex.platform.notifications.AndroidManagedPushRegistrationCoordinator
 import com.emanueledipietro.remodex.platform.notifications.FirebaseManagedPushTokenProvider
+import com.emanueledipietro.remodex.platform.media.DefaultAndroidVoiceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +52,11 @@ class RemodexAppContainer(
         secureConnectionCoordinator = secureConnectionCoordinator,
         scope = appScope,
     )
+    val voiceRecorder = DefaultAndroidVoiceRecorder(context.applicationContext)
+    private val voiceTranscriptionService = DefaultRemodexVoiceTranscriptionService(
+        secureConnectionCoordinator = secureConnectionCoordinator,
+        transcriptionClient = OkHttpVoiceTranscriptionClient(okHttpClient),
+    )
     val managedPushRegistrationCoordinator = AndroidManagedPushRegistrationCoordinator(
         secureConnectionCoordinator = secureConnectionCoordinator,
         secureStore = secureStore,
@@ -72,6 +80,7 @@ class RemodexAppContainer(
             threadSyncService = threadSyncService,
             threadCommandService = threadSyncService,
             threadHydrationService = threadSyncService,
+            voiceTranscriptionService = voiceTranscriptionService,
             managedPushRegistrationState = managedPushRegistrationCoordinator.state,
             scope = appScope,
         )

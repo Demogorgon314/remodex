@@ -17,7 +17,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
+import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceButtonMode
 import com.emanueledipietro.remodex.feature.appshell.ComposerUiState
+import com.emanueledipietro.remodex.feature.appshell.ComposerVoiceUiState
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -216,6 +218,114 @@ class ConversationScreenTest {
         }
 
         composeRule.onNodeWithTag(ComposerSendButtonTag).assertIsNotEnabled()
+    }
+
+    @Test
+    fun composerShowsVoiceButton() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(RemodexComposerAutocompleteState()),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onAllNodesWithTag(ComposerVoiceButtonTag).assertCountEquals(1)
+    }
+
+    @Test
+    fun activeVoiceRecordingShowsCapsule() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        voice = ComposerVoiceUiState(
+                            buttonMode = ComposerVoiceButtonMode.RECORDING,
+                            isConnected = true,
+                            audioLevels = List(24) { index -> (index % 6) / 5f },
+                            durationSeconds = 12.4,
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onSendQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ComposerVoiceRecordingCapsuleTag).assertIsDisplayed()
     }
 
     @Test
@@ -909,6 +1019,7 @@ class ConversationScreenTest {
         canStop: Boolean = false,
         isSelectedThreadHydrating: Boolean = false,
         messages: List<RemodexConversationItem> = emptyList(),
+        voice: ComposerVoiceUiState = ComposerVoiceUiState(isConnected = true),
     ): AppUiState {
         val thread = RemodexThreadSummary(
             id = "thread-1",
@@ -928,6 +1039,7 @@ class ConversationScreenTest {
             composer = ComposerUiState(
                 draftText = "",
                 canStop = canStop,
+                voice = voice,
                 autocomplete = autocompleteState,
             ),
         )

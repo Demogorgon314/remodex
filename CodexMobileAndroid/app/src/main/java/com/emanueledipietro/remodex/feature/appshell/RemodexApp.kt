@@ -260,6 +260,18 @@ fun RemodexApp(
         }
         launchCameraCapture()
     }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.startVoiceRecording()
+            return@rememberLauncherForActivityResult
+        }
+
+        val activity = context.findActivity()
+        val requiresSettings = activity?.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) == false
+        viewModel.handleVoicePermissionDenied(requiresSettings = requiresSettings)
+    }
 
     DisposableEffect(lifecycleOwner, notificationManager) {
         viewModel.onAppForegroundChanged(
@@ -440,6 +452,24 @@ fun RemodexApp(
             viewModel.prepareForManualScan()
             isScannerPresented = true
         },
+        onRequestVoiceInput = {
+            when (uiState.composer.voice.buttonMode) {
+                ComposerVoiceButtonMode.RECORDING -> viewModel.stopVoiceRecording()
+                ComposerVoiceButtonMode.PREFLIGHTING,
+                ComposerVoiceButtonMode.TRANSCRIBING -> Unit
+                ComposerVoiceButtonMode.IDLE -> {
+                    if (
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        viewModel.startVoiceRecording()
+                    } else {
+                        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            }
+        },
+        onCancelVoiceRecording = viewModel::cancelVoiceRecording,
     )
 
     if (isScannerPresented) {
@@ -556,6 +586,8 @@ private fun RemodexShell(
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
     onOpenScanner: () -> Unit,
+    onRequestVoiceInput: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
 ) {
     val shellBackground = if (shellRoute == ShellRoute.CONTENT) {
         remodexConversationChrome().canvas
@@ -635,6 +667,8 @@ private fun RemodexShell(
                         notificationPermissionUiState = notificationPermissionUiState,
                         onOpenAttachmentPicker = onOpenAttachmentPicker,
                         onOpenCameraCapture = onOpenCameraCapture,
+                        onRequestVoiceInput = onRequestVoiceInput,
+                        onCancelVoiceRecording = onCancelVoiceRecording,
                         onNavigateToThreadCompletion = { threadId ->
                             viewModel.selectThread(threadId)
                             onShellRouteChange(ShellRoute.CONTENT)
@@ -671,6 +705,8 @@ private fun RemodexShell(
                         notificationPermissionUiState = notificationPermissionUiState,
                         onOpenAttachmentPicker = onOpenAttachmentPicker,
                         onOpenCameraCapture = onOpenCameraCapture,
+                        onRequestVoiceInput = onRequestVoiceInput,
+                        onCancelVoiceRecording = onCancelVoiceRecording,
                         onNavigateToThreadCompletion = { threadId ->
                             viewModel.selectThread(threadId)
                             onShellRouteChange(ShellRoute.CONTENT)
@@ -748,6 +784,8 @@ private fun MainPane(
     notificationPermissionUiState: RemodexNotificationPermissionUiState,
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
+    onRequestVoiceInput: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
     onNavigateToThreadCompletion: (String) -> Unit,
     onDismissThreadCompletionBanner: () -> Unit,
 ) {
@@ -843,6 +881,8 @@ private fun MainPane(
                             onSelectServiceTier = viewModel::selectServiceTier,
                             onOpenAttachmentPicker = onOpenAttachmentPicker,
                             onOpenCameraCapture = onOpenCameraCapture,
+                            onTapVoiceButton = onRequestVoiceInput,
+                            onCancelVoiceRecording = onCancelVoiceRecording,
                             onRemoveAttachment = viewModel::removeAttachment,
                             onSelectFileAutocomplete = viewModel::selectFileAutocomplete,
                             onRemoveMentionedFile = viewModel::removeMentionedFile,

@@ -22,7 +22,10 @@ class MainActivity : ComponentActivity() {
         get() = (application as RemodexApplication).container
 
     private val viewModel: AppViewModel by viewModels {
-        AppViewModelFactory(appContainer.appRepository)
+        AppViewModelFactory(
+            repository = appContainer.appRepository,
+            voiceRecorder = appContainer.voiceRecorder,
+        )
     }
     private var pendingThreadDeepLinkId by mutableStateOf<String?>(null)
 
