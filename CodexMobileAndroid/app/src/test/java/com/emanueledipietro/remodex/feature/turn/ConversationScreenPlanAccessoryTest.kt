@@ -19,7 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class ConversationScreenPlanAccessoryTest {
     @Test
-    fun `timeline layout keeps active and completed plans in timeline without pinning`() {
+    fun `timeline layout pins active plan while keeping completed plan in timeline`() {
         val completedPlan = planItem(
             id = "plan-complete",
             steps = listOf(
@@ -43,15 +43,15 @@ class ConversationScreenPlanAccessoryTest {
             listOf(completedPlan, chatItem, activePlan),
         )
 
-        assertNull(layout.pinnedPlanItem)
+        assertEquals("plan-active", layout.pinnedPlanItem?.id)
         assertEquals(
-            listOf("plan-complete", "assistant-chat", "plan-active"),
+            listOf("plan-complete", "assistant-chat"),
             layout.timelineItems.map(RemodexConversationItem::id),
         )
     }
 
     @Test
-    fun `timeline layout keeps completed plans visible when nothing is pinned`() {
+    fun `timeline layout keeps completed system plans visible when nothing is pinned`() {
         val completedPlan = planItem(
             id = "plan-complete",
             steps = listOf(
@@ -81,6 +81,20 @@ class ConversationScreenPlanAccessoryTest {
         )
 
         assertEquals(listOf("plan-complete"), layout.timelineItems.map(RemodexConversationItem::id))
+    }
+
+    @Test
+    fun `timeline layout pins streaming system plan`() {
+        val streamingPlan = planItem(
+            id = "plan-streaming",
+            steps = emptyList(),
+            isStreaming = true,
+        )
+
+        val layout = buildConversationTimelineLayout(listOf(streamingPlan))
+
+        assertEquals("plan-streaming", layout.pinnedPlanItem?.id)
+        assertTrue(layout.timelineItems.isEmpty())
     }
 
     @Test
@@ -276,12 +290,14 @@ class ConversationScreenPlanAccessoryTest {
         id: String,
         explanation: String? = null,
         steps: List<RemodexPlanStep>,
+        isStreaming: Boolean = false,
     ): RemodexConversationItem {
         return RemodexConversationItem(
             id = id,
             speaker = ConversationSpeaker.SYSTEM,
             kind = ConversationItemKind.PLAN,
             text = explanation ?: "Plan update",
+            isStreaming = isStreaming,
             planState = RemodexPlanState(
                 explanation = explanation,
                 steps = steps,

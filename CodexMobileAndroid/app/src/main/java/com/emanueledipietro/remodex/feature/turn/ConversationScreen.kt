@@ -333,8 +333,25 @@ internal fun buildConversationTimelineLayout(
     )
 }
 
+private fun RemodexConversationItem.isPlanSystemMessage(): Boolean {
+    return speaker == ConversationSpeaker.SYSTEM && kind == ConversationItemKind.PLAN
+}
+
 private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(): Boolean {
-    return false
+    if (!isPlanSystemMessage()) {
+        return false
+    }
+
+    if (isStreaming) {
+        return true
+    }
+
+    val steps = planState?.steps.orEmpty()
+    if (steps.isEmpty()) {
+        return false
+    }
+
+    return steps.any { step -> step.status != RemodexPlanStepStatus.COMPLETED }
 }
 
 private fun RemodexConversationItem.isCompletedPlanForComposerFlow(): Boolean {
