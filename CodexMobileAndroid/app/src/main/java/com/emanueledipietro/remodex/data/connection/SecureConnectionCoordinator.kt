@@ -49,8 +49,10 @@ class SecureConnectionCoordinator(
 
     private val connectionState = MutableStateFlow(initialSnapshot())
     private val notificationsFlow = MutableSharedFlow<RpcMessage>(extraBufferCapacity = 64)
+    private val requestsFlow = MutableSharedFlow<RpcMessage>(extraBufferCapacity = 64)
     val state: StateFlow<SecureConnectionSnapshot> = connectionState.asStateFlow()
     val notifications: SharedFlow<RpcMessage> = notificationsFlow.asSharedFlow()
+    val requests: SharedFlow<RpcMessage> = requestsFlow.asSharedFlow()
 
     suspend fun sendRequest(
         method: String,
@@ -649,13 +651,7 @@ class SecureConnectionCoordinator(
             }
 
             rpcMessage.method != null && rpcMessage.id != null -> {
-                scope.launch {
-                    sendErrorResponse(
-                        id = rpcMessage.id,
-                        code = -32601,
-                        message = "Unsupported request method: ${rpcMessage.method}",
-                    )
-                }
+                requestsFlow.tryEmit(rpcMessage)
             }
 
             requestKey != null -> {

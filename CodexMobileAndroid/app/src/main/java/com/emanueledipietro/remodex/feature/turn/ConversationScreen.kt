@@ -120,6 +120,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -166,6 +167,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextDecoration
@@ -201,6 +203,7 @@ import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPlanState
+import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -218,6 +221,8 @@ import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
@@ -265,6 +270,117 @@ private data class TimelineBottomAnchorRequest(
     val queuedDraftCount: Int,
     val pinnedPlanItemId: String?,
 )
+
+internal data class ConversationTimelineLayout(
+    val timelineItems: List<RemodexConversationItem>,
+    val pinnedPlanItem: RemodexConversationItem?,
+)
+
+internal enum class PlanAccessoryStatus(val label: String) {
+    PENDING("Pending"),
+    IN_PROGRESS("In progress"),
+    COMPLETED("Completed"),
+}
+
+internal data class PlanAccessorySnapshot(
+    val summary: String,
+    val status: PlanAccessoryStatus,
+    val completedStepCount: Int,
+    val totalStepCount: Int,
+    val isStreaming: Boolean,
+    val stepStatuses: List<RemodexPlanStepStatus>,
+) {
+    val progressText: String?
+        get() = totalStepCount.takeIf { it > 0 }?.let { "$completedStepCount/$it" }
+
+    val progressDescription: String
+        get() = if (totalStepCount > 0) {
+            "$completedStepCount of $totalStepCount complete"
+        } else {
+            status.label
+        }
+}
+
+internal fun buildConversationTimelineLayout(
+    messages: List<RemodexConversationItem>,
+): ConversationTimelineLayout {
+    val timelineItems = ArrayList<RemodexConversationItem>(messages.size)
+    var pinnedPlanItem: RemodexConversationItem? = null
+
+    messages.forEach { item ->
+        when {
+            item.shouldDisplayPinnedPlanAccessory() -> pinnedPlanItem = item
+            item.kind == ConversationItemKind.PLAN -> Unit
+            else -> timelineItems += item
+        }
+    }
+
+    return ConversationTimelineLayout(
+        timelineItems = timelineItems,
+        pinnedPlanItem = pinnedPlanItem,
+    )
+}
+
+private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(): Boolean {
+    if (kind != ConversationItemKind.PLAN) {
+        return false
+    }
+    if (isStreaming) {
+        return true
+    }
+
+    val steps = planState?.steps.orEmpty()
+    return steps.isNotEmpty() && steps.any { step -> step.status != RemodexPlanStepStatus.COMPLETED }
+}
+
+internal fun planAccessorySnapshot(planItem: RemodexConversationItem): PlanAccessorySnapshot {
+    val steps = planItem.planState?.steps.orEmpty()
+    val completedStepCount = steps.count { step -> step.status == RemodexPlanStepStatus.COMPLETED }
+    val status = when {
+        steps.any { step -> step.status == RemodexPlanStepStatus.IN_PROGRESS } -> PlanAccessoryStatus.IN_PROGRESS
+        steps.isNotEmpty() && completedStepCount == steps.size -> PlanAccessoryStatus.COMPLETED
+        else -> PlanAccessoryStatus.PENDING
+    }
+    val summary = (
+        steps.firstOrNull { step -> step.status == RemodexPlanStepStatus.IN_PROGRESS }?.step
+            ?: steps.firstOrNull { step -> step.status == RemodexPlanStepStatus.PENDING }?.step
+            ?: steps.lastOrNull()?.step
+            ?: planItem.planState?.explanation?.trim()?.takeIf(String::isNotEmpty)
+            ?: planItem.text.trim().takeIf(String::isNotEmpty)
+            ?: "Open plan details"
+        ).trim()
+
+    return PlanAccessorySnapshot(
+        summary = summary,
+        status = status,
+        completedStepCount = completedStepCount,
+        totalStepCount = steps.size,
+        isStreaming = planItem.isStreaming,
+        stepStatuses = steps.map { step -> step.status },
+    )
+}
+
+private fun normalizedPlanText(rawValue: String?): String? {
+    val trimmed = rawValue?.trim().orEmpty()
+    return trimmed
+        .takeIf(String::isNotEmpty)
+        ?.takeUnless { value -> value == "Planning..." }
+}
+
+private fun planExplanationText(planItem: RemodexConversationItem): String? {
+    val explanation = normalizedPlanText(planItem.planState?.explanation)
+    val body = normalizedPlanText(planItem.text)
+    return explanation?.takeUnless { it == body }
+}
+
+private fun planPrimaryBodyText(planItem: RemodexConversationItem): String? {
+    return normalizedPlanText(planItem.text)
+        ?: normalizedPlanText(planItem.planState?.explanation)
+}
+
+internal fun planAccessoryContentDescription(snapshot: PlanAccessorySnapshot): String {
+    return "Open active plan. ${snapshot.status.label}, ${snapshot.progressDescription}. ${snapshot.summary}"
+}
 private val SkillAutocompleteRowHeight = 50.dp
 private val SlashAutocompleteRowHeight = 50.dp
 private const val MaxAutocompleteVisibleRows = 6
@@ -459,6 +575,7 @@ fun ConversationScreen(
     onRetryConnection: () -> Unit,
     onComposerInputChanged: (String) -> Unit,
     onSendPrompt: () -> Unit,
+    onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit = { _, _ -> },
     onStopTurn: () -> Unit,
     onSendQueuedDraft: (String) -> Unit,
     onSelectModel: (String?) -> Unit,
@@ -518,8 +635,11 @@ fun ConversationScreen(
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var fileChangeSheetPresentation by remember(thread.id) { mutableStateOf<FileChangeSheetPresentation?>(null) }
     var composerFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
-    val pinnedPlanItem = thread.messages.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
-    val timelineItems = thread.messages.filterNot { item -> item.id == pinnedPlanItem?.id }
+    val conversationLayout = remember(thread.messages) {
+        buildConversationTimelineLayout(thread.messages)
+    }
+    val pinnedPlanItem = conversationLayout.pinnedPlanItem
+    val timelineItems = conversationLayout.timelineItems
     val blockAccessories = remember(
         timelineItems,
         thread.isRunning,
@@ -822,6 +942,7 @@ fun ConversationScreen(
                                         ConversationSpeaker.SYSTEM -> SystemConversationRow(
                                             item = message,
                                             accessoryState = blockAccessories[message.id],
+                                            onSubmitStructuredUserInput = onSubmitStructuredUserInput,
                                             commandExecutionDetails = message.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
                                             onOpenFileChangeDetails = { presentation ->
                                                 fileChangeSheetPresentation = presentation
@@ -1320,10 +1441,12 @@ private fun PlanAccessoryCard(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    val planSummary = planItem.planState?.explanation
-        ?.takeIf(String::isNotBlank)
-        ?: planItem.planState?.steps?.firstOrNull()?.step
-        ?: planItem.text
+    val snapshot = remember(planItem) { planAccessorySnapshot(planItem) }
+    val statusTint = when (snapshot.status) {
+        PlanAccessoryStatus.PENDING -> chrome.secondaryText
+        PlanAccessoryStatus.IN_PROGRESS -> chrome.accent
+        PlanAccessoryStatus.COMPLETED -> FileChangeAddedColor
+    }
     Surface(
         color = chrome.panelSurface,
         shape = RemodexConversationShapes.card,
@@ -1334,6 +1457,14 @@ private fun PlanAccessoryCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    contentDescription = planAccessoryContentDescription(snapshot)
+                    onClick(label = "Show the current plan steps") {
+                        onClick()
+                        true
+                    }
+                }
                 .clickable(onClick = onClick)
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1348,7 +1479,7 @@ private fun PlanAccessoryCard(
                     Surface(
                         modifier = Modifier.size(7.dp),
                         shape = CircleShape,
-                        color = chrome.accent,
+                        color = statusTint,
                     ) {}
                 }
             }
@@ -1356,19 +1487,78 @@ private fun PlanAccessoryCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Plan",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                    Text(
+                        text = snapshot.status.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusTint,
+                    )
+                    if (snapshot.stepStatuses.isNotEmpty()) {
+                        PlanAccessoryStepRail(
+                            stepStatuses = snapshot.stepStatuses,
+                            activeColor = chrome.accent,
+                            pendingColor = chrome.secondaryText.copy(alpha = 0.55f),
+                            completedColor = FileChangeAddedColor,
+                        )
+                    }
+                    if (snapshot.isStreaming) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = statusTint,
+                        )
+                    }
+                }
                 Text(
-                    text = "Plan",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = chrome.secondaryText,
-                )
-                Text(
-                    text = planSummary,
+                    text = snapshot.summary,
                     style = MaterialTheme.typography.bodyMedium,
                     color = chrome.bodyText,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            snapshot.progressText?.let { progressText ->
+                Text(
+                    text = progressText,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = chrome.secondaryText,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanAccessoryStepRail(
+    stepStatuses: List<RemodexPlanStepStatus>,
+    activeColor: Color,
+    pendingColor: Color,
+    completedColor: Color,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        stepStatuses.forEach { status ->
+            val color = when (status) {
+                RemodexPlanStepStatus.PENDING -> pendingColor
+                RemodexPlanStepStatus.IN_PROGRESS -> activeColor
+                RemodexPlanStepStatus.COMPLETED -> completedColor
+            }
+            Box(
+                modifier = Modifier
+                    .size(width = 10.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(color),
+            )
         }
     }
 }
@@ -1555,7 +1745,14 @@ private fun PlanDetailsSheet(
     onDismiss: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    val planState = planItem.planState
+    val snapshot = remember(planItem) { planAccessorySnapshot(planItem) }
+    val explanationText = remember(planItem) { planExplanationText(planItem) }
+    val bodyText = remember(planItem) { planPrimaryBodyText(planItem) ?: snapshot.summary }
+    val statusTint = when (snapshot.status) {
+        PlanAccessoryStatus.PENDING -> chrome.secondaryText
+        PlanAccessoryStatus.IN_PROGRESS -> chrome.warning
+        PlanAccessoryStatus.COMPLETED -> FileChangeAddedColor
+    }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -1564,55 +1761,131 @@ private fun PlanDetailsSheet(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Active plan",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                TextButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Done")
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MetaPill(
+                    label = snapshot.status.label,
+                    backgroundColor = chrome.accentSurface,
+                    contentColor = statusTint,
+                )
+                snapshot.progressText?.let { progress ->
+                    Text(
+                        text = progress,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                }
+                if (snapshot.stepStatuses.isNotEmpty()) {
+                    PlanAccessoryStepRail(
+                        stepStatuses = snapshot.stepStatuses,
+                        activeColor = chrome.warning,
+                        pendingColor = chrome.secondaryText.copy(alpha = 0.55f),
+                        completedColor = FileChangeAddedColor,
+                    )
+                }
+                if (snapshot.isStreaming) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 1.75.dp,
+                        color = statusTint,
+                    )
+                }
+            }
             Text(
-                text = "Active plan",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = chrome.titleText,
+                text = bodyText,
+                style = MaterialTheme.typography.bodyLarge,
+                color = chrome.bodyText,
             )
-            planState?.explanation?.takeIf(String::isNotBlank)?.let { explanation ->
+            explanationText?.let { explanation ->
                 Text(
                     text = explanation,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = chrome.bodyText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.secondaryText,
                 )
             }
-            if (!planState?.steps.isNullOrEmpty()) {
+            if (!planItem.planState?.steps.isNullOrEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    planState?.steps.orEmpty().forEach { step ->
-                        Surface(
-                            color = chrome.mutedSurface,
-                            shape = RemodexConversationShapes.nestedCard,
-                            border = BorderStroke(1.dp, chrome.subtleBorder),
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text(
-                                    text = step.step,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = chrome.bodyText,
-                                )
-                                MetaPill(
-                                    label = step.status.label,
-                                    backgroundColor = chrome.accentSurface,
-                                    contentColor = chrome.titleText,
-                                )
-                            }
-                        }
+                    planItem.planState?.steps.orEmpty().forEach { step ->
+                        PlanDetailStepRow(step = step)
                     }
                 }
-            } else {
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun PlanDetailStepRow(step: com.emanueledipietro.remodex.model.RemodexPlanStep) {
+    val chrome = remodexConversationChrome()
+    val statusColor = when (step.status) {
+        RemodexPlanStepStatus.PENDING -> chrome.secondaryText
+        RemodexPlanStepStatus.IN_PROGRESS -> chrome.warning
+        RemodexPlanStepStatus.COMPLETED -> FileChangeAddedColor
+    }
+    val statusIcon = when (step.status) {
+        RemodexPlanStepStatus.PENDING -> Icons.Outlined.Checklist
+        RemodexPlanStepStatus.IN_PROGRESS -> Icons.Outlined.Bolt
+        RemodexPlanStepStatus.COMPLETED -> Icons.Outlined.CheckCircle
+    }
+    Surface(
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.nestedCard,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Icon(
+                imageVector = statusIcon,
+                contentDescription = null,
+                tint = statusColor,
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(16.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 Text(
-                    text = planItem.text,
+                    text = step.step,
                     style = MaterialTheme.typography.bodyLarge,
                     color = chrome.bodyText,
                 )
+                MetaPill(
+                    label = step.status.label,
+                    backgroundColor = chrome.accentSurface,
+                    contentColor = statusColor,
+                )
             }
-            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
@@ -5228,6 +5501,7 @@ private fun ConversationBubble(
         ConversationSpeaker.SYSTEM -> SystemConversationRow(
             item = item,
             accessoryState = accessoryState,
+            onSubmitStructuredUserInput = { _, _ -> },
             commandExecutionDetails = item.itemId?.let(commandExecutionDetailsByItemId::get),
             onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
@@ -5404,6 +5678,7 @@ private fun LightweightStreamingAssistantMarkdownText(
 private fun SystemConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
+    onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
     commandExecutionDetails: RemodexCommandExecutionDetails?,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
@@ -5446,7 +5721,10 @@ private fun SystemConversationRow(
                 onOpenSubagentThread = onOpenSubagentThread,
                 onHydrateSubagentThread = onHydrateSubagentThread,
             )
-            ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(item.structuredUserInputRequest)
+            ConversationItemKind.USER_INPUT_PROMPT -> StructuredUserInputRow(
+                request = item.structuredUserInputRequest,
+                onSubmit = onSubmitStructuredUserInput,
+            )
             ConversationItemKind.PLAN -> Unit
             ConversationItemKind.CHAT -> DefaultSystemRow(
                 item = item,
@@ -7813,11 +8091,40 @@ private data class SubagentStatusPresentation(
 }
 
 @Composable
-private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) {
+private fun StructuredUserInputRow(
+    request: RemodexStructuredUserInputRequest?,
+    onSubmit: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+) {
     if (request == null) {
         return
     }
     val chrome = remodexConversationChrome()
+    val coroutineScope = rememberCoroutineScope()
+    var selectedOptionsByQuestionId by remember(request.requestIdKey) {
+        mutableStateOf<Map<String, String>>(emptyMap())
+    }
+    var typedAnswersByQuestionId by remember(request.requestIdKey) {
+        mutableStateOf<Map<String, String>>(emptyMap())
+    }
+    var isSubmitting by rememberSaveable(request.requestIdKey) { mutableStateOf(false) }
+    var hasSubmittedResponse by rememberSaveable(request.requestIdKey) { mutableStateOf(false) }
+    var submissionError by rememberSaveable(request.requestIdKey) { mutableStateOf<String?>(null) }
+
+    fun resolvedAnswer(questionId: String): String? {
+        val typed = typedAnswersByQuestionId[questionId]?.trim().orEmpty()
+        if (typed.isNotEmpty()) {
+            return typed
+        }
+        val selected = selectedOptionsByQuestionId[questionId]?.trim().orEmpty()
+        if (selected.isNotEmpty()) {
+            return selected
+        }
+        return null
+    }
+
+    val canSubmit = !isSubmitting &&
+        !hasSubmittedResponse &&
+        request.questions.all { question -> resolvedAnswer(question.id) != null }
     Surface(
         color = chrome.accentSurface,
         shape = RemodexConversationShapes.card,
@@ -7836,32 +8143,158 @@ private fun StructuredUserInputRow(request: RemodexStructuredUserInputRequest?) 
                 style = MaterialTheme.typography.labelMedium,
                 color = chrome.titleText,
             )
+            submissionError?.takeIf(String::isNotBlank)?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             request.questions.forEach { question ->
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = question.header,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = chrome.titleText,
-                    )
+                    question.header.trim().takeIf(String::isNotEmpty)?.let { header ->
+                        Text(
+                            text = header,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = chrome.titleText,
+                        )
+                    }
                     Text(
                         text = question.question,
                         style = MaterialTheme.typography.bodyMedium,
                         color = chrome.bodyText,
                     )
                     question.options.forEach { option ->
+                        val isSelected = selectedOptionsByQuestionId[question.id] == option.label
                         Surface(
                             color = chrome.nestedSurface,
                             shape = RemodexConversationShapes.nestedCard,
                             border = BorderStroke(1.dp, chrome.subtleBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isSubmitting) {
+                                    submissionError = null
+                                    selectedOptionsByQuestionId = selectedOptionsByQuestionId
+                                        .toMutableMap()
+                                        .apply { this[question.id] = option.label }
+                                },
                         ) {
-                            Text(
-                                text = "${option.label}: ${option.description}",
+                            Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = chrome.bodyText,
-                            )
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) chrome.accent else chrome.subtleBorder,
+                                            shape = CircleShape,
+                                        )
+                                        .background(
+                                            color = if (isSelected) chrome.accent else Color.Transparent,
+                                            shape = CircleShape,
+                                        ),
+                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = option.label,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (isSelected) chrome.accent else chrome.bodyText,
+                                        fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal,
+                                    )
+                                    option.description.trim().takeIf(String::isNotEmpty)?.let { description ->
+                                        Text(
+                                            text = description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = chrome.secondaryText,
+                                        )
+                                    }
+                                }
+                            }
                         }
+                    }
+                    if (question.options.isEmpty() || question.isOther || question.isSecret) {
+                        OutlinedTextField(
+                            value = typedAnswersByQuestionId[question.id].orEmpty(),
+                            onValueChange = { updatedValue ->
+                                submissionError = null
+                                typedAnswersByQuestionId = typedAnswersByQuestionId
+                                    .toMutableMap()
+                                    .apply { this[question.id] = updatedValue }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !isSubmitting,
+                            singleLine = !question.isOther,
+                            minLines = if (question.isOther) 3 else 1,
+                            placeholder = {
+                                Text(
+                                    if (question.isOther) {
+                                        "Other answer"
+                                    } else {
+                                        "Your answer"
+                                    },
+                                )
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = if (question.isSecret) {
+                                    KeyboardCapitalization.None
+                                } else {
+                                    KeyboardCapitalization.Sentences
+                                },
+                                keyboardType = if (question.isSecret) {
+                                    KeyboardType.Password
+                                } else {
+                                    KeyboardType.Text
+                                },
+                            ),
+                            visualTransformation = if (question.isSecret) {
+                                PasswordVisualTransformation()
+                            } else {
+                                androidx.compose.ui.text.input.VisualTransformation.None
+                            },
+                        )
+                    }
+                }
+                if (question != request.questions.last()) {
+                    HorizontalDivider(color = chrome.subtleBorder.copy(alpha = 0.8f))
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Button(
+                    enabled = canSubmit,
+                    onClick = {
+                        val answersByQuestionId = request.questions.associate { question ->
+                            question.id to listOfNotNull(resolvedAnswer(question.id))
+                        }
+                        submissionError = null
+                        isSubmitting = true
+                        hasSubmittedResponse = true
+                        coroutineScope.launch {
+                            runCatching {
+                                onSubmit(request.requestId, answersByQuestionId)
+                            }.onFailure { error ->
+                                submissionError = error.message ?: "Could not submit this response."
+                                hasSubmittedResponse = false
+                            }
+                            isSubmitting = false
+                        }
+                    },
+                ) {
+                    if (isSubmitting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Text("Send")
                     }
                 }
             }

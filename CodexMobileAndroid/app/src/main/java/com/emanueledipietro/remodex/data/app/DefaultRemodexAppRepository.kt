@@ -74,6 +74,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -625,6 +626,7 @@ class DefaultRemodexAppRepository(
             return
         }
         var thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        val activePlanningMode = thread.runtimeConfig.planningMode
         if (!thread.isRunning) {
             try {
                 thread = resumeThreadBeforeSend(thread = thread)
@@ -646,6 +648,9 @@ class DefaultRemodexAppRepository(
                     runtimeConfig = resumedContinuationThread.runtimeConfig,
                     attachments = attachments,
                 )
+                if (activePlanningMode == RemodexPlanningMode.PLAN) {
+                    resetPlanningModeAfterSend(threadId, continuationThreadId)
+                }
                 refreshBaseThreadsFromSync()
                 return
             }
@@ -656,6 +661,7 @@ class DefaultRemodexAppRepository(
                 text = trimmedPrompt,
                 createdAtEpochMs = System.currentTimeMillis(),
                 attachments = attachments,
+                planningMode = activePlanningMode.takeIf { it == RemodexPlanningMode.PLAN },
             )
             appPreferencesRepository.setQueuedDrafts(threadId, nextDrafts)
             applyPreferencesLocally(
@@ -664,9 +670,12 @@ class DefaultRemodexAppRepository(
                         .toMutableMap()
                         .apply {
                             this[threadId] = nextDrafts
-                        },
+                    },
                 ),
             )
+            if (activePlanningMode == RemodexPlanningMode.PLAN) {
+                resetPlanningMode(threadId)
+            }
             return
         }
 
@@ -677,6 +686,9 @@ class DefaultRemodexAppRepository(
                 runtimeConfig = thread.runtimeConfig,
                 attachments = attachments,
             )
+            if (activePlanningMode == RemodexPlanningMode.PLAN) {
+                resetPlanningMode(threadId)
+            }
         } catch (error: Throwable) {
             if (error is CancellationException) {
                 throw error
@@ -695,8 +707,18 @@ class DefaultRemodexAppRepository(
                 attachments = attachments,
                 runtimeConfig = resumedContinuationThread.runtimeConfig,
             )
+            if (activePlanningMode == RemodexPlanningMode.PLAN) {
+                resetPlanningModeAfterSend(threadId, continuationThreadId)
+            }
         }
         refreshBaseThreadsFromSync()
+    }
+
+    override suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
+    ) {
+        threadCommandService.respondToStructuredUserInput(requestId, answersByQuestionId)
     }
 
     override suspend fun stopTurn(threadId: String) {
@@ -731,7 +753,9 @@ class DefaultRemodexAppRepository(
         threadCommandService.sendPrompt(
             threadId = threadId,
             prompt = draft.text,
-            runtimeConfig = thread.runtimeConfig,
+            runtimeConfig = thread.runtimeConfig.copy(
+                planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
+            ),
             attachments = draft.attachments,
         )
         refreshBaseThreadsFromSync()
@@ -756,6 +780,20 @@ class DefaultRemodexAppRepository(
                     },
             ),
         )
+    }
+
+    private suspend fun resetPlanningModeAfterSend(
+        originalThreadId: String,
+        sentThreadId: String,
+    ) {
+        resetPlanningMode(originalThreadId)
+        if (sentThreadId != originalThreadId) {
+            resetPlanningMode(sentThreadId)
+        }
+    }
+
+    private suspend fun resetPlanningMode(threadId: String) {
+        setPlanningMode(threadId, RemodexPlanningMode.AUTO)
     }
 
     override suspend fun setSelectedModelId(

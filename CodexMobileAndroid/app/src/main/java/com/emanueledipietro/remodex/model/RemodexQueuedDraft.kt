@@ -8,4 +8,5 @@ data class RemodexQueuedDraft(
     val text: String,
     val createdAtEpochMs: Long,
     val attachments: List<RemodexComposerAttachment> = emptyList(),
+    val planningMode: RemodexPlanningMode? = null,
 )

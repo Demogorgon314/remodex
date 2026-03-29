@@ -23,6 +23,7 @@ import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import kotlinx.serialization.json.JsonElement
 
 interface RemodexAppRepository {
     val session: StateFlow<RemodexSessionSnapshot>
@@ -62,6 +63,11 @@ interface RemodexAppRepository {
         threadId: String,
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
+    )
+
+    suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
     )
 
     suspend fun stopTurn(threadId: String)

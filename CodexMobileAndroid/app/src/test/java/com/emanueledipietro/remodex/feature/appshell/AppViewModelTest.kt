@@ -49,6 +49,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonElement
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
@@ -1542,6 +1543,11 @@ class AppViewModelTest {
             sendPromptError?.let { throw it }
             sentPrompts += Triple(threadId, prompt, attachments)
         }
+
+        override suspend fun respondToStructuredUserInput(
+            requestId: JsonElement,
+            answersByQuestionId: Map<String, List<String>>,
+        ) = Unit
 
         override suspend fun stopTurn(threadId: String) = Unit
 

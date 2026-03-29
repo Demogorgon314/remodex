@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlin.math.max
@@ -808,6 +809,13 @@ class AppViewModel(
         viewModelScope.launch {
             repository.sendQueuedDraft(threadId, draftId)
         }
+    }
+
+    suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
+    ) {
+        repository.respondToStructuredUserInput(requestId, answersByQuestionId)
     }
 
     fun addAttachments(attachments: List<RemodexComposerAttachment>) {

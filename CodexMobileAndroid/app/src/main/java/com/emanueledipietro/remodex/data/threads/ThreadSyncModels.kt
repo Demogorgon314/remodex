@@ -28,6 +28,7 @@ import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.json.JsonElement
 
 data class ThreadSyncSnapshot(
     val id: String,
@@ -78,6 +79,11 @@ interface ThreadCommandService {
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+    )
+
+    suspend fun respondToStructuredUserInput(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
     )
 
     suspend fun startCodeReview(

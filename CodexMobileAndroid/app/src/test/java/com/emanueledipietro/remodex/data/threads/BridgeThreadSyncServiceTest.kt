@@ -11,6 +11,7 @@ import com.emanueledipietro.remodex.data.connection.UnusedTrustedSessionResolver
 import com.emanueledipietro.remodex.data.connection.createTestMacIdentity
 import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.data.connection.firstArray
+import com.emanueledipietro.remodex.data.connection.firstObject
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
 import com.emanueledipietro.remodex.feature.turn.FileChangeAction
@@ -25,6 +26,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -36,6 +38,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -2320,6 +2324,169 @@ class BridgeThreadSyncServiceTest {
             advanceUntilIdle()
         }
     }
+
+    @Test
+    fun `structured user input response matches ios answer envelope`() {
+        val response = buildStructuredUserInputResponse(
+            answersByQuestionId = mapOf(
+                "project" to listOf("android"),
+                "scope" to listOf("ui", "interaction"),
+            ),
+        )
+
+        val answersObject = response["answers"]?.jsonObjectOrNull
+        assertEquals(
+            listOf("android"),
+            answersObject?.get("project")?.jsonObjectOrNull?.firstArray("answers")
+                ?.mapNotNull { value -> value.jsonPrimitive.contentOrNull },
+        )
+        assertEquals(
+            listOf("ui", "interaction"),
+            answersObject?.get("scope")?.jsonObjectOrNull?.firstArray("answers")
+                ?.mapNotNull { value -> value.jsonPrimitive.contentOrNull },
+        )
+    }
+
+    @Test
+    fun `structured user input request is inserted immediately and keeps blank header questions`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-request",
+                    title = "Plan request",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-request",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        invokePrivateMethod(
+            service,
+            "handleStructuredUserInputRequest",
+            JsonPrimitive("request-plan-1"),
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-request"))
+                put("turnId", JsonPrimitive("turn-plan-request"))
+                put("itemId", JsonPrimitive("item-plan-request"))
+                put(
+                    "questions",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("id", JsonPrimitive("direction"))
+                                put("header", JsonPrimitive(""))
+                                put("question", JsonPrimitive("Which path should we take?"))
+                                put("isOther", JsonPrimitive(false))
+                                put("isSecret", JsonPrimitive(false))
+                                put(
+                                    "options",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("label", JsonPrimitive("Ship it"))
+                                                put("description", JsonPrimitive("Build the fastest version"))
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        )
+
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        val prompt = items.singleOrNull { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT }
+        assertNotNull(prompt)
+        assertEquals(JsonPrimitive("request-plan-1"), prompt?.structuredUserInputRequest?.requestId)
+        assertEquals("", prompt?.structuredUserInputRequest?.questions?.singleOrNull()?.header)
+        assertEquals("Which path should we take?", prompt?.structuredUserInputRequest?.questions?.singleOrNull()?.question)
+    }
+
+    @Test
+    fun `server request resolved notification removes structured user input prompt immediately`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-resolved",
+                    title = "Plan resolved",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-resolved",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "item-plan-request",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                text = "Which path should we take?",
+                                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                                turnId = "turn-plan-request",
+                                itemId = "item-plan-request",
+                                structuredUserInputRequest = RemodexStructuredUserInputRequest(
+                                    requestId = JsonPrimitive("request-plan-1"),
+                                    questions = listOf(
+                                        com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion(
+                                            id = "direction",
+                                            header = "",
+                                            question = "Which path should we take?",
+                                            options = emptyList(),
+                                        ),
+                                    ),
+                                ),
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        invokePrivateMethod(
+            service,
+            "handleServerRequestResolvedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-resolved"))
+                put("requestId", JsonPrimitive("request-plan-1"))
+            },
+        )
+
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        assertTrue(items.none { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT })
+    }
+
 
     @Test
     fun `send prompt encodes image attachments as url data payloads`() = runTest {

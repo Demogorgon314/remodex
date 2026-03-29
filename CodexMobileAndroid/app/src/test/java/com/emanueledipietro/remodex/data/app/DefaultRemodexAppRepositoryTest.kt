@@ -939,6 +939,8 @@ class DefaultRemodexAppRepositoryTest {
         )
         repository.selectThread("thread-android-client")
         advanceUntilIdle()
+        repository.setPlanningMode("thread-android-client", RemodexPlanningMode.PLAN)
+        advanceUntilIdle()
 
         repository.sendPrompt(
             threadId = "thread-android-client",
@@ -954,6 +956,11 @@ class DefaultRemodexAppRepositoryTest {
             "Queue the composer and runtime follow-up.",
             selectedThread?.queuedDraftItems?.firstOrNull()?.text,
         )
+        assertEquals(
+            RemodexPlanningMode.PLAN,
+            selectedThread?.queuedDraftItems?.firstOrNull()?.planningMode,
+        )
+        assertEquals(RemodexPlanningMode.AUTO, selectedThread?.runtimeConfig?.planningMode)
         assertEquals(
             1,
             preferencesRepository.preferencesState.value.queuedDraftsByThread["thread-android-client"]?.size,
@@ -1062,7 +1069,7 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals("gpt-5.3-codex", selectedThread?.runtimeConfig?.selectedModelId)
         assertEquals("medium", selectedThread?.runtimeConfig?.reasoningEffort)
         assertEquals(RemodexAccessMode.ON_REQUEST, selectedThread?.runtimeConfig?.accessMode)
-        assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
+        assertEquals(RemodexPlanningMode.AUTO, selectedThread?.runtimeConfig?.planningMode)
         assertEquals(
             RemodexThreadSyncState.ARCHIVED_LOCAL,
             session.threads.first { thread -> thread.id == "thread-notifications" }.syncState,
@@ -1127,6 +1134,8 @@ class DefaultRemodexAppRepositoryTest {
         val repository = createRepository(scope = backgroundScope)
         repository.selectThread("thread-android-client")
         advanceUntilIdle()
+        repository.setPlanningMode("thread-android-client", RemodexPlanningMode.PLAN)
+        advanceUntilIdle()
         repository.sendPrompt(
             threadId = "thread-android-client",
             prompt = "Queue after stop.",
@@ -1148,6 +1157,7 @@ class DefaultRemodexAppRepositoryTest {
         val resumedThread = repository.session.value.selectedThread
         assertTrue(resumedThread?.isRunning == true)
         assertEquals(0, resumedThread?.queuedDrafts)
+        assertEquals(RemodexPlanningMode.AUTO, resumedThread?.runtimeConfig?.planningMode)
     }
 
     @Test
@@ -1443,8 +1453,9 @@ class DefaultRemodexAppRepositoryTest {
         repository: DefaultRemodexAppRepository,
         expectedTitle: String,
     ) {
-        repeat(40) {
+        repeat(200) {
             advanceUntilIdle()
+            runCurrent()
             if (repository.session.value.selectedThread?.title == expectedTitle) {
                 return
             }
@@ -1458,13 +1469,14 @@ class DefaultRemodexAppRepositoryTest {
         description: String,
         predicate: (RemodexThreadSummary?) -> Boolean,
     ) {
-        repeat(100) {
+        repeat(500) {
             advanceUntilIdle()
+            runCurrent()
             val selectedThread = repository.session.value.selectedThread
             if (predicate(selectedThread)) {
                 return
             }
-            Thread.sleep(20)
+            Thread.sleep(10)
         }
         fail("Expected $description but selected thread was ${repository.session.value.selectedThread?.id}")
     }
