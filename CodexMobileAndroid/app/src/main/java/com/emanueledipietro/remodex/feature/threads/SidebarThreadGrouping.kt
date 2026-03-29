@@ -21,6 +21,11 @@ data class SidebarThreadGroup(
     },
 )
 
+data class SidebarProjectExpansionSnapshot(
+    val expandedGroupIds: Set<String>,
+    val knownGroupIds: Set<String>,
+)
+
 object SidebarThreadGrouping {
     fun makeGroups(
         threads: List<RemodexThreadSummary>,
@@ -81,6 +86,52 @@ object SidebarThreadGrouping {
             }
         }
     }
+}
+
+object SidebarProjectExpansionState {
+    fun synchronizedState(
+        currentExpandedGroupIds: Set<String>,
+        knownGroupIds: Set<String>,
+        visibleGroups: List<SidebarThreadGroup>,
+        hasInitialized: Boolean,
+        persistedCollapsedGroupIds: Set<String> = emptySet(),
+    ): SidebarProjectExpansionSnapshot {
+        val visibleGroupIds = visibleGroups
+            .asSequence()
+            .filter { group -> group.kind == SidebarThreadGroupKind.PROJECT }
+            .map(SidebarThreadGroup::id)
+            .toSet()
+        if (!hasInitialized) {
+            return SidebarProjectExpansionSnapshot(
+                expandedGroupIds = visibleGroupIds - persistedCollapsedGroupIds,
+                knownGroupIds = visibleGroupIds,
+            )
+        }
+
+        val newGroupIds = visibleGroupIds - knownGroupIds
+        return SidebarProjectExpansionSnapshot(
+            expandedGroupIds = currentExpandedGroupIds
+                .intersect(visibleGroupIds)
+                .union(newGroupIds - persistedCollapsedGroupIds),
+            knownGroupIds = visibleGroupIds,
+        )
+    }
+
+    fun groupIdContainingSelectedThread(
+        selectedThread: RemodexThreadSummary?,
+        groups: List<SidebarThreadGroup>,
+    ): String? {
+        val selectedThreadId = selectedThread?.id ?: return null
+        return groups.firstOrNull { group ->
+            group.kind == SidebarThreadGroupKind.PROJECT &&
+                group.threads.any { thread -> thread.id == selectedThreadId }
+        }?.id
+    }
+
+    fun shouldAutoRevealSelectedGroup(
+        groupId: String,
+        persistedCollapsedGroupIds: Set<String>,
+    ): Boolean = groupId !in persistedCollapsedGroupIds
 }
 
 private fun projectLabel(projectPath: String): String {

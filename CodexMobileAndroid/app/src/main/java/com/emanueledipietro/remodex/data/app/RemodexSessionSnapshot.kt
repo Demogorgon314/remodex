@@ -15,6 +15,7 @@ data class RemodexSessionSnapshot(
     val connectionStatus: RemodexConnectionStatus = RemodexConnectionStatus(),
     val secureConnection: SecureConnectionSnapshot = SecureConnectionSnapshot(),
     val notificationRegistration: RemodexNotificationRegistrationState = RemodexNotificationRegistrationState(),
+    val collapsedProjectGroupIds: Set<String> = emptySet(),
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
     val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,

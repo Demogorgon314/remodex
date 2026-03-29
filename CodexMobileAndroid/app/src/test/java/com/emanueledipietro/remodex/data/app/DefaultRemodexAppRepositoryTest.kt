@@ -125,6 +125,40 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `project group collapse persists in preferences and session`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val repository = createRepository(
+            scope = backgroundScope,
+            preferencesRepository = preferencesRepository,
+        )
+        advanceUntilIdle()
+
+        repository.setProjectGroupCollapsed(
+            groupId = "project:/tmp/remodex",
+            collapsed = true,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            setOf("project:/tmp/remodex"),
+            preferencesRepository.preferencesState.value.collapsedProjectGroupIds,
+        )
+        assertEquals(
+            setOf("project:/tmp/remodex"),
+            repository.session.value.collapsedProjectGroupIds,
+        )
+
+        repository.setProjectGroupCollapsed(
+            groupId = "project:/tmp/remodex",
+            collapsed = false,
+        )
+        advanceUntilIdle()
+
+        assertTrue(preferencesRepository.preferencesState.value.collapsedProjectGroupIds.isEmpty())
+        assertTrue(repository.session.value.collapsedProjectGroupIds.isEmpty())
+    }
+
+    @Test
     fun `cached thread conversion preserves projected timeline order`() {
         val cachedThread = com.emanueledipietro.remodex.data.threads.CachedThreadRecord(
             id = "thread-projected",
@@ -1365,6 +1399,21 @@ class DefaultRemodexAppRepositoryTest {
 
         override suspend fun setSelectedThreadId(threadId: String?) {
             backingState.value = backingState.value.copy(selectedThreadId = threadId)
+        }
+
+        override suspend fun setProjectGroupCollapsed(
+            groupId: String,
+            collapsed: Boolean,
+        ) {
+            val normalizedGroupId = groupId.trim()
+            val updatedCollapsedGroupIds = backingState.value.collapsedProjectGroupIds.toMutableSet().apply {
+                if (collapsed) {
+                    add(normalizedGroupId)
+                } else {
+                    remove(normalizedGroupId)
+                }
+            }
+            backingState.value = backingState.value.copy(collapsedProjectGroupIds = updatedCollapsedGroupIds)
         }
 
         override suspend fun setThreadDeleted(

@@ -497,6 +497,34 @@ class DefaultRemodexAppRepository(
         }
     }
 
+    override suspend fun setProjectGroupCollapsed(
+        groupId: String,
+        collapsed: Boolean,
+    ) {
+        val normalizedGroupId = groupId.trim()
+        if (normalizedGroupId.isEmpty()) {
+            return
+        }
+        appPreferencesRepository.setProjectGroupCollapsed(
+            groupId = normalizedGroupId,
+            collapsed = collapsed,
+        )
+        val updatedCollapsedGroupIds = preferencesState.value.collapsedProjectGroupIds
+            .toMutableSet()
+            .apply {
+                if (collapsed) {
+                    add(normalizedGroupId)
+                } else {
+                    remove(normalizedGroupId)
+                }
+            }
+        applyPreferencesLocally(
+            preferencesState.value.copy(
+                collapsedProjectGroupIds = updatedCollapsedGroupIds,
+            ),
+        )
+    }
+
     override suspend fun createThread(
         preferredProjectPath: String?,
         inheritRuntimeFromThreadId: String?,
@@ -1729,6 +1757,7 @@ class DefaultRemodexAppRepository(
                 onboardingCompleted = preferences.onboardingCompleted,
                 connectionStatus = secureConnection.toConnectionStatus(),
                 secureConnection = secureConnection,
+                collapsedProjectGroupIds = preferences.collapsedProjectGroupIds,
                 runtimeDefaults = preferences.runtimeDefaults,
                 availableModels = availableModels,
                 appearanceMode = preferences.appearanceMode,

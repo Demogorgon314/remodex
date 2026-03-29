@@ -108,6 +108,7 @@ fun ThreadsScreen(
     onRefreshThreads: () -> Unit,
     onRetryConnection: () -> Unit,
     onCreateThread: (String?) -> Unit,
+    onSetProjectGroupCollapsed: (String, Boolean) -> Unit,
     onRenameThread: (String, String) -> Unit,
     onArchiveThread: (String) -> Unit,
     onUnarchiveThread: (String) -> Unit,
@@ -124,6 +125,7 @@ fun ThreadsScreen(
         mutableStateOf(ThreadRenamePromptState())
     }
     var expandedProjectIds by remember { mutableStateOf(setOf<String>()) }
+    var knownProjectGroupIds by remember { mutableStateOf(setOf<String>()) }
     var hasInitializedProjectExpansion by rememberSaveable { mutableStateOf(false) }
     var revealedProjectGroupIds by remember { mutableStateOf(setOf<String>()) }
     var expandedSubagentParentIds by remember { mutableStateOf(setOf<String>()) }
@@ -147,11 +149,11 @@ fun ThreadsScreen(
     }
     val projectGroupIds = remember(projectGroups) { projectGroups.map(SidebarThreadGroup::id).toSet() }
     val selectedThreadId = uiState.selectedThread?.id
-    val selectedProjectGroupId = remember(groups, selectedThreadId) {
-        groups.firstOrNull { group ->
-            group.kind == SidebarThreadGroupKind.PROJECT &&
-                group.threads.any { thread -> thread.id == selectedThreadId }
-        }?.id
+    val selectedProjectGroupId = remember(groups, uiState.selectedThread) {
+        SidebarProjectExpansionState.groupIdContainingSelectedThread(
+            selectedThread = uiState.selectedThread,
+            groups = groups,
+        )
     }
     val selectedSubagentAncestorIds = remember(uiState.threads, selectedThreadId) {
         selectedSubagentAncestorIds(
@@ -160,18 +162,25 @@ fun ThreadsScreen(
         )
     }
 
-    LaunchedEffect(projectGroupIds) {
-        if (!hasInitializedProjectExpansion) {
-            expandedProjectIds = projectGroupIds
-            hasInitializedProjectExpansion = true
-        } else {
-            expandedProjectIds = expandedProjectIds.intersect(projectGroupIds)
-        }
+    LaunchedEffect(projectGroupIds, uiState.collapsedProjectGroupIds) {
+        val snapshot = SidebarProjectExpansionState.synchronizedState(
+            currentExpandedGroupIds = expandedProjectIds,
+            knownGroupIds = knownProjectGroupIds,
+            visibleGroups = groups,
+            hasInitialized = hasInitializedProjectExpansion,
+            persistedCollapsedGroupIds = uiState.collapsedProjectGroupIds,
+        )
+        expandedProjectIds = snapshot.expandedGroupIds
+        knownProjectGroupIds = snapshot.knownGroupIds
+        hasInitializedProjectExpansion = true
         revealedProjectGroupIds = revealedProjectGroupIds.intersect(projectGroupIds)
     }
 
-    LaunchedEffect(selectedProjectGroupId) {
+    LaunchedEffect(selectedProjectGroupId, uiState.collapsedProjectGroupIds) {
         selectedProjectGroupId?.let { groupId ->
+            if (!SidebarProjectExpansionState.shouldAutoRevealSelectedGroup(groupId, uiState.collapsedProjectGroupIds)) {
+                return@let
+            }
             expandedProjectIds = expandedProjectIds + groupId
         }
     }
@@ -225,11 +234,18 @@ fun ThreadsScreen(
                                             group.threads.any { thread -> thread.id == selectedThreadId },
                                         expandedSubagentParentIds = expandedSubagentParentIds,
                                         onToggleExpanded = {
+                                            val isCurrentlyExpanded = group.id in expandedProjectIds
                                             expandedProjectIds = expandedProjectIds.toMutableSet().apply {
-                                                if (!add(group.id)) {
+                                                if (isCurrentlyExpanded) {
                                                     remove(group.id)
+                                                } else {
+                                                    add(group.id)
                                                 }
                                             }
+                                            if (isCurrentlyExpanded) {
+                                                revealedProjectGroupIds = revealedProjectGroupIds - group.id
+                                            }
+                                            onSetProjectGroupCollapsed(group.id, isCurrentlyExpanded)
                                         },
                                         onToggleSubagentExpansion = { threadId ->
                                             expandedSubagentParentIds = expandedSubagentParentIds.toMutableSet().apply {

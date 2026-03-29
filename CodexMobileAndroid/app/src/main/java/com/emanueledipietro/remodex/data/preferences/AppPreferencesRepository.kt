@@ -16,6 +16,11 @@ interface AppPreferencesRepository {
 
     suspend fun setSelectedThreadId(threadId: String?)
 
+    suspend fun setProjectGroupCollapsed(
+        groupId: String,
+        collapsed: Boolean,
+    )
+
     suspend fun setThreadDeleted(
         threadId: String,
         deleted: Boolean,

@@ -20,6 +20,7 @@ import kotlinx.serialization.json.Json
 private const val RemodexPreferencesName = "remodex_preferences"
 private val OnboardingCompletedKey = booleanPreferencesKey("onboarding_completed")
 private val SelectedThreadIdKey = stringPreferencesKey("selected_thread_id")
+private val CollapsedProjectGroupIdsJsonKey = stringPreferencesKey("collapsed_project_group_ids_json")
 private val DeletedThreadIdsJsonKey = stringPreferencesKey("deleted_thread_ids_json")
 private val QueuedDraftsJsonKey = stringPreferencesKey("queued_drafts_json")
 private val RuntimeOverridesJsonKey = stringPreferencesKey("runtime_overrides_json")
@@ -46,6 +47,10 @@ class DataStoreAppPreferencesRepository(
                 ?.let { raw -> json.decodeFromString<DeletedThreadIdsEnvelope>(raw).threadIds }
                 ?.toSet()
                 ?: emptySet()
+            val collapsedProjectGroupIds = preferences[CollapsedProjectGroupIdsJsonKey]
+                ?.let { raw -> json.decodeFromString<CollapsedProjectGroupIdsEnvelope>(raw).groupIds }
+                ?.toSet()
+                ?: emptySet()
             val runtimeOverrides = preferences[RuntimeOverridesJsonKey]
                 ?.let { raw -> json.decodeFromString<RuntimeOverridesEnvelope>(raw).threads }
                 ?: emptyMap()
@@ -58,6 +63,7 @@ class DataStoreAppPreferencesRepository(
             AppPreferences(
                 onboardingCompleted = preferences[OnboardingCompletedKey] ?: false,
                 selectedThreadId = preferences[SelectedThreadIdKey],
+                collapsedProjectGroupIds = collapsedProjectGroupIds,
                 deletedThreadIds = deletedThreadIds,
                 queuedDraftsByThread = queuedDrafts,
                 runtimeOverridesByThread = runtimeOverrides,
@@ -85,6 +91,30 @@ class DataStoreAppPreferencesRepository(
             } else {
                 preferences[SelectedThreadIdKey] = threadId
             }
+        }
+    }
+
+    override suspend fun setProjectGroupCollapsed(
+        groupId: String,
+        collapsed: Boolean,
+    ) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            val normalizedGroupId = groupId.trim()
+            if (normalizedGroupId.isEmpty()) {
+                return@edit
+            }
+            val current = preferences[CollapsedProjectGroupIdsJsonKey]
+                ?.let { raw -> json.decodeFromString<CollapsedProjectGroupIdsEnvelope>(raw).groupIds }
+                ?.toMutableSet()
+                ?: mutableSetOf()
+            if (collapsed) {
+                current.add(normalizedGroupId)
+            } else {
+                current.remove(normalizedGroupId)
+            }
+            preferences[CollapsedProjectGroupIdsJsonKey] = json.encodeToString(
+                CollapsedProjectGroupIdsEnvelope(current.toList().sorted()),
+            )
         }
     }
 
@@ -198,6 +228,11 @@ private data class QueuedDraftsEnvelope(
 @Serializable
 private data class DeletedThreadIdsEnvelope(
     val threadIds: List<String> = emptyList(),
+)
+
+@Serializable
+private data class CollapsedProjectGroupIdsEnvelope(
+    val groupIds: List<String> = emptyList(),
 )
 
 @Serializable

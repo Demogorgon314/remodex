@@ -51,6 +51,7 @@ class ThreadsScreenTest {
                     onRefreshThreads = {},
                     onRetryConnection = {},
                     onCreateThread = {},
+                    onSetProjectGroupCollapsed = { _, _ -> },
                     onRenameThread = { _, _ -> },
                     onArchiveThread = {},
                     onUnarchiveThread = {},
@@ -88,6 +89,7 @@ class ThreadsScreenTest {
                     onRefreshThreads = {},
                     onRetryConnection = {},
                     onCreateThread = {},
+                    onSetProjectGroupCollapsed = { _, _ -> },
                     onRenameThread = { _, _ -> },
                     onArchiveThread = {},
                     onUnarchiveThread = {},
@@ -130,6 +132,7 @@ class ThreadsScreenTest {
                     onRefreshThreads = {},
                     onRetryConnection = {},
                     onCreateThread = {},
+                    onSetProjectGroupCollapsed = { _, _ -> },
                     onRenameThread = { threadId, name ->
                         renamedThreadId = threadId
                         renamedTitle = name
@@ -159,6 +162,61 @@ class ThreadsScreenTest {
             assertEquals("Renamed thread", renamedTitle)
         }
         composeRule.onAllNodesWithText("Rename Conversation").assertCountEquals(0)
+    }
+
+    @Test
+    fun projectGroupCollapseRespectsPersistedCollapsedStateAfterRecreate() {
+        val collapsedGroupIds = androidx.compose.runtime.mutableStateOf(emptySet<String>())
+
+        fun render() {
+            composeRule.setContent {
+                RemodexTheme {
+                    ThreadsScreen(
+                        uiState = AppUiState(
+                            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                            collapsedProjectGroupIds = collapsedGroupIds.value,
+                            threads = listOf(
+                                threadSummary(
+                                    id = "thread-1",
+                                    title = "Conversation 0",
+                                    projectPath = "/tmp/project-0",
+                                ),
+                            ),
+                        ),
+                        onSelectThread = {},
+                        onRefreshThreads = {},
+                        onRetryConnection = {},
+                        onCreateThread = {},
+                        onSetProjectGroupCollapsed = { groupId, collapsed ->
+                            collapsedGroupIds.value = collapsedGroupIds.value.toMutableSet().apply {
+                                if (collapsed) {
+                                    add(groupId)
+                                } else {
+                                    remove(groupId)
+                                }
+                            }
+                        },
+                        onRenameThread = { _, _ -> },
+                        onArchiveThread = {},
+                        onUnarchiveThread = {},
+                        onDeleteThread = {},
+                        onArchiveProject = {},
+                        onOpenSettings = {},
+                        onSearchActiveChange = {},
+                    )
+                }
+            }
+        }
+
+        render()
+
+        composeRule.onNodeWithText("Conversation 0").assertIsDisplayed()
+        composeRule.onNodeWithText("project-0").performClick()
+        composeRule.onAllNodesWithText("Conversation 0").assertCountEquals(0)
+
+        render()
+
+        composeRule.onAllNodesWithText("Conversation 0").assertCountEquals(0)
     }
 
     private fun threadSummary(

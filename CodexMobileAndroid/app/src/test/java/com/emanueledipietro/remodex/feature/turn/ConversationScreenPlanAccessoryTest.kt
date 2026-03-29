@@ -19,7 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class ConversationScreenPlanAccessoryTest {
     @Test
-    fun `timeline layout pins active plan while keeping completed plan in timeline`() {
+    fun `timeline layout pins active plan outside plan mode while keeping completed plan in timeline`() {
         val completedPlan = planItem(
             id = "plan-complete",
             steps = listOf(
@@ -41,11 +41,40 @@ class ConversationScreenPlanAccessoryTest {
 
         val layout = buildConversationTimelineLayout(
             listOf(completedPlan, chatItem, activePlan),
+            activePlanningMode = RemodexPlanningMode.AUTO,
         )
 
         assertEquals("plan-active", layout.pinnedPlanItem?.id)
         assertEquals(
             listOf("plan-complete", "assistant-chat"),
+            layout.timelineItems.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `timeline layout keeps active plan in timeline during plan mode`() {
+        val activePlan = planItem(
+            id = "plan-active",
+            steps = listOf(
+                RemodexPlanStep(id = "2", step = "Compare iOS behavior", status = RemodexPlanStepStatus.IN_PROGRESS),
+                RemodexPlanStep(id = "3", step = "Patch Android", status = RemodexPlanStepStatus.PENDING),
+            ),
+            isStreaming = true,
+        )
+        val chatItem = RemodexConversationItem(
+            id = "assistant-chat",
+            speaker = ConversationSpeaker.ASSISTANT,
+            text = "Working on it",
+        )
+
+        val layout = buildConversationTimelineLayout(
+            listOf(chatItem, activePlan),
+            activePlanningMode = RemodexPlanningMode.PLAN,
+        )
+
+        assertNull(layout.pinnedPlanItem)
+        assertEquals(
+            listOf("assistant-chat", "plan-active"),
             layout.timelineItems.map(RemodexConversationItem::id),
         )
     }
@@ -59,7 +88,10 @@ class ConversationScreenPlanAccessoryTest {
             ),
         )
 
-        val layout = buildConversationTimelineLayout(listOf(completedPlan))
+        val layout = buildConversationTimelineLayout(
+            listOf(completedPlan),
+            activePlanningMode = RemodexPlanningMode.PLAN,
+        )
 
         assertNull(layout.pinnedPlanItem)
         assertEquals(listOf("plan-complete"), layout.timelineItems.map(RemodexConversationItem::id))
@@ -78,23 +110,44 @@ class ConversationScreenPlanAccessoryTest {
         val layout = buildConversationTimelineLayout(
             messages = listOf(prompt, completedPlan),
             hiddenPromptItemId = "prompt",
+            activePlanningMode = RemodexPlanningMode.PLAN,
         )
 
         assertEquals(listOf("plan-complete"), layout.timelineItems.map(RemodexConversationItem::id))
     }
 
     @Test
-    fun `timeline layout pins streaming system plan`() {
+    fun `timeline layout pins streaming system plan outside plan mode`() {
         val streamingPlan = planItem(
             id = "plan-streaming",
             steps = emptyList(),
             isStreaming = true,
         )
 
-        val layout = buildConversationTimelineLayout(listOf(streamingPlan))
+        val layout = buildConversationTimelineLayout(
+            listOf(streamingPlan),
+            activePlanningMode = RemodexPlanningMode.AUTO,
+        )
 
         assertEquals("plan-streaming", layout.pinnedPlanItem?.id)
         assertTrue(layout.timelineItems.isEmpty())
+    }
+
+    @Test
+    fun `timeline layout keeps streaming system plan in timeline during plan mode`() {
+        val streamingPlan = planItem(
+            id = "plan-streaming",
+            steps = emptyList(),
+            isStreaming = true,
+        )
+
+        val layout = buildConversationTimelineLayout(
+            listOf(streamingPlan),
+            activePlanningMode = RemodexPlanningMode.PLAN,
+        )
+
+        assertNull(layout.pinnedPlanItem)
+        assertEquals(listOf("plan-streaming"), layout.timelineItems.map(RemodexConversationItem::id))
     }
 
     @Test

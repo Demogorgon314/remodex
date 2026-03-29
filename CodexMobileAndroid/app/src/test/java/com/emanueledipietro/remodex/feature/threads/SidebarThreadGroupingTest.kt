@@ -3,6 +3,7 @@ package com.emanueledipietro.remodex.feature.threads
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -81,6 +82,76 @@ class SidebarThreadGroupingTest {
         assertEquals("cloud", groups[2].iconSystemName)
     }
 
+    @Test
+    fun `project expansion state initially keeps persisted collapsed groups closed`() {
+        val groups = listOf(
+            projectGroup(id = "project:/tmp/app"),
+            projectGroup(id = "project:/tmp/site"),
+        )
+
+        val snapshot = SidebarProjectExpansionState.synchronizedState(
+            currentExpandedGroupIds = emptySet(),
+            knownGroupIds = emptySet(),
+            visibleGroups = groups,
+            hasInitialized = false,
+            persistedCollapsedGroupIds = setOf("project:/tmp/site"),
+        )
+
+        assertEquals(setOf("project:/tmp/app"), snapshot.expandedGroupIds)
+        assertEquals(groups.map(SidebarThreadGroup::id).toSet(), snapshot.knownGroupIds)
+    }
+
+    @Test
+    fun `project expansion state auto expands new groups only`() {
+        val existingGroups = listOf(
+            projectGroup(id = "project:/tmp/app"),
+            projectGroup(id = "project:/tmp/site"),
+        )
+        val updatedGroups = existingGroups + projectGroup(id = "project:/tmp/docs")
+
+        val snapshot = SidebarProjectExpansionState.synchronizedState(
+            currentExpandedGroupIds = setOf("project:/tmp/app"),
+            knownGroupIds = existingGroups.map(SidebarThreadGroup::id).toSet(),
+            visibleGroups = updatedGroups,
+            hasInitialized = true,
+        )
+
+        assertEquals(
+            setOf("project:/tmp/app", "project:/tmp/docs"),
+            snapshot.expandedGroupIds,
+        )
+    }
+
+    @Test
+    fun `selected thread auto reveal skips persisted collapsed group`() {
+        assertFalse(
+            SidebarProjectExpansionState.shouldAutoRevealSelectedGroup(
+                groupId = "project:/tmp/app",
+                persistedCollapsedGroupIds = setOf("project:/tmp/app"),
+            ),
+        )
+    }
+
+    @Test
+    fun `group id containing selected thread returns owning project group`() {
+        val selectedThread = thread(id = "1", title = "Alpha", projectPath = "/tmp/app")
+        val groups = listOf(
+            SidebarThreadGroup(
+                id = "project:/tmp/app",
+                label = "app",
+                kind = SidebarThreadGroupKind.PROJECT,
+                projectPath = "/tmp/app",
+                threads = listOf(selectedThread),
+            ),
+            projectGroup(id = "project:/tmp/site"),
+        )
+
+        assertEquals(
+            "project:/tmp/app",
+            SidebarProjectExpansionState.groupIdContainingSelectedThread(selectedThread, groups),
+        )
+    }
+
     private fun thread(
         id: String,
         title: String,
@@ -99,6 +170,16 @@ class SidebarThreadGroupingTest {
             queuedDrafts = 0,
             runtimeLabel = "Auto",
             messages = emptyList(),
+        )
+    }
+
+    private fun projectGroup(id: String): SidebarThreadGroup {
+        return SidebarThreadGroup(
+            id = id,
+            label = id.substringAfterLast('/'),
+            kind = SidebarThreadGroupKind.PROJECT,
+            projectPath = id.removePrefix("project:"),
+            threads = emptyList(),
         )
     }
 }

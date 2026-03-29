@@ -636,6 +636,7 @@ private fun RemodexShell(
                             viewModel.createThread(preferredProjectPath)
                             onShellRouteChange(ShellRoute.CONTENT)
                         },
+                        onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
                         onArchiveThread = viewModel::archiveThread,
                         onUnarchiveThread = viewModel::unarchiveThread,
@@ -752,6 +753,7 @@ private fun RemodexShell(
                             onShellRouteChange(ShellRoute.CONTENT)
                             onSidebarOpenChange(false)
                         },
+                        onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
                         onArchiveThread = viewModel::archiveThread,
                         onUnarchiveThread = viewModel::unarchiveThread,

@@ -42,6 +42,11 @@ interface RemodexAppRepository {
 
     suspend fun selectThread(threadId: String)
 
+    suspend fun setProjectGroupCollapsed(
+        groupId: String,
+        collapsed: Boolean,
+    )
+
     suspend fun createThread(
         preferredProjectPath: String? = null,
         inheritRuntimeFromThreadId: String? = null,

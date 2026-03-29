@@ -1758,6 +1758,20 @@ class AppViewModelTest {
             )
         }
 
+        override suspend fun setProjectGroupCollapsed(
+            groupId: String,
+            collapsed: Boolean,
+        ) {
+            val updatedCollapsedGroupIds = snapshot.value.collapsedProjectGroupIds.toMutableSet().apply {
+                if (collapsed) {
+                    add(groupId)
+                } else {
+                    remove(groupId)
+                }
+            }
+            snapshot.value = snapshot.value.copy(collapsedProjectGroupIds = updatedCollapsedGroupIds)
+        }
+
         override suspend fun createThread(
             preferredProjectPath: String?,
             inheritRuntimeFromThreadId: String?,

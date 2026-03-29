@@ -110,6 +110,7 @@ data class AppUiState(
     val connectionHeadline: String = "Waiting for your Mac",
     val connectionMessage: String = "Run remodex up on your Mac, then pair this Android device with the QR code.",
     val recoveryState: SecureConnectionSnapshot = SecureConnectionSnapshot(),
+    val collapsedProjectGroupIds: Set<String> = emptySet(),
     val threads: List<RemodexThreadSummary> = emptyList(),
     val selectedThread: RemodexThreadSummary? = null,
     val notificationRegistration: RemodexNotificationRegistrationState = RemodexNotificationRegistrationState(),
@@ -474,6 +475,7 @@ class AppViewModel(
                 connectionHeadline = headline,
                 connectionMessage = message,
                 recoveryState = snapshot.secureConnection,
+                collapsedProjectGroupIds = snapshot.collapsedProjectGroupIds,
                 threads = snapshot.threads,
                 selectedThread = selectedThread,
                 notificationRegistration = snapshot.notificationRegistration,
@@ -720,6 +722,18 @@ class AppViewModel(
             refreshGitState(threadId)
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
+        }
+    }
+
+    fun setProjectGroupCollapsed(
+        groupId: String,
+        collapsed: Boolean,
+    ) {
+        viewModelScope.launch {
+            repository.setProjectGroupCollapsed(
+                groupId = groupId,
+                collapsed = collapsed,
+            )
         }
     }
 

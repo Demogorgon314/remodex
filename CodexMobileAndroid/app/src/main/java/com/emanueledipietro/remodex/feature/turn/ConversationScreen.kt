@@ -363,6 +363,7 @@ private fun rememberComposerMenuState(vararg keys: Any?): ComposerMenuState {
 internal fun buildConversationTimelineLayout(
     messages: List<RemodexConversationItem>,
     hiddenPromptItemId: String? = null,
+    activePlanningMode: RemodexPlanningMode = RemodexPlanningMode.AUTO,
 ): ConversationTimelineLayout {
     val timelineItems = ArrayList<RemodexConversationItem>(messages.size)
     var pinnedPlanItem: RemodexConversationItem? = null
@@ -370,7 +371,7 @@ internal fun buildConversationTimelineLayout(
     messages.forEach { item ->
         when {
             item.id == hiddenPromptItemId -> Unit
-            item.shouldDisplayPinnedPlanAccessory() -> pinnedPlanItem = item
+            item.shouldDisplayPinnedPlanAccessory(activePlanningMode) -> pinnedPlanItem = item
             else -> timelineItems += item
         }
     }
@@ -385,8 +386,14 @@ private fun RemodexConversationItem.isPlanSystemMessage(): Boolean {
     return speaker == ConversationSpeaker.SYSTEM && kind == ConversationItemKind.PLAN
 }
 
-private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(): Boolean {
+private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(
+    activePlanningMode: RemodexPlanningMode,
+): Boolean {
     if (!isPlanSystemMessage()) {
+        return false
+    }
+
+    if (activePlanningMode == RemodexPlanningMode.PLAN) {
         return false
     }
 
@@ -799,6 +806,7 @@ fun ConversationScreen(
         buildConversationTimelineLayout(
             messages = thread.messages,
             hiddenPromptItemId = planComposerFlow.takeoverPromptItem?.id,
+            activePlanningMode = thread.runtimeConfig.planningMode,
         )
     }
     val pinnedPlanItem = conversationLayout.pinnedPlanItem

@@ -9,6 +9,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
 data class AppPreferences(
     val onboardingCompleted: Boolean = false,
     val selectedThreadId: String? = null,
+    val collapsedProjectGroupIds: Set<String> = emptySet(),
     val deletedThreadIds: Set<String> = emptySet(),
     val queuedDraftsByThread: Map<String, List<RemodexQueuedDraft>> = emptyMap(),
     val runtimeOverridesByThread: Map<String, RemodexRuntimeOverrides> = emptyMap(),
