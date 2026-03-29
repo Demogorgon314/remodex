@@ -48,6 +48,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertConflict
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -65,6 +66,7 @@ import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import com.emanueledipietro.remodex.model.androidUserMessageText
 import com.emanueledipietro.remodex.model.fallbackConversationImageDisplayName
 import com.emanueledipietro.remodex.model.isInlineImageDataUrl
+import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
@@ -215,6 +217,8 @@ class BridgeThreadSyncService(
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
         MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+    private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
+    private val backingSupportsThreadFork = MutableStateFlow(true)
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
     private val reviewDebugTurnIds = mutableSetOf<String>()
@@ -227,12 +231,21 @@ class BridgeThreadSyncService(
     private val lifecycleCatchupJobByThread = mutableMapOf<String, Job>()
     private var initializedAttempt: Int? = null
     private var supportsServiceTier = true
+    private var hasPresentedServiceTierBridgeUpdatePrompt = false
+    private var supportsThreadForkCapability = true
+    private var hasPresentedThreadForkBridgeUpdatePrompt = false
     private var supportsTurnCollaborationMode = true
 
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
         backingCommandExecutionDetails
+    override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
+    override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
+
+    override fun dismissBridgeUpdatePrompt() {
+        backingBridgeUpdatePrompt.value = null
+    }
 
     init {
         scope.launch {
@@ -241,7 +254,12 @@ class BridgeThreadSyncService(
                     if (initializedAttempt != snapshot.attempt) {
                         initializedAttempt = snapshot.attempt
                         supportsServiceTier = true
+                        hasPresentedServiceTierBridgeUpdatePrompt = false
+                        supportsThreadForkCapability = true
+                        hasPresentedThreadForkBridgeUpdatePrompt = false
                         supportsTurnCollaborationMode = true
+                        backingBridgeUpdatePrompt.value = null
+                        backingSupportsThreadFork.value = true
                         initializeSession()
                         refreshAvailableModels()
                         refreshThreads()
@@ -249,7 +267,12 @@ class BridgeThreadSyncService(
                 } else {
                     initializedAttempt = null
                     supportsServiceTier = true
+                    hasPresentedServiceTierBridgeUpdatePrompt = false
+                    supportsThreadForkCapability = true
+                    hasPresentedThreadForkBridgeUpdatePrompt = false
                     supportsTurnCollaborationMode = true
+                    backingBridgeUpdatePrompt.value = null
+                    backingSupportsThreadFork.value = true
                     lifecycleCatchupJobByThread.values.forEach(Job::cancel)
                     lifecycleCatchupJobByThread.clear()
                     activeTurnIdByThread.clear()
@@ -1469,6 +1492,10 @@ class BridgeThreadSyncService(
         projectPath: String?,
         runtimeConfig: RemodexRuntimeConfig,
     ): ThreadSyncSnapshot? {
+        if (!shouldIncludeThreadFork()) {
+            markThreadForkUnsupportedForCurrentBridge()
+            throw IllegalStateException(threadForkBridgeUpdatePrompt().message)
+        }
         val normalizedProjectPath = projectPath?.trim()?.takeIf(String::isNotEmpty)
         var includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier)
         var includeSandbox = true
@@ -1506,11 +1533,15 @@ class BridgeThreadSyncService(
                         includeServiceTier = false
                     }
 
+                    consumeUnsupportedThreadFork(error) -> {
+                        throw error
+                    }
+
                     includeSandbox && (message.contains("sandbox") || message.contains("approvalpolicy")) -> {
                         includeSandbox = false
                     }
 
-                    !useMinimalParams && (message.contains("unsupported") || message.contains("unknown field")) -> {
+                    consumeUnsupportedThreadForkOverrides(error, useMinimalParams) -> {
                         useMinimalParams = true
                     }
 
@@ -1768,6 +1799,7 @@ class BridgeThreadSyncService(
             return false
         }
         supportsServiceTier = false
+        markServiceTierUnsupportedForCurrentBridge()
         return true
     }
 
@@ -1784,6 +1816,102 @@ class BridgeThreadSyncService(
             || message.contains("unrecognized field")
             || message.contains("invalid param")
             || message.contains("invalid params")
+    }
+
+    private fun shouldIncludeThreadFork(): Boolean {
+        return supportsThreadForkCapability
+    }
+
+    private fun consumeUnsupportedThreadForkOverrides(
+        error: Throwable,
+        useMinimalParams: Boolean,
+    ): Boolean {
+        if (useMinimalParams || !shouldRetryThreadForkWithoutOverrides(error)) {
+            return false
+        }
+        return true
+    }
+
+    private fun shouldRetryThreadForkWithoutOverrides(error: Throwable): Boolean {
+        val rpcError = error as? RpcError ?: return false
+        if (rpcError.code != -32600 && rpcError.code != -32602 && rpcError.code != -32000) {
+            return false
+        }
+        val message = rpcError.message.lowercase(Locale.ROOT)
+        val mentionsUnknownField = message.contains("unknown field")
+            || message.contains("unexpected field")
+            || message.contains("unrecognized field")
+        val mentionsInvalidNamedField = (message.contains("invalid param") || message.contains("invalid params")) &&
+            (message.contains("field") || message.contains("parameter") || message.contains("param"))
+        val mentionsForkOverride = message.contains("cwd")
+            || message.contains("modelprovider")
+            || message.contains("model provider")
+            || message.contains("model")
+            || message.contains("sandbox")
+            || message.contains("servicetier")
+            || message.contains("service tier")
+        return (mentionsUnknownField || mentionsInvalidNamedField) && mentionsForkOverride
+    }
+
+    private fun consumeUnsupportedThreadFork(error: Throwable): Boolean {
+        if (!shouldTreatAsUnsupportedThreadFork(error)) {
+            return false
+        }
+        markThreadForkUnsupportedForCurrentBridge()
+        return true
+    }
+
+    private fun shouldTreatAsUnsupportedThreadFork(error: Throwable): Boolean {
+        val rpcError = error as? RpcError ?: return false
+        if (rpcError.code == -32601) {
+            return true
+        }
+        val message = rpcError.message.lowercase(Locale.ROOT)
+        val mentionsUnsupportedMethod = message.contains("method not found")
+            || message.contains("unknown method")
+            || message.contains("not implemented")
+            || message.contains("does not support")
+        val mentionsForkSpecificUnsupported = (message.contains("thread/fork") || message.contains("thread fork")) &&
+            (message.contains("unsupported") || message.contains("not supported"))
+        if (rpcError.code != -32600 && rpcError.code != -32602 && rpcError.code != -32000) {
+            return mentionsUnsupportedMethod || mentionsForkSpecificUnsupported
+        }
+        return mentionsUnsupportedMethod || mentionsForkSpecificUnsupported
+    }
+
+    private fun markServiceTierUnsupportedForCurrentBridge() {
+        supportsServiceTier = false
+        if (hasPresentedServiceTierBridgeUpdatePrompt) {
+            return
+        }
+        hasPresentedServiceTierBridgeUpdatePrompt = true
+        backingBridgeUpdatePrompt.value = serviceTierBridgeUpdatePrompt()
+    }
+
+    private fun markThreadForkUnsupportedForCurrentBridge() {
+        supportsThreadForkCapability = false
+        backingSupportsThreadFork.value = false
+        if (hasPresentedThreadForkBridgeUpdatePrompt) {
+            return
+        }
+        hasPresentedThreadForkBridgeUpdatePrompt = true
+        backingBridgeUpdatePrompt.value = threadForkBridgeUpdatePrompt()
+    }
+
+    private fun serviceTierBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
+        return RemodexBridgeUpdatePrompt(
+            title = "Update Remodex on your Mac to use Speed controls",
+            message = "This Mac bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
+            command = remodexBridgeUpdateCommand,
+        )
+    }
+
+    private fun threadForkBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
+        return RemodexBridgeUpdatePrompt(
+            title = "Update Remodex on your Mac to use /fork",
+            message = "This Mac bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
+            command = remodexBridgeUpdateCommand,
+        )
     }
 
     private fun shouldRetryWithApprovalPolicyFallback(error: Throwable): Boolean {

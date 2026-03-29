@@ -230,6 +230,8 @@ interface RemodexAppRepository {
 
     suspend fun pairWithQrPayload(payload: PairingQrPayload)
 
+    suspend fun dismissBridgeUpdatePrompt()
+
     suspend fun retryConnection()
 
     suspend fun disconnect()

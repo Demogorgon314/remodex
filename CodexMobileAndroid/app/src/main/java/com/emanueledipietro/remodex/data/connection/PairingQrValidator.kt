@@ -1,5 +1,7 @@
 package com.emanueledipietro.remodex.data.connection
 
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
+import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import java.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -79,8 +81,8 @@ private fun looksLikeRemodexPairingPayload(code: String): Boolean {
 
 private fun makeScannerBridgeUpdatePrompt(
     message: String,
-): PairingBridgeUpdatePrompt {
-    return PairingBridgeUpdatePrompt(
+): RemodexBridgeUpdatePrompt {
+    return RemodexBridgeUpdatePrompt(
         title = "Update Remodex on your Mac before scanning",
         message = message,
         command = remodexBridgeUpdateCommand,

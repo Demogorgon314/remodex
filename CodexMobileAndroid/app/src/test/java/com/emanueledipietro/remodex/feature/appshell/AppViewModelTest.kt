@@ -15,6 +15,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -86,6 +87,51 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `ui state reflects runtime bridge update prompt and supports dismiss`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+        repository.snapshot.value = repository.snapshot.value.copy(
+            bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
+                title = "Update Remodex on your Mac to use /fork",
+                message = "Old bridge detected.",
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "Update Remodex on your Mac to use /fork",
+            viewModel.uiState.value.bridgeUpdatePrompt?.title,
+        )
+
+        viewModel.dismissBridgeUpdatePrompt()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.dismissBridgeUpdatePromptCalls)
+        assertNull(viewModel.uiState.value.bridgeUpdatePrompt)
+    }
+
+    @Test
+    fun `retry connection after bridge update dismisses prompt and retries`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
+                    title = "Update Remodex on your Mac to use Speed controls",
+                    message = "Old bridge detected.",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.retryConnectionAfterBridgeUpdate()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.dismissBridgeUpdatePromptCalls)
+        assertEquals(1, repository.retryConnectionCalls)
+        assertNull(viewModel.uiState.value.bridgeUpdatePrompt)
+    }
+
+    @Test
     fun `composer state reflects the selected thread draft rules`() = runTest {
         val repository = TestRemodexAppRepository()
         val viewModel = AppViewModel(repository)
@@ -113,6 +159,80 @@ class AppViewModelTest {
         assertEquals("Queue follow-up", viewModel.uiState.value.composer.sendLabel)
         assertTrue(viewModel.uiState.value.composer.canStop)
         assertTrue(viewModel.uiState.value.composer.canSend)
+    }
+
+    @Test
+    fun `fork slash command disappears when runtime marks fork unsupported`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Composer thread",
+            projectPath = "/tmp/remodex",
+        )
+        val viewModel = AppViewModel(repository)
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(selectedThread),
+            selectedThreadId = selectedThread.id,
+            selectedThreadSnapshot = selectedThread,
+            supportsThreadFork = true,
+        )
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.composer.autocomplete.availableCommands.contains(RemodexSlashCommand.FORK))
+
+        repository.snapshot.value = repository.snapshot.value.copy(supportsThreadFork = false)
+        advanceUntilIdle()
+        viewModel.updateComposerInput("/")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.composer.autocomplete.availableCommands.contains(RemodexSlashCommand.FORK))
+        assertTrue(viewModel.uiState.value.composer.autocomplete.forkDestinations.isEmpty())
+    }
+
+    @Test
+    fun `fork thread suppresses bridge update failures once runtime prompt is available`() = runTest {
+        val selectedThread = threadSummary(
+            id = "thread-1",
+            title = "Composer thread",
+            projectPath = "/tmp/remodex",
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+            )
+            forkThreadError = IllegalStateException("This Mac bridge does not support native conversation forks yet.")
+            forkThreadFailureSessionSnapshot = snapshot.value.copy(
+                threads = listOf(selectedThread),
+                selectedThreadId = selectedThread.id,
+                selectedThreadSnapshot = selectedThread,
+                bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
+                    title = "Update Remodex on your Mac to use /fork",
+                    message = "Old bridge detected.",
+                ),
+                supportsThreadFork = false,
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.forkThread(RemodexComposerForkDestination.LOCAL)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(Triple("thread-1", RemodexComposerForkDestination.LOCAL, null)),
+            repository.forkThreadRequests,
+        )
+        assertEquals(
+            "Update Remodex on your Mac to use /fork",
+            viewModel.uiState.value.bridgeUpdatePrompt?.title,
+        )
+        assertFalse(viewModel.uiState.value.supportsThreadFork)
+        assertNull(viewModel.uiState.value.gitSyncAlert)
     }
 
     @Test
@@ -1683,18 +1803,23 @@ class AppViewModelTest {
         val continueOnMacRequests = mutableListOf<String>()
         val discardRuntimeChangesRequests = mutableListOf<String>()
         val moveThreadToProjectPathRequests = mutableListOf<Pair<String, String>>()
+        val forkThreadRequests = mutableListOf<Triple<String, RemodexComposerForkDestination, String?>>()
         val forkThreadIntoProjectPathRequests = mutableListOf<Pair<String, String>>()
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
         var refreshRequests = 0
         var retryConnectionCalls = 0
         var disconnectCalls = 0
+        var dismissBridgeUpdatePromptCalls = 0
         var refreshDelayMs = 1_000L
         var hydrateDelayMs = 0L
         var sendPromptDelayMs = 0L
         var continueOnMacDelayMs = 0L
         var sendPromptError: Throwable? = null
         var continueOnMacError: Throwable? = null
+        var forkThreadError: Throwable? = null
+        var forkThreadResult: String? = null
+        var forkThreadFailureSessionSnapshot: RemodexSessionSnapshot? = null
         var gitDiffRequests = 0
         var gitDiffDelayMs = 0L
         var gitDiffResult = RemodexGitRepoDiff()
@@ -1927,7 +2052,12 @@ class AppViewModelTest {
             threadId: String,
             destination: RemodexComposerForkDestination,
             baseBranch: String?,
-        ): String? = null
+        ): String? {
+            forkThreadRequests += Triple(threadId, destination, baseBranch)
+            forkThreadFailureSessionSnapshot?.let { snapshot.value = it }
+            forkThreadError?.let { throw it }
+            return forkThreadResult
+        }
 
         override suspend fun forkThreadIntoProjectPath(
             threadId: String,
@@ -2051,6 +2181,11 @@ class AppViewModelTest {
         }
 
         override suspend fun pairWithQrPayload(payload: PairingQrPayload) = Unit
+
+        override suspend fun dismissBridgeUpdatePrompt() {
+            dismissBridgeUpdatePromptCalls += 1
+            snapshot.value = snapshot.value.copy(bridgeUpdatePrompt = null)
+        }
 
         override suspend fun retryConnection() {
             retryConnectionCalls += 1

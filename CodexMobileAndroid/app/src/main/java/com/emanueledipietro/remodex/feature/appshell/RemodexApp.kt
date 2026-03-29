@@ -2,6 +2,8 @@ package com.emanueledipietro.remodex.feature.appshell
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -105,6 +107,7 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeSheetPresentation
 import com.emanueledipietro.remodex.feature.turn.buildRepositoryDiffSheetPresentation
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -193,6 +196,7 @@ fun RemodexApp(
     var isSidebarOpen by rememberSaveable { mutableStateOf(false) }
     var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }
     var isScannerPresented by rememberSaveable { mutableStateOf(false) }
+    var didCopyBridgeUpdateCommand by rememberSaveable { mutableStateOf(false) }
     val conversationChrome = remodexConversationChrome()
     val defaultPageColor = MaterialTheme.colorScheme.background
     val context = LocalContext.current
@@ -316,6 +320,14 @@ fun RemodexApp(
         if (uiState.transientBanner == banner) {
             viewModel.dismissTransientBanner()
         }
+    }
+
+    LaunchedEffect(
+        uiState.bridgeUpdatePrompt?.title,
+        uiState.bridgeUpdatePrompt?.message,
+        uiState.bridgeUpdatePrompt?.command,
+    ) {
+        didCopyBridgeUpdateCommand = false
     }
 
     LaunchedEffect(uiState.completionHapticSignal) {
@@ -471,6 +483,55 @@ fun RemodexApp(
         },
         onCancelVoiceRecording = viewModel::cancelVoiceRecording,
     )
+
+    uiState.bridgeUpdatePrompt?.let { prompt ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissBridgeUpdatePrompt,
+            confirmButton = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TextButton(onClick = viewModel::dismissBridgeUpdatePrompt) {
+                        Text("Not Now")
+                    }
+                    TextButton(
+                        onClick = {
+                            viewModel.dismissBridgeUpdatePrompt()
+                            viewModel.prepareForManualScan()
+                            isScannerPresented = true
+                        },
+                    ) {
+                        Text("Scan New QR Code")
+                    }
+                    Button(
+                        onClick = viewModel::retryConnectionAfterBridgeUpdate,
+                    ) {
+                        Text("I Updated It")
+                    }
+                }
+            },
+            title = {
+                DesktopHandoffDialogTitle(
+                    title = prompt.title,
+                    eyebrow = "Bridge update",
+                )
+            },
+            text = {
+                BridgeUpdateDialogBody(
+                    prompt = prompt,
+                    didCopyCommand = didCopyBridgeUpdateCommand,
+                    onCopyCommand = { command ->
+                        copyTextToClipboard(
+                            context = context,
+                            label = "Remodex bridge update command",
+                            value = command,
+                        )
+                        didCopyBridgeUpdateCommand = true
+                    },
+                )
+            },
+        )
+    }
 
     if (isScannerPresented) {
         PairingScannerScreen(
@@ -1030,7 +1091,62 @@ private fun MainPane(
 }
 
 @Composable
-private fun DesktopHandoffDialogTitle(title: String) {
+private fun BridgeUpdateDialogBody(
+    prompt: RemodexBridgeUpdatePrompt,
+    didCopyCommand: Boolean,
+    onCopyCommand: (String) -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(
+            text = prompt.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.bodyText,
+        )
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "Run this on your Mac",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = chrome.secondaryText,
+                )
+                Text(
+                    text = prompt.command,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.bodyText,
+                )
+                TextButton(
+                    onClick = { onCopyCommand(prompt.command) },
+                ) {
+                    Text(if (didCopyCommand) "Copied" else "Copy Command")
+                }
+            }
+        }
+        Text(
+            text = "After the package updates, restart the bridge on your Mac and come back here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.secondaryText,
+        )
+    }
+}
+
+@Composable
+private fun DesktopHandoffDialogTitle(
+    title: String,
+    eyebrow: String = "Mac handoff",
+) {
     val chrome = remodexConversationChrome()
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1055,7 +1171,7 @@ private fun DesktopHandoffDialogTitle(title: String) {
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                text = "Mac handoff",
+                text = eyebrow,
                 style = MaterialTheme.typography.labelMedium,
                 color = chrome.secondaryText,
             )
@@ -1067,6 +1183,15 @@ private fun DesktopHandoffDialogTitle(title: String) {
             )
         }
     }
+}
+
+private fun copyTextToClipboard(
+    context: Context,
+    label: String,
+    value: String,
+) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
 }
 
 @Composable

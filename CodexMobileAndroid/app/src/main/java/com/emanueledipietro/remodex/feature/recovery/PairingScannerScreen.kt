@@ -62,10 +62,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.emanueledipietro.remodex.data.connection.PairingBridgeUpdatePrompt
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.PairingQrValidationResult
 import com.emanueledipietro.remodex.data.connection.validatePairingQrCode
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -79,7 +79,7 @@ fun PairingScannerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     var scannerError by remember { mutableStateOf<String?>(null) }
-    var bridgeUpdatePrompt by remember { mutableStateOf<PairingBridgeUpdatePrompt?>(null) }
+    var bridgeUpdatePrompt by remember { mutableStateOf<RemodexBridgeUpdatePrompt?>(null) }
     var didCopyBridgeUpdateCommand by remember { mutableStateOf(false) }
     var hasCameraPermission by remember { mutableStateOf(false) }
     var isCheckingPermission by remember { mutableStateOf(true) }
@@ -322,7 +322,7 @@ private fun PairingCameraPermissionView(
 
 @Composable
 private fun PairingBridgeUpdateView(
-    prompt: PairingBridgeUpdatePrompt,
+    prompt: RemodexBridgeUpdatePrompt,
     didCopyCommand: Boolean,
     onCopyCommand: (String) -> Unit,
     onContinue: () -> Unit,

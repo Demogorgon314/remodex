@@ -25,6 +25,7 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -2184,6 +2185,16 @@ class BridgeThreadSyncServiceTest {
             assertEquals(listOf(RemodexServiceTier.FAST), createdThread?.runtimeConfig?.availableServiceTiers)
             assertEquals(0, threadReadCalls)
             assertTrue(service.isThreadResumedLocally("thread-fast"))
+            assertTrue(service.supportsThreadFork.value)
+            assertEquals(
+                "Update Remodex on your Mac to use Speed controls",
+                service.bridgeUpdatePrompt.value?.title,
+            )
+            assertEquals(
+                "This Mac bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
+                service.bridgeUpdatePrompt.value?.message,
+            )
+            assertEquals(remodexBridgeUpdateCommand, service.bridgeUpdatePrompt.value?.command)
 
             service.sendPrompt(
                 threadId = "thread-fast",
@@ -2194,6 +2205,180 @@ class BridgeThreadSyncServiceTest {
             advanceUntilIdle()
 
             assertEquals(listOf(null), turnStartServiceTiers)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `fork unsupported emits upgrade prompt and disables capability`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-fork-unsupported",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-source"))
+                                        put("title", JsonPrimitive("Source thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-source"))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/fork" to {
+                    throw RpcError(code = -32601, message = "Method not found: thread/fork")
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            runCatching {
+                service.forkThreadIntoProjectPath(
+                    threadId = "thread-source",
+                    projectPath = "/tmp/project-forked",
+                )
+            }.onSuccess {
+                fail("Expected thread/fork to fail")
+            }
+
+            assertFalse(service.supportsThreadFork.value)
+            assertEquals("Update Remodex on your Mac to use /fork", service.bridgeUpdatePrompt.value?.title)
+            assertEquals(
+                "This Mac bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
+                service.bridgeUpdatePrompt.value?.message,
+            )
+            assertEquals(remodexBridgeUpdateCommand, service.bridgeUpdatePrompt.value?.command)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `fork override fallback retries minimal params without disabling capability`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-fork-override-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val capturedForkParamKeys = mutableListOf<Set<String>>()
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-source"))
+                                        put("title", JsonPrimitive("Source thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-source"))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/fork" to { message ->
+                    val params = message.params?.jsonObjectOrNull ?: buildJsonObject { }
+                    capturedForkParamKeys += params.keys
+                    if ("cwd" in params) {
+                        throw RpcError(code = -32602, message = "Unknown field cwd")
+                    }
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-forked"))
+                                put("title", JsonPrimitive("Forked thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-forked"))
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-forked"))
+                                put("title", JsonPrimitive("Forked thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-forked"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            val forkedThread = service.forkThreadIntoProjectPath(
+                threadId = "thread-source",
+                projectPath = "/tmp/project-forked",
+            )
+            advanceUntilIdle()
+
+            assertEquals("thread-forked", forkedThread?.id)
+            assertEquals(3, capturedForkParamKeys.size)
+            assertTrue(capturedForkParamKeys.dropLast(1).any { keys -> "cwd" in keys })
+            assertEquals(setOf("threadId", "approvalPolicy"), capturedForkParamKeys.last())
+            assertTrue(service.supportsThreadFork.value)
+            assertNull(service.bridgeUpdatePrompt.value)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

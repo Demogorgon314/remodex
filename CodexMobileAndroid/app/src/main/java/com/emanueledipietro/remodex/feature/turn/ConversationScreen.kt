@@ -2031,13 +2031,13 @@ private fun ThreadWelcomeTimelineState(
         )
         Text(
             text = "Hi! How can I help you?",
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             color = chrome.titleText,
         )
         Text(
             text = "Chats are End-to-end encrypted",
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             color = chrome.secondaryText,
         )
         if (isLoading) {

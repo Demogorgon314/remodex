@@ -16,6 +16,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantRevertSheetState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
@@ -57,6 +58,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -119,6 +121,8 @@ data class AppUiState(
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
     val appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
+    val bridgeUpdatePrompt: RemodexBridgeUpdatePrompt? = null,
+    val supportsThreadFork: Boolean = true,
     val isRefreshingThreads: Boolean = false,
     val isRefreshingUsage: Boolean = false,
     val isSelectedThreadHydrating: Boolean = false,
@@ -484,6 +488,8 @@ class AppViewModel(
                 appearanceMode = snapshot.appearanceMode,
                 appFontStyle = snapshot.appFontStyle,
                 trustedMac = snapshot.trustedMac,
+                bridgeUpdatePrompt = snapshot.bridgeUpdatePrompt,
+                supportsThreadFork = snapshot.supportsThreadFork,
                 composer = composerState(
                     draftText = draftText,
                     attachments = attachments,
@@ -496,6 +502,7 @@ class AppViewModel(
                     autocomplete = renderStateB.autocomplete.enriched(
                         selectedThread = selectedThread,
                         gitState = gitState,
+                        supportsThreadFork = snapshot.supportsThreadFork,
                         selectedGitBaseBranch = selectedGitBaseBranch,
                         draftText = draftText,
                         mentionedFiles = mentionedFiles,
@@ -1248,9 +1255,16 @@ class AppViewModel(
             }
 
             RemodexSlashCommand.FORK -> {
+                if (!uiState.value.supportsThreadFork) {
+                    clearComposerAutocomplete()
+                    return
+                }
                 autocompleteState.value = autocompleteState.value.copy(
                     panel = RemodexComposerAutocompletePanel.FORK_DESTINATIONS,
-                    forkDestinations = availableForkDestinations(uiState.value.composer.gitState),
+                    forkDestinations = availableForkDestinations(
+                        gitState = uiState.value.composer.gitState,
+                        supportsThreadFork = uiState.value.supportsThreadFork,
+                    ),
                 )
             }
         }
@@ -1737,14 +1751,29 @@ class AppViewModel(
     fun forkThread(destination: RemodexComposerForkDestination) {
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
-            val nextThreadId = repository.forkThread(
-                threadId = threadId,
-                destination = destination,
-                baseBranch = uiState.value.composer.selectedGitBaseBranch.ifBlank { null },
-            )
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
-            nextThreadId?.let(::refreshGitState)
+            runCatching {
+                repository.forkThread(
+                    threadId = threadId,
+                    destination = destination,
+                    baseBranch = uiState.value.composer.selectedGitBaseBranch.ifBlank { null },
+                )
+            }.onSuccess { nextThreadId ->
+                nextThreadId?.let(::refreshGitState)
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (shouldSuppressForkFailureAfterBridgeUpdate()) {
+                    return@onFailure
+                }
+                showGitSyncAlert(
+                    threadId = threadId,
+                    title = "Fork Failed",
+                    message = error.message ?: "Could not fork the thread.",
+                )
+            }
         }
     }
 
@@ -2085,8 +2114,23 @@ class AppViewModel(
         }
     }
 
+    fun dismissBridgeUpdatePrompt() {
+        viewModelScope.launch {
+            repository.dismissBridgeUpdatePrompt()
+        }
+    }
+
     fun retryConnection() {
         viewModelScope.launch {
+            stopAutoReconnectForManualRetry()
+            suppressAutoReconnectUntilManualConnect = false
+            repository.retryConnection()
+        }
+    }
+
+    fun retryConnectionAfterBridgeUpdate() {
+        viewModelScope.launch {
+            repository.dismissBridgeUpdatePrompt()
             stopAutoReconnectForManualRetry()
             suppressAutoReconnectUntilManualConnect = false
             repository.retryConnection()
@@ -2763,7 +2807,10 @@ class AppViewModel(
             hasReviewSelection = composer.reviewSelection != null,
             hasSubagentsSelection = composer.isSubagentsSelectionArmed,
             isPlanModeArmed = composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN,
-        ) && availableForkDestinations(composer.gitState).isNotEmpty()
+        ) && availableForkDestinations(
+            gitState = composer.gitState,
+            supportsThreadFork = uiState.value.supportsThreadFork,
+        ).isNotEmpty()
         return RemodexSlashCommand.allCommands.filter { command ->
             command != RemodexSlashCommand.FORK || allowsFork
         }
@@ -2931,6 +2978,12 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    private suspend fun shouldSuppressForkFailureAfterBridgeUpdate(): Boolean {
+        yield()
+        val snapshot = repository.session.value
+        return snapshot.bridgeUpdatePrompt != null || !snapshot.supportsThreadFork
     }
 
     private fun gitBranchAlert(
@@ -3438,6 +3491,7 @@ class AppViewModelFactory(
 private fun RemodexComposerAutocompleteState.enriched(
     selectedThread: RemodexThreadSummary?,
     gitState: RemodexGitState,
+    supportsThreadFork: Boolean,
     selectedGitBaseBranch: String,
     draftText: String,
     mentionedFiles: List<RemodexComposerMentionedFile>,
@@ -3456,16 +3510,20 @@ private fun RemodexComposerAutocompleteState.enriched(
         attachmentCount = attachments.size,
         hasSubagentsSelection = isSubagentsSelectionArmed,
     )
+    val availableForkDestinations = availableForkDestinations(
+        gitState = gitState,
+        supportsThreadFork = supportsThreadFork,
+    )
     return copy(
         availableCommands = availableCommands.filter { command ->
             when (command) {
-                RemodexSlashCommand.FORK -> availableForkDestinations(gitState).isNotEmpty()
+                RemodexSlashCommand.FORK -> availableForkDestinations.isNotEmpty()
                 else -> true
             }
         },
         slashCommands = slashCommands.filter { command ->
             when (command) {
-                RemodexSlashCommand.FORK -> availableForkDestinations(gitState).isNotEmpty()
+                RemodexSlashCommand.FORK -> availableForkDestinations.isNotEmpty()
                 else -> true
             }
         },
@@ -3477,7 +3535,7 @@ private fun RemodexComposerAutocompleteState.enriched(
         } else {
             listOf(RemodexComposerReviewTarget.UNCOMMITTED_CHANGES)
         },
-        forkDestinations = availableForkDestinations(gitState),
+        forkDestinations = availableForkDestinations,
         hasComposerContentConflictingWithReview = hasReviewConflict,
         isThreadRunning = selectedThread.isRunning,
         selectedGitBaseBranch = selectedGitBaseBranch,
@@ -3485,7 +3543,13 @@ private fun RemodexComposerAutocompleteState.enriched(
     )
 }
 
-private fun availableForkDestinations(gitState: RemodexGitState): List<RemodexComposerForkDestination> {
+private fun availableForkDestinations(
+    gitState: RemodexGitState,
+    supportsThreadFork: Boolean,
+): List<RemodexComposerForkDestination> {
+    if (!supportsThreadFork) {
+        return emptyList()
+    }
     return buildList {
         if (gitState.hasContext) {
             add(RemodexComposerForkDestination.NEW_WORKTREE)

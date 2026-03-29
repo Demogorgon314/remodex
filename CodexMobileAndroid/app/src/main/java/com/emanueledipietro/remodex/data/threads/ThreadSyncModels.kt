@@ -16,6 +16,7 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
@@ -54,6 +55,10 @@ interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
     val availableModels: StateFlow<List<RemodexModelOption>>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
+    val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?>
+    val supportsThreadFork: StateFlow<Boolean>
+
+    fun dismissBridgeUpdatePrompt()
 }
 
 interface ThreadCommandService {

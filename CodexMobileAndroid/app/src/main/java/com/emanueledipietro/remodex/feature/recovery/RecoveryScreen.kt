@@ -32,13 +32,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.emanueledipietro.remodex.data.connection.PairingBridgeUpdatePrompt
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.PairingQrValidationResult
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.data.connection.statusLabel
 import com.emanueledipietro.remodex.data.connection.validatePairingQrCode
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 
 @Composable
@@ -54,7 +54,7 @@ fun RecoveryScreen(
     var cameraDenied by remember { mutableStateOf(false) }
     var showScanner by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf<String?>(null) }
-    var bridgeUpdatePrompt by remember { mutableStateOf<PairingBridgeUpdatePrompt?>(null) }
+    var bridgeUpdatePrompt by remember { mutableStateOf<RemodexBridgeUpdatePrompt?>(null) }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->

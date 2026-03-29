@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.data.connection
 
+import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel

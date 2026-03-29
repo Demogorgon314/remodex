@@ -129,6 +129,8 @@ class DefaultRemodexAppRepository(
             connectionStatus = secureConnectionCoordinator.state.value.toConnectionStatus(),
             secureConnection = secureConnectionCoordinator.state.value,
             trustedMac = secureConnectionCoordinator.state.value.toTrustedMacPresentation(),
+            bridgeUpdatePrompt = threadSyncService.bridgeUpdatePrompt.value,
+            supportsThreadFork = threadSyncService.supportsThreadFork.value,
             availableModels = threadSyncService.availableModels.value,
             threads = initialBaseThreads,
             selectedThreadId = initialBaseThreads.firstOrNull()?.id,
@@ -182,16 +184,31 @@ class DefaultRemodexAppRepository(
 
         repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
             combine(
-                appPreferencesRepository.preferences,
-                secureConnectionCoordinator.state,
-                managedPushRegistrationState,
-                threadSyncService.availableModels,
-            ) { preferences, secureConnection, notificationRegistration, availableModels ->
+                combine(
+                    appPreferencesRepository.preferences,
+                    secureConnectionCoordinator.state,
+                    managedPushRegistrationState,
+                    threadSyncService.availableModels,
+                ) { preferences, secureConnection, notificationRegistration, availableModels ->
+                    SessionInputs(
+                        preferences = preferences,
+                        secureConnection = secureConnection,
+                        notificationRegistration = notificationRegistration,
+                        availableModels = availableModels,
+                        bridgeUpdatePrompt = null,
+                        supportsThreadFork = true,
+                    )
+                },
+                threadSyncService.bridgeUpdatePrompt,
+                threadSyncService.supportsThreadFork,
+            ) { baseInputs, bridgeUpdatePrompt, supportsThreadFork ->
                 SessionInputs(
-                    preferences = preferences,
-                    secureConnection = secureConnection,
-                    notificationRegistration = notificationRegistration,
-                    availableModels = availableModels,
+                    preferences = baseInputs.preferences,
+                    secureConnection = baseInputs.secureConnection,
+                    notificationRegistration = baseInputs.notificationRegistration,
+                    availableModels = baseInputs.availableModels,
+                    bridgeUpdatePrompt = bridgeUpdatePrompt,
+                    supportsThreadFork = supportsThreadFork,
                 )
             }.collectLatest { inputs ->
                 val preferences = inputs.preferences
@@ -229,6 +246,8 @@ class DefaultRemodexAppRepository(
                         appearanceMode = preferences.appearanceMode,
                         appFontStyle = preferences.appFontStyle,
                         trustedMac = secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
+                        bridgeUpdatePrompt = inputs.bridgeUpdatePrompt,
+                        supportsThreadFork = inputs.supportsThreadFork,
                         threads = threads,
                         selectedThreadId = selectedThreadId,
                         selectedThreadSnapshot = threads.firstOrNull { thread -> thread.id == selectedThreadId }
@@ -1327,6 +1346,10 @@ class DefaultRemodexAppRepository(
         secureConnectionCoordinator.retryConnection()
     }
 
+    override suspend fun dismissBridgeUpdatePrompt() {
+        threadSyncService.dismissBridgeUpdatePrompt()
+    }
+
     override suspend fun retryConnection() {
         secureConnectionCoordinator.retryConnection()
     }
@@ -1902,6 +1925,8 @@ private data class SessionInputs(
     val secureConnection: SecureConnectionSnapshot,
     val notificationRegistration: RemodexNotificationRegistrationState,
     val availableModels: List<RemodexModelOption>,
+    val bridgeUpdatePrompt: com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt?,
+    val supportsThreadFork: Boolean,
 )
 
 private fun resolveSelectedThreadId(

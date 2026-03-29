@@ -7,6 +7,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -47,6 +48,8 @@ class FakeThreadSyncService(
     private val backingAvailableModels = MutableStateFlow(seededModelOptions())
     private val backingThreads = MutableStateFlow(initialThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs))
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+    private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
+    private val backingSupportsThreadFork = MutableStateFlow(true)
     private val resumedThreadIds = mutableSetOf<String>()
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
@@ -55,6 +58,20 @@ class FakeThreadSyncService(
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = backingCommandExecutionDetails
+    override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
+    override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
+
+    override fun dismissBridgeUpdatePrompt() {
+        backingBridgeUpdatePrompt.value = null
+    }
+
+    fun updateBridgeUpdatePrompt(prompt: RemodexBridgeUpdatePrompt?) {
+        backingBridgeUpdatePrompt.value = prompt
+    }
+
+    fun updateSupportsThreadFork(supports: Boolean) {
+        backingSupportsThreadFork.value = supports
+    }
 
     fun updateThreads(threads: List<ThreadSyncSnapshot>) {
         backingThreads.value = threads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
