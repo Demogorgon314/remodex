@@ -2676,7 +2676,17 @@ class BridgeThreadSyncServiceTest {
                 put("threadId", JsonPrimitive("thread-plan-live"))
                 put("turnId", JsonPrimitive("turn-plan-live"))
                 put("itemId", JsonPrimitive("plan-item-1"))
-                put("delta", JsonPrimitive("# Final plan\n- Audit current flow\n- Implement Android fix"))
+                put("delta", JsonPrimitive("# Final plan"))
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "appendPlanDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-live"))
+                put("turnId", JsonPrimitive("turn-plan-live"))
+                put("itemId", JsonPrimitive("plan-item-1"))
+                put("delta", JsonPrimitive("\n- Audit current flow\n- Implement Android fix"))
             },
         )
 

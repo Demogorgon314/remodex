@@ -2196,6 +2196,7 @@ class BridgeThreadSyncService(
             text = delta,
             planState = null,
             isStreaming = true,
+            textIsDelta = true,
         )
     }
 
@@ -2959,6 +2960,7 @@ class BridgeThreadSyncService(
         text: String?,
         planState: RemodexPlanState?,
         isStreaming: Boolean,
+        textIsDelta: Boolean = false,
     ) {
         val messageId = streamingMessageId(
             itemId = itemId,
@@ -2992,6 +2994,7 @@ class BridgeThreadSyncService(
             incomingText = text,
             resolvedPlanState = resolvedPlanState,
             isStreaming = isStreaming,
+            incomingTextIsDelta = textIsDelta,
         ) ?: if (isStreaming) "Planning..." else "Plan updated."
         upsertStreamingItem(
             threadId = threadId,
@@ -3515,6 +3518,7 @@ class BridgeThreadSyncService(
         incomingText: String?,
         resolvedPlanState: RemodexPlanState?,
         isStreaming: Boolean,
+        incomingTextIsDelta: Boolean,
     ): String? {
         val trimmedIncoming = incomingText?.trim()?.takeIf(String::isNotEmpty)
         val trimmedExisting = existingText?.takeIf(String::isNotBlank)
@@ -3522,6 +3526,11 @@ class BridgeThreadSyncService(
             return when {
                 trimmedExisting.isNullOrBlank() -> trimmedIncoming
                 isPlanPlaceholderText(trimmedExisting) -> trimmedIncoming
+                isPlanStateFallbackText(
+                    text = trimmedExisting,
+                    planState = resolvedPlanState,
+                ) -> trimmedIncoming
+                incomingTextIsDelta -> trimmedExisting + incomingText
                 !isStreaming -> trimmedIncoming
                 else -> ThreadHistoryReconciler.mergeStreamingSnapshotText(
                     existingText = trimmedExisting,
@@ -3537,6 +3546,16 @@ class BridgeThreadSyncService(
     private fun isPlanPlaceholderText(text: String): Boolean {
         val trimmed = text.trim()
         return trimmed == "Planning..." || trimmed == "Plan updated."
+    }
+
+    private fun isPlanStateFallbackText(
+        text: String,
+        planState: RemodexPlanState?,
+    ): Boolean {
+        val trimmed = text.trim()
+        val explanation = planState?.explanation?.trim().orEmpty()
+        val firstStep = planState?.steps?.firstOrNull()?.step?.trim().orEmpty()
+        return trimmed == explanation || trimmed == firstStep
     }
 
     private fun reusableAssistantCompletionItem(
