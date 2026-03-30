@@ -5,6 +5,7 @@ import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.connection.RpcMessage
 import com.emanueledipietro.remodex.data.connection.ScriptedRpcRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
+import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.data.connection.UnexpectedRelayWebSocketFactory
 import com.emanueledipietro.remodex.data.connection.UnusedTrustedSessionResolver
@@ -100,6 +101,33 @@ class BridgeThreadSyncServiceTest {
                 scope = RemodexPermissionGrantScope.SESSION,
             ),
         )
+    }
+
+    @Test
+    fun `initialize session skips when encrypted state races ahead of secure session readiness`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = backgroundScope,
+        )
+        setSecureConnectionState(
+            coordinator = coordinator,
+            snapshot = SecureConnectionSnapshot(
+                phaseMessage = "Connected",
+                secureState = SecureConnectionState.ENCRYPTED,
+                attempt = 1,
+            ),
+        )
+
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        assertTrue(service.availableModels.value.isEmpty())
+        assertTrue(service.threads.value.isEmpty())
     }
 
     @Test
@@ -5344,6 +5372,17 @@ class BridgeThreadSyncServiceTest {
         field.isAccessible = true
         val state = field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<List<ThreadSyncSnapshot>>
         state.value = snapshots
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setSecureConnectionState(
+        coordinator: SecureConnectionCoordinator,
+        snapshot: SecureConnectionSnapshot,
+    ) {
+        val field = coordinator.javaClass.getDeclaredField("connectionState")
+        field.isAccessible = true
+        val state = field.get(coordinator) as kotlinx.coroutines.flow.MutableStateFlow<SecureConnectionSnapshot>
+        state.value = snapshot
     }
 
     private suspend fun TestScope.createConnectedBridgeService(): ConnectedBridgeService {

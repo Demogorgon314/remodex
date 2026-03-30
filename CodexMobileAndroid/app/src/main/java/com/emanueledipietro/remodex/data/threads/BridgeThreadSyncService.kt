@@ -4,6 +4,7 @@ import android.util.Log
 import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.connection.RpcMessage
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
+import com.emanueledipietro.remodex.data.connection.SecureTransportException
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.data.connection.firstArray
 import com.emanueledipietro.remodex.data.connection.firstBoolean
@@ -267,7 +268,9 @@ class BridgeThreadSyncService(
                         supportsTurnCollaborationMode = true
                         backingBridgeUpdatePrompt.value = null
                         backingSupportsThreadFork.value = true
-                        initializeSession()
+                        if (!initializeSession()) {
+                            return@collectLatest
+                        }
                         refreshAvailableModels()
                         refreshThreads()
                     }
@@ -1346,7 +1349,7 @@ class BridgeThreadSyncService(
         hydrateThread(threadId)
     }
 
-    private suspend fun initializeSession() {
+    private suspend fun initializeSession(): Boolean {
         val clientInfo = buildJsonObject {
             put("name", JsonPrimitive("codexmobile_android"))
             put("title", JsonPrimitive("CodexMobile Android"))
@@ -1362,7 +1365,7 @@ class BridgeThreadSyncService(
             )
         }
 
-        runCatching {
+        val initialized = runCatching {
             secureConnectionCoordinator.sendRequest(
                 method = "initialize",
                 params = modernParams,
@@ -1374,11 +1377,37 @@ class BridgeThreadSyncService(
                     put("clientInfo", clientInfo)
                 },
             )
-        }.getOrThrow()
+        }.fold(
+            onSuccess = { true },
+            onFailure = { error ->
+                if (error is CancellationException || error is SecureTransportException) {
+                    Log.d(logTag, "initializeSession skipped: ${error.message.orEmpty()}")
+                    false
+                } else {
+                    throw error
+                }
+            },
+        )
 
-        secureConnectionCoordinator.sendNotification(
-            method = "initialized",
-            params = null,
+        if (!initialized) {
+            return false
+        }
+
+        return runCatching {
+            secureConnectionCoordinator.sendNotification(
+                method = "initialized",
+                params = null,
+            )
+        }.fold(
+            onSuccess = { true },
+            onFailure = { error ->
+                if (error is CancellationException || error is SecureTransportException) {
+                    Log.d(logTag, "initialized notification skipped: ${error.message.orEmpty()}")
+                    false
+                } else {
+                    throw error
+                }
+            },
         )
     }
 
@@ -6798,6 +6827,7 @@ class BridgeThreadSyncService(
     }
 
     companion object {
+        private const val logTag = "RemodexThreadSync"
         private const val MaxPatchSearchDepth = 4
         private const val ReviewDebugTag = "RemodexReviewDebug"
     }
