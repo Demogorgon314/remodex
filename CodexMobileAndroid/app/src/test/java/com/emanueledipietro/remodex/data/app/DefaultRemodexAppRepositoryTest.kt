@@ -951,6 +951,60 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `switching bridge clears the selected thread from the previous bridge`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val secureStore = InMemorySecureStore()
+        val firstMacIdentity = createTestMacIdentity()
+        val secondMacIdentity = createTestMacIdentity()
+        val syncService = FakeThreadSyncService()
+        val coordinator = SecureConnectionCoordinator(
+            store = secureStore,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = backgroundScope,
+        )
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-one",
+                macIdentityPublicKey = firstMacIdentity.publicKeyBase64,
+                sessionId = "session-one",
+            ),
+        )
+        val firstProfileId = requireNotNull(coordinator.bridgeProfiles.value.activeProfileId)
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-two",
+                macIdentityPublicKey = secondMacIdentity.publicKeyBase64,
+                sessionId = "session-two",
+            ),
+        )
+
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        assertEquals("thread-notifications", repository.session.value.selectedThreadId)
+
+        repository.activateBridgeProfile(firstProfileId)
+        advanceUntilIdle()
+
+        assertEquals(null, repository.session.value.selectedThreadId)
+        assertEquals(null, repository.session.value.selectedThreadSnapshot)
+        assertEquals(null, repository.session.value.selectedThread)
+        assertTrue(repository.session.value.threads.isEmpty())
+        assertEquals(null, preferencesRepository.preferencesState.value.selectedThreadId)
+    }
+
+    @Test
     fun `stale thread list rebuild keeps sticky selected thread when the new thread is temporarily missing`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         advanceUntilIdle()

@@ -121,6 +121,7 @@ class DefaultRemodexAppRepository(
     private var threadListPublishJob: Job? = null
     private var recoveredEncryptedAttempt: Int? = null
     private var activeBridgeProfileId: String? = secureConnectionCoordinator.bridgeProfiles.value.activeProfileId
+    private var suppressBridgeScopedThreadsUntilNextSync = false
     private val reconnectCatchupJobByThread = mutableMapOf<String, Job>()
     private val initialBaseThreads = threadSyncService.threads.value
         .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
@@ -187,10 +188,11 @@ class DefaultRemodexAppRepository(
                 appPreferencesRepository.setActiveBridgeProfileId(nextActiveProfileId)
                 threadCacheStore.setActiveProfileId(nextActiveProfileId)
                 if (didChangeActiveProfile) {
+                    suppressBridgeScopedThreadsUntilNextSync = true
                     reconnectCatchupJobByThread.values.forEach(Job::cancel)
                     reconnectCatchupJobByThread.clear()
                     recoveredEncryptedAttempt = null
-                    refreshThreadsLocally(emptyList())
+                    clearThreadsForExplicitDisconnect()
                     resetBridgeScopedStatus()
                 }
             }
@@ -201,12 +203,21 @@ class DefaultRemodexAppRepository(
             // Using collectLatest here lets newer thread snapshots cancel in-flight work,
             // which makes Android feel chunkier than iOS under heavy streaming.
             threadSyncService.threads.collect { snapshots ->
+                if (suppressBridgeScopedThreadsUntilNextSync) {
+                    if (snapshots.isEmpty()) {
+                        return@collect
+                    }
+                    suppressBridgeScopedThreadsUntilNextSync = false
+                }
                 syncThreads(snapshots)
             }
         }
 
         repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
             threadCacheStore.threads.collectLatest { cachedThreads ->
+                if (suppressBridgeScopedThreadsUntilNextSync) {
+                    return@collectLatest
+                }
                 if (threadSyncService.threads.value.isNotEmpty()) {
                     return@collectLatest
                 }
@@ -251,7 +262,7 @@ class DefaultRemodexAppRepository(
             }.collectLatest { inputs ->
                 val preferences = inputs.preferences
                 val secureConnection = inputs.secureConnection
-                val baseThreads = baseThreadsState.value
+                val baseThreads = bridgeScopedBaseThreads(baseThreadsState.value)
                 val resolvedAvailableModels = inputs.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
                     ?: baseThreads.firstNotNullOfOrNull { thread ->
                         thread.runtimeConfig.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
@@ -265,16 +276,20 @@ class DefaultRemodexAppRepository(
                 )
                 val currentSessionSnapshot = sessionState.value
                 val inMemorySelectedThreadId = preferredSelectedThreadId.get()
-                val selectedThreadId = resolveSelectedThreadId(
-                    preferredThreadId = preferredSelectedThreadId(
-                        inMemorySelectedThreadId = inMemorySelectedThreadId,
-                        persistedSelectedThreadId = preferences.selectedThreadId,
-                        sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
-                    ),
-                    stickyThreadId = currentSessionSnapshot.selectedThreadId,
-                    stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
-                    threads = threads,
-                )
+                val selectedThreadId = if (suppressBridgeScopedThreadsUntilNextSync) {
+                    null
+                } else {
+                    resolveSelectedThreadId(
+                        preferredThreadId = preferredSelectedThreadId(
+                            inMemorySelectedThreadId = inMemorySelectedThreadId,
+                            persistedSelectedThreadId = preferences.selectedThreadId,
+                            sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
+                        ),
+                        stickyThreadId = currentSessionSnapshot.selectedThreadId,
+                        stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
+                        threads = threads,
+                    )
+                }
                 preferredSelectedThreadId.set(selectedThreadId)
                 if (selectedThreadId != preferences.selectedThreadId) {
                     appPreferencesRepository.setSelectedThreadId(selectedThreadId)
@@ -1472,10 +1487,13 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun activateBridgeProfile(profileId: String): Boolean {
+        suppressBridgeScopedThreadsUntilNextSync = true
         val didActivate = secureConnectionCoordinator.activateBridgeProfile(profileId)
         if (!didActivate) {
+            suppressBridgeScopedThreadsUntilNextSync = false
             return false
         }
+        clearThreadsForExplicitDisconnect()
         secureConnectionCoordinator.retryConnection()
         return true
     }
@@ -1534,14 +1552,12 @@ class DefaultRemodexAppRepository(
         )
     }
 
-    private fun clearThreadsForExplicitDisconnect() {
+    private suspend fun clearThreadsForExplicitDisconnect() {
         baseThreadsState.value = emptyList()
         preferredSelectedThreadId.set(null)
         cancelPendingThreadListPublish()
         preferencesState.value = preferencesState.value.copy(selectedThreadId = null)
-        repositoryScope.launch {
-            appPreferencesRepository.setSelectedThreadId(null)
-        }
+        appPreferencesRepository.setSelectedThreadId(null)
         sessionState.update { snapshot ->
             snapshot.copy(
                 availableModels = resolveAvailableModels(emptyList()),
@@ -1549,6 +1565,16 @@ class DefaultRemodexAppRepository(
                 selectedThreadId = null,
                 selectedThreadSnapshot = null,
             )
+        }
+    }
+
+    private fun bridgeScopedBaseThreads(
+        threads: List<RemodexThreadSummary>,
+    ): List<RemodexThreadSummary> {
+        return if (suppressBridgeScopedThreadsUntilNextSync) {
+            emptyList()
+        } else {
+            threads
         }
     }
 
@@ -1879,16 +1905,20 @@ class DefaultRemodexAppRepository(
         val currentSessionSnapshot = sessionState.value
         val previousSessionSelectedThreadId = currentSessionSnapshot.selectedThreadId
         val inMemorySelectedThreadId = preferredSelectedThreadId.get()
-        val selectedThreadId = resolveSelectedThreadId(
-            preferredThreadId = preferredSelectedThreadIdOverride ?: preferredSelectedThreadId(
-                inMemorySelectedThreadId = inMemorySelectedThreadId,
-                persistedSelectedThreadId = preferencesState.value.selectedThreadId,
-                sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
-            ),
-            stickyThreadId = currentSessionSnapshot.selectedThreadId,
-            stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
-            threads = baseThreads,
-        )
+        val selectedThreadId = if (suppressBridgeScopedThreadsUntilNextSync) {
+            null
+        } else {
+            resolveSelectedThreadId(
+                preferredThreadId = preferredSelectedThreadIdOverride ?: preferredSelectedThreadId(
+                    inMemorySelectedThreadId = inMemorySelectedThreadId,
+                    persistedSelectedThreadId = preferencesState.value.selectedThreadId,
+                    sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
+                ),
+                stickyThreadId = currentSessionSnapshot.selectedThreadId,
+                stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
+                threads = baseThreads,
+            )
+        }
         preferredSelectedThreadId.set(selectedThreadId)
         if (selectedThreadId != preferencesState.value.selectedThreadId) {
             preferencesState.value = preferencesState.value.copy(selectedThreadId = selectedThreadId)
@@ -1974,16 +2004,20 @@ class DefaultRemodexAppRepository(
         val currentSessionSnapshot = sessionState.value
         val previousSessionSelectedThreadId = currentSessionSnapshot.selectedThreadId
         val inMemorySelectedThreadId = preferredSelectedThreadId.get()
-        val selectedThreadId = resolveSelectedThreadId(
-            preferredThreadId = preferredSelectedThreadId(
-                inMemorySelectedThreadId = inMemorySelectedThreadId,
-                persistedSelectedThreadId = preferences.selectedThreadId,
-                sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
-            ),
-            stickyThreadId = currentSessionSnapshot.selectedThreadId,
-            stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
-            threads = threads,
-        )
+        val selectedThreadId = if (suppressBridgeScopedThreadsUntilNextSync) {
+            null
+        } else {
+            resolveSelectedThreadId(
+                preferredThreadId = preferredSelectedThreadId(
+                    inMemorySelectedThreadId = inMemorySelectedThreadId,
+                    persistedSelectedThreadId = preferences.selectedThreadId,
+                    sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
+                ),
+                stickyThreadId = currentSessionSnapshot.selectedThreadId,
+                stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
+                threads = threads,
+            )
+        }
         preferredSelectedThreadId.set(selectedThreadId)
         sessionState.update { snapshot ->
             snapshot.copy(
