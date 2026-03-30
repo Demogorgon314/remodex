@@ -4486,6 +4486,73 @@ class BridgeThreadSyncServiceTest {
             listOf("thinking-1", assistantItems.single().id),
             projected.map(RemodexConversationItem::id),
         )
+        assertEquals(2, thread.timelineMutations.size)
+        assertTrue(thread.timelineMutations.none { mutation ->
+            mutation is TimelineMutation.AssistantTextDelta
+        })
+    }
+
+    @Test
+    fun `assistant deltas coalesce into a single streaming upsert mutation`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-assistant-coalesce",
+                    title = "Assistant coalescing",
+                    preview = "",
+                    projectPath = "/tmp/project-assistant-coalesce",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-coalesce"))
+                put("turnId", JsonPrimitive("turn-assistant-coalesce"))
+                put("itemId", JsonPrimitive("assistant-item-coalesce"))
+                put("delta", JsonPrimitive("```mer"))
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-coalesce"))
+                put("turnId", JsonPrimitive("turn-assistant-coalesce"))
+                put("itemId", JsonPrimitive("assistant-item-coalesce"))
+                put("delta", JsonPrimitive("maid\nflowchart LR"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-assistant-coalesce" }
+        val assistant = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .single { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals("```mermaid\nflowchart LR", assistant.text)
+        assertTrue(assistant.isStreaming)
+        assertEquals(1, thread.timelineMutations.size)
+        assertTrue(thread.timelineMutations.single() is TimelineMutation.Upsert)
+        assertTrue(thread.timelineMutations.none { mutation ->
+            mutation is TimelineMutation.AssistantTextDelta
+        })
     }
 
     @Test

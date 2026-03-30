@@ -2427,22 +2427,31 @@ class BridgeThreadSyncService(
         )
         val effectiveMessageId = existingItem?.id ?: preferredMessageId
         val effectiveItemId = itemId ?: existingItem?.itemId
-        appendTimelineMutation(
-            threadId = threadId,
-            mutation = TimelineMutation.AssistantTextDelta(
+        val updatedItem = existingItem?.copy(
+            text = appendStreamingTextDelta(existingItem.text, delta),
+            turnId = resolvedTurnId,
+            itemId = effectiveItemId,
+            isStreaming = true,
+        ) ?: timelineItem(
+            id = effectiveMessageId,
+            speaker = ConversationSpeaker.ASSISTANT,
+            text = delta,
+            kind = ConversationItemKind.CHAT,
+            turnId = resolvedTurnId,
+            itemId = effectiveItemId,
+            isStreaming = true,
+            orderIndex = resolveOrderIndex(
+                threadId = threadId,
                 messageId = effectiveMessageId,
-                turnId = resolvedTurnId.orEmpty(),
+                turnId = resolvedTurnId,
                 itemId = effectiveItemId,
-                delta = delta,
-                orderIndex = resolveOrderIndex(
-                    threadId = threadId,
-                    messageId = effectiveMessageId,
-                    turnId = resolvedTurnId,
-                    itemId = effectiveItemId,
-                    speaker = ConversationSpeaker.ASSISTANT,
-                    kind = ConversationItemKind.CHAT,
-                ),
+                speaker = ConversationSpeaker.ASSISTANT,
+                kind = ConversationItemKind.CHAT,
             ),
+        )
+        upsertAssistantTimelineItem(
+            threadId = threadId,
+            item = updatedItem,
             isRunning = true,
         )
     }
@@ -2942,7 +2951,7 @@ class BridgeThreadSyncService(
         val effectiveTurnId = resolvedTurnId ?: existingItem?.turnId
         val effectiveItemId = itemId ?: existingItem?.itemId
         val messageId = existingItem?.id ?: preferredMessageId
-        upsertStreamingItem(
+        upsertAssistantTimelineItem(
             threadId = threadId,
             item = timelineItem(
                 id = messageId,
@@ -3044,7 +3053,7 @@ class BridgeThreadSyncService(
             val effectiveTurnId = resolvedTurnId ?: completionItem?.turnId
             val effectiveItemId = itemId ?: completionItem?.itemId
             val completionMessageId = completionItem?.id ?: resolvedMessageId
-            upsertStreamingItem(
+            upsertAssistantTimelineItem(
                 threadId = threadId,
                 item = timelineItem(
                     id = completionMessageId,
@@ -3827,6 +3836,38 @@ class BridgeThreadSyncService(
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
     }
 
+    private fun upsertAssistantTimelineItem(
+        threadId: String,
+        item: com.emanueledipietro.remodex.model.RemodexConversationItem,
+        isRunning: Boolean? = null,
+    ) {
+        val now = nowEpochMs()
+        val upsertMutation = TimelineMutation.Upsert(item)
+        backingThreads.value = backingThreads.value.map { snapshot ->
+            if (snapshot.id != threadId) {
+                snapshot
+            } else {
+                val nextMutations = coalesceAssistantMessageMutations(
+                    mutations = snapshot.timelineMutations,
+                    item = item,
+                )
+                snapshot.copy(
+                    timelineMutations = nextMutations,
+                    preview = if (mutationAffectsThreadPreview(upsertMutation)) {
+                        derivePreview(snapshot = snapshot, nextMutations = nextMutations)
+                    } else {
+                        snapshot.preview
+                    },
+                    lastUpdatedEpochMs = now,
+                    lastUpdatedLabel = relativeUpdatedLabel(now),
+                ).withResolvedLiveThreadState(
+                    threadId = threadId,
+                    isRunning = isRunning,
+                )
+            }
+        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
     private fun upsertStreamingItem(
         threadId: String,
         item: com.emanueledipietro.remodex.model.RemodexConversationItem,
@@ -3837,6 +3878,53 @@ class BridgeThreadSyncService(
             mutation = TimelineMutation.Upsert(item),
             isRunning = isRunning,
         )
+    }
+
+    private fun coalesceAssistantMessageMutations(
+        mutations: List<TimelineMutation>,
+        item: com.emanueledipietro.remodex.model.RemodexConversationItem,
+    ): List<TimelineMutation> {
+        val nextMutations = ArrayList<TimelineMutation>(mutations.size + 1)
+        mutations.forEach { mutation ->
+            if (!matchesAssistantMessageMutation(mutation = mutation, messageId = item.id)) {
+                nextMutations += mutation
+            }
+        }
+        nextMutations += TimelineMutation.Upsert(item)
+        return nextMutations
+    }
+
+    private fun matchesAssistantMessageMutation(
+        mutation: TimelineMutation,
+        messageId: String,
+    ): Boolean {
+        return when (mutation) {
+            is TimelineMutation.Upsert -> {
+                mutation.item.id == messageId &&
+                    mutation.item.speaker == ConversationSpeaker.ASSISTANT &&
+                    mutation.item.kind == ConversationItemKind.CHAT
+            }
+
+            is TimelineMutation.AssistantTextDelta -> mutation.messageId == messageId
+            is TimelineMutation.Complete -> mutation.messageId == messageId
+            is TimelineMutation.ReasoningTextDelta,
+            is TimelineMutation.ActivityLine,
+            is TimelineMutation.SystemTextDelta,
+            -> false
+        }
+    }
+
+    private fun appendStreamingTextDelta(
+        existingText: String,
+        delta: String,
+    ): String {
+        if (delta.isEmpty()) {
+            return existingText
+        }
+        if (existingText.isEmpty()) {
+            return delta
+        }
+        return existingText + delta
     }
 
     private fun derivePreview(
@@ -4147,7 +4235,7 @@ class BridgeThreadSyncService(
         )
         val resolvedMessageId = existingItem?.id ?: preferredMessageId
         val resolvedItemId = itemId ?: existingItem?.itemId
-        upsertStreamingItem(
+        upsertAssistantTimelineItem(
             threadId = threadId,
             item = timelineItem(
                 id = resolvedMessageId,
