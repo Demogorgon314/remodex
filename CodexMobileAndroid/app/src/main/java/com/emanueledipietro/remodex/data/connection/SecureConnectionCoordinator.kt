@@ -1176,8 +1176,12 @@ class SecureConnectionCoordinator(
         }
         val pending = pendingRequests.values.toList()
         pendingRequests.clear()
+        val cancellation = error as? CancellationException
+            ?: CancellationException(error.message ?: "The secure Android connection ended.").also { cause ->
+                cause.initCause(error)
+            }
         pending.forEach { continuation ->
-            continuation.resumeWithException(error)
+            continuation.cancel(cancellation)
         }
     }
 }

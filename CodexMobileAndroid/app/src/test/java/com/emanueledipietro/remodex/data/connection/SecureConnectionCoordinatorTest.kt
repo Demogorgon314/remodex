@@ -300,6 +300,31 @@ class SecureConnectionCoordinatorTest {
         assertEquals(firstProfileId, coordinator.bridgeProfiles.value.activeProfileId)
     }
 
+    @Test
+    fun `transport teardown cancels pending requests instead of throwing`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val pendingRequest = launch {
+            suspendCancellableCoroutine<RpcMessage> { continuation ->
+                pendingRequests(coordinator)["request-transport-error"] = continuation
+            }
+        }
+        advanceUntilIdle()
+
+        invokePrivateMethod<Unit>(
+            coordinator,
+            "failPendingRequests",
+            SecureTransportException("The secure Android connection is not currently available."),
+        )
+        advanceUntilIdle()
+
+        assertTrue(pendingRequest.isCancelled)
+    }
+
     private suspend fun TestScope.awaitSecureState(
         coordinator: SecureConnectionCoordinator,
         expectedState: SecureConnectionState,
@@ -321,5 +346,18 @@ class SecureConnectionCoordinatorTest {
         val field = SecureConnectionCoordinator::class.java.getDeclaredField("pendingRequests")
         field.isAccessible = true
         return field.get(coordinator) as LinkedHashMap<String, kotlinx.coroutines.CancellableContinuation<RpcMessage>>
+    }
+
+    private fun <T> invokePrivateMethod(
+        target: Any,
+        methodName: String,
+        vararg args: Any,
+    ): T {
+        val method = target::class.java.declaredMethods.first { candidate ->
+            candidate.name == methodName && candidate.parameterTypes.size == args.size
+        }
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return method.invoke(target, *args) as T
     }
 }
