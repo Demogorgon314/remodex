@@ -103,6 +103,17 @@ class ThrowingTrustedSessionResolver(
     }
 }
 
+class StaticTrustedSessionResolver(
+    private val response: TrustedSessionResolveResponse,
+) : TrustedSessionResolver {
+    override suspend fun resolve(
+        relayUrl: String,
+        request: TrustedSessionResolveRequest,
+    ): TrustedSessionResolveResponse {
+        return response
+    }
+}
+
 class UnexpectedRelayWebSocketFactory : RelayWebSocketFactory {
     override fun open(
         url: String,
@@ -217,6 +228,31 @@ class SuccessfulQrBootstrapRelayWebSocketFactory(
                 ?.jsonPrimitive
                 ?.contentOrNull
         }.getOrNull()
+    }
+}
+
+class ClosingRelayWebSocketFactory(
+    private val closeCode: Int,
+    private val closeReason: String = "relay-close",
+) : RelayWebSocketFactory {
+    override fun open(
+        url: String,
+        headers: Map<String, String>,
+        events: Channel<RelayWireEvent>,
+    ): RelayWebSocket {
+        events.trySend(RelayWireEvent.Opened)
+
+        return object : RelayWebSocket {
+            override fun send(text: String): Boolean {
+                events.trySend(RelayWireEvent.Closed(closeCode, closeReason))
+                return true
+            }
+
+            override fun close(code: Int, reason: String): Boolean {
+                events.close()
+                return true
+            }
+        }
     }
 }
 

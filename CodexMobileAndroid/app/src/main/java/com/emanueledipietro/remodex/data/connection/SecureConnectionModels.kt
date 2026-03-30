@@ -218,6 +218,7 @@ data class SecurePendingHandshake(
 class SecureTransportException(
     message: String,
     val code: String? = null,
+    val relayCloseCode: Int? = null,
 ) : Exception(message)
 
 class TrustedSessionResolveException(
@@ -235,6 +236,7 @@ data class SecureConnectionSnapshot(
     val macFingerprint: String? = null,
     val attempt: Int = 0,
     val bridgeUpdateCommand: String? = null,
+    val autoReconnectAllowed: Boolean = true,
 )
 
 data class BridgeProfileSnapshot(

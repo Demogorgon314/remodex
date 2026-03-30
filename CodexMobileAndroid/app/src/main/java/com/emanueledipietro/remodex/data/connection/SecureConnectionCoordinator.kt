@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.data.connection
 
+import android.util.Log
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -22,6 +23,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.concurrent.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -31,6 +33,16 @@ class SecureConnectionCoordinator(
     private val relayWebSocketFactory: RelayWebSocketFactory,
     private val scope: CoroutineScope,
 ) {
+    companion object {
+        private const val logTag = "RemodexSecureConn"
+        private const val maxTrustedReconnectFailures = 3
+        private val permanentRelayCloseCodes = setOf(4000, 4001, 4003)
+        private const val retryableSessionUnavailableCloseCode = 4002
+        private const val explicitRelayDropCloseCode = 4004
+        private const val trustedReconnectRecoveryMessage =
+            "Secure reconnect could not be restored from the saved session. Try reconnecting again."
+    }
+
     private val json = Json {
         encodeDefaults = true
         ignoreUnknownKeys = true
@@ -46,6 +58,8 @@ class SecureConnectionCoordinator(
     private var inboundListenerJob: Job? = null
     private var connectionJob: Job? = null
     private var currentAttempt = 0
+    private var trustedReconnectFailureCount = 0
+    private var autoReconnectAllowed = true
     private val pendingRequests = LinkedHashMap<String, kotlinx.coroutines.CancellableContinuation<RpcMessage>>()
     private val outboundMutex = Mutex()
 
@@ -128,6 +142,11 @@ class SecureConnectionCoordinator(
     }
 
     fun rememberRelayPairing(payload: PairingQrPayload) {
+        autoReconnectAllowed = true
+        logConnection(
+            event = "rememberRelayPairing",
+            extra = "macDeviceId=${payload.macDeviceId} trusted=${trustedMacRegistry.records[payload.macDeviceId] != null}",
+        )
         val profileId = relayProfileRegistry.profiles.values
             .firstOrNull { it.macDeviceId == payload.macDeviceId }
             ?.profileId
@@ -153,8 +172,14 @@ class SecureConnectionCoordinator(
 
     fun retryConnection() {
         if (connectionJob?.isActive == true) {
+            logConnection(event = "retryConnectionSkipped", extra = "reason=connectionJobActive")
             return
         }
+        autoReconnectAllowed = true
+        logConnection(
+            event = "retryConnectionRequested",
+            extra = "hasPairing=${pairingState != null} trustedMac=${pairingState?.macDeviceId?.let(trustedMacRegistry.records::containsKey) == true}",
+        )
         if (pairingState == null) {
             updateState(
                 phaseMessage = "Run remodex up on your Mac, then scan a fresh pairing QR code before retrying.",
@@ -175,9 +200,14 @@ class SecureConnectionCoordinator(
     }
 
     fun disconnect() {
+        logConnection(event = "disconnect")
         connectionJob?.cancel()
         connectionJob = null
-        disconnectCurrentSocket()
+        disconnectCurrentSocket(
+            pendingRequestError = CancellationException(
+                "The secure Android connection was closed before the request completed.",
+            ),
+        )
         connectionState.value = initialSnapshot().copy(attempt = currentAttempt)
     }
 
@@ -239,6 +269,10 @@ class SecureConnectionCoordinator(
             } else {
                 SecureHandshakeMode.QR_BOOTSTRAP
             }
+            logConnection(
+                event = "performRetryConnection",
+                extra = "attempt=$currentAttempt handshakeMode=${handshakeMode.wireValue} macDeviceId=${currentPairingState.macDeviceId}",
+            )
 
             val resolvedPairingState = if (handshakeMode == SecureHandshakeMode.TRUSTED_RECONNECT) {
                 updateState(
@@ -457,6 +491,12 @@ class SecureConnectionCoordinator(
             nextOutboundCounter = 0,
         )
         pendingHandshake = null
+        trustedReconnectFailureCount = 0
+        autoReconnectAllowed = true
+        logConnection(
+            event = "secureHandshakeComplete",
+            extra = "handshakeMode=${handshakeMode.wireValue} macDeviceId=${currentPairingState.macDeviceId}",
+        )
         relayProfileRegistry = pairingState?.profileId?.let { profileId ->
             SecureCrypto.updateRelayProfile(store, relayProfileRegistry, profileId) { existing ->
                 existing.copy(
@@ -509,6 +549,7 @@ class SecureConnectionCoordinator(
             )
             is RelayWireEvent.Closed -> throw SecureTransportException(
                 "The relay socket closed before the secure handshake could start.",
+                relayCloseCode = event.code,
             )
             is RelayWireEvent.Message -> throw SecureTransportException(
                 "The relay sent unexpected data before the secure socket opened.",
@@ -573,6 +614,7 @@ class SecureConnectionCoordinator(
                 is RelayWireEvent.Closed -> {
                     throw SecureTransportException(
                         "The relay socket closed before the secure handshake finished.",
+                        relayCloseCode = event.code,
                     )
                 }
 
@@ -623,14 +665,12 @@ class SecureConnectionCoordinator(
                 }
 
                 is RelayWireEvent.Closed -> {
-                    disconnectCurrentSocket()
-                    updateState(
-                        phaseMessage = "The trusted Mac session is temporarily unavailable. Retry reconnect or scan a new QR code if the bridge restarted.",
-                        secureState = SecureConnectionState.TRUSTED_MAC,
-                        relayUrl = currentPairingState.relayUrl,
-                        macDeviceId = currentPairingState.macDeviceId,
-                        macFingerprint = SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
-                        bridgeUpdateCommand = null,
+                    handleTransportError(
+                        currentPairingState,
+                        SecureTransportException(
+                            "The relay socket closed during secure reconnect.",
+                            relayCloseCode = event.code,
+                        ),
                     )
                     return
                 }
@@ -814,10 +854,73 @@ class SecureConnectionCoordinator(
         publishBridgeProfiles()
     }
 
+    private fun permanentRelayDisconnectMessage(relayCloseCode: Int?): String? {
+        return when (relayCloseCode) {
+            4001 -> "This relay session was replaced by another Mac connection. Scan a new QR code to reconnect."
+            4003 -> "This device was replaced by a newer connection. Scan a new QR code to reconnect."
+            4000 -> "This relay pairing is no longer valid. Scan a new QR code to reconnect."
+            else -> null
+        }
+    }
+
+    private fun retryableSessionUnavailableMessage(relayCloseCode: Int?): String? {
+        if (relayCloseCode != retryableSessionUnavailableCloseCode) {
+            return null
+        }
+        return "The trusted Mac session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your Mac, scan the new QR code."
+    }
+
+    private fun explicitRelayDropMessage(relayCloseCode: Int?): String? {
+        if (relayCloseCode != explicitRelayDropCloseCode) {
+            return null
+        }
+        return "The Mac was temporarily unavailable and this message could not be delivered. Wait a moment, then try again."
+    }
+
+    private fun isTrustedReconnectAttempt(): Boolean {
+        return pendingHandshake?.mode == SecureHandshakeMode.TRUSTED_RECONNECT
+            || connectionState.value.secureState == SecureConnectionState.RECONNECTING
+    }
+
+    private fun isPermanentRelayClose(relayCloseCode: Int?): Boolean {
+        return relayCloseCode != null && permanentRelayCloseCodes.contains(relayCloseCode)
+    }
+
+    private fun recoverTrustedReconnectCandidate(
+        currentPairingState: RelayPairingState,
+    ) {
+        trustedReconnectFailureCount = 0
+        autoReconnectAllowed = false
+        logConnection(
+            event = "trustedReconnectRecoveryRequired",
+            extra = "macDeviceId=${currentPairingState.macDeviceId}",
+        )
+        updateState(
+            phaseMessage = trustedReconnectRecoveryMessage,
+            secureState = if (trustedMacRegistry.records[currentPairingState.macDeviceId] != null) {
+                SecureConnectionState.LIVE_SESSION_UNRESOLVED
+            } else {
+                SecureConnectionState.REPAIR_REQUIRED
+            },
+            relayUrl = currentPairingState.relayUrl,
+            macDeviceId = currentPairingState.macDeviceId,
+            macFingerprint = SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
+            bridgeUpdateCommand = null,
+        )
+    }
+
     private fun handleResolveError(
         currentPairingState: RelayPairingState,
         error: TrustedSessionResolveException,
     ) {
+        autoReconnectAllowed = error.code == "session_unavailable"
+        if (error.code != "session_unavailable") {
+            trustedReconnectFailureCount = 0
+        }
+        logConnection(
+            event = "trustedSessionResolveError",
+            extra = "code=${error.code} macDeviceId=${currentPairingState.macDeviceId} autoReconnectAllowed=$autoReconnectAllowed message=${error.message.orEmpty()}",
+        )
         val nextState = when (error.code) {
             "session_unavailable" -> SecureConnectionState.LIVE_SESSION_UNRESOLVED
             "phone_not_trusted", "invalid_signature" -> SecureConnectionState.REPAIR_REQUIRED
@@ -842,6 +945,47 @@ class SecureConnectionCoordinator(
         currentPairingState: RelayPairingState,
         error: SecureTransportException,
     ) {
+        val wasTrustedReconnectAttempt = isTrustedReconnectAttempt()
+        disconnectCurrentSocket()
+
+        val relayCloseCode = error.relayCloseCode
+        logConnection(
+            event = "transportError",
+            extra = "secureErrorCode=${error.code.orEmpty()} relayCloseCode=${relayCloseCode ?: -1} trustedReconnect=$wasTrustedReconnectAttempt macDeviceId=${currentPairingState.macDeviceId} message=${error.message.orEmpty()}",
+        )
+        if (isPermanentRelayClose(relayCloseCode)) {
+            trustedReconnectFailureCount = 0
+            autoReconnectAllowed = false
+            updateState(
+                phaseMessage = permanentRelayDisconnectMessage(relayCloseCode)
+                    ?: "This relay pairing is no longer valid. Scan a new QR code to reconnect.",
+                secureState = if (trustedMacRegistry.records[currentPairingState.macDeviceId] != null) {
+                    SecureConnectionState.LIVE_SESSION_UNRESOLVED
+                } else {
+                    SecureConnectionState.REPAIR_REQUIRED
+                },
+                relayUrl = currentPairingState.relayUrl,
+                macDeviceId = currentPairingState.macDeviceId,
+                macFingerprint = SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
+                bridgeUpdateCommand = null,
+            )
+            return
+        }
+
+        if (wasTrustedReconnectAttempt) {
+            trustedReconnectFailureCount += 1
+            logConnection(
+                event = "trustedReconnectFailureRecorded",
+                extra = "failureCount=$trustedReconnectFailureCount macDeviceId=${currentPairingState.macDeviceId}",
+            )
+            if (trustedReconnectFailureCount >= maxTrustedReconnectFailures) {
+                recoverTrustedReconnectCandidate(currentPairingState)
+                return
+            }
+        } else {
+            trustedReconnectFailureCount = 0
+        }
+
         val secureState = when (error.code) {
             "update_required" -> SecureConnectionState.UPDATE_REQUIRED
             "pairing_expired",
@@ -871,8 +1015,20 @@ class SecureConnectionCoordinator(
             }
         }
 
+        autoReconnectAllowed = when {
+            error.code == "update_required" -> false
+            secureState == SecureConnectionState.REPAIR_REQUIRED -> false
+            retryableSessionUnavailableMessage(relayCloseCode) != null -> true
+            explicitRelayDropMessage(relayCloseCode) != null -> true
+            relayCloseCode == null && secureState == SecureConnectionState.TRUSTED_MAC -> true
+            else -> false
+        }
+
         updateState(
-            phaseMessage = error.message ?: "The secure Android transport failed.",
+            phaseMessage = explicitRelayDropMessage(relayCloseCode)
+                ?: retryableSessionUnavailableMessage(relayCloseCode)
+                ?: error.message
+                ?: "The secure Android transport failed.",
             secureState = secureState,
             relayUrl = currentPairingState.relayUrl,
             macDeviceId = currentPairingState.macDeviceId,
@@ -908,13 +1064,16 @@ class SecureConnectionCoordinator(
             macDisplayName = trustedDisplayName(macDeviceId),
             macFingerprint = currentPairingState?.macIdentityPublicKey?.let(SecureCrypto::fingerprint),
             bridgeUpdateCommand = null,
+            autoReconnectAllowed = autoReconnectAllowed,
         )
     }
 
-    private fun disconnectCurrentSocket() {
-        failPendingRequests(
-            SecureTransportException("The secure Android connection is not currently available."),
-        )
+    private fun disconnectCurrentSocket(
+        pendingRequestError: Exception = SecureTransportException(
+            "The secure Android connection is not currently available.",
+        ),
+    ) {
+        failPendingRequests(pendingRequestError)
         inboundListenerJob?.cancel()
         inboundListenerJob = null
         socket?.close(1000, "reconnect")
@@ -945,7 +1104,25 @@ class SecureConnectionCoordinator(
             macFingerprint = macFingerprint,
             attempt = currentAttempt,
             bridgeUpdateCommand = bridgeUpdateCommand,
+            autoReconnectAllowed = autoReconnectAllowed,
         )
+        logConnection(
+            event = "stateUpdated",
+            extra = "nextSecureState=$secureState macDeviceId=${macDeviceId.orEmpty()} autoReconnectAllowed=$autoReconnectAllowed",
+        )
+    }
+
+    private fun logConnection(
+        event: String,
+        extra: String = "",
+    ) {
+        val suffix = extra.takeIf(String::isNotBlank)?.let { " $it" }.orEmpty()
+        runCatching {
+            Log.d(
+                logTag,
+                "event=$event secureState=${connectionState.value.secureState} attempt=$currentAttempt autoReconnectAllowed=$autoReconnectAllowed$suffix",
+            )
+        }
     }
 
     private fun trustedDisplayName(macDeviceId: String?): String? {

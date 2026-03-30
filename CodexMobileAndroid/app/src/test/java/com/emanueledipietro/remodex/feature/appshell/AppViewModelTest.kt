@@ -818,6 +818,157 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `foreground auto reconnect stays idle when secure state disables auto reconnect`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Secure reconnect could not be restored from the saved session. Try reconnecting again.",
+                    secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+                    autoReconnectAllowed = false,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        advanceTimeBy(100)
+        advanceUntilIdle()
+
+        assertEquals(0, repository.retryConnectionCalls)
+        assertEquals(RemodexConnectionPhase.DISCONNECTED, viewModel.uiState.value.connectionStatus.phase)
+    }
+
+    @Test
+    fun `foreground auto reconnect keeps the same loop alive while reconnect is in progress`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "The trusted Mac session is temporarily unavailable.",
+                    secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+                    autoReconnectAllowed = true,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+            onRetryConnection = {
+                snapshot.value = snapshot.value.copy(
+                    connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.RETRYING, attempt = retryConnectionCalls),
+                    secureConnection = snapshot.value.secureConnection.copy(
+                        secureState = SecureConnectionState.RECONNECTING,
+                        attempt = retryConnectionCalls,
+                    ),
+                )
+            }
+        }
+        val viewModel = AppViewModel(repository).apply {
+            autoReconnectAttemptLimitOverride = 2
+            autoReconnectBackoffMillisOverride = listOf(10L)
+            reconnectSleepChunkMillisOverride = 10L
+        }
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        runCurrent()
+        assertEquals(1, repository.retryConnectionCalls)
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.DISCONNECTED, attempt = 1),
+            secureConnection = repository.snapshot.value.secureConnection.copy(
+                secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+                phaseMessage = "The trusted Mac is offline right now.",
+                autoReconnectAllowed = true,
+            ),
+        )
+        runCurrent()
+        advanceTimeBy(100)
+        runCurrent()
+
+        assertEquals(1, repository.retryConnectionCalls)
+
+        viewModel.onAppForegroundChanged(false)
+        advanceTimeBy(20)
+        runCurrent()
+    }
+
+    @Test
+    fun `foreground auto reconnect stops after three attempts until manual reconnect`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "The trusted Mac is offline right now.",
+                    secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
+                    autoReconnectAllowed = true,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository).apply {
+            autoReconnectBackoffMillisOverride = listOf(10L)
+            reconnectSleepChunkMillisOverride = 10L
+        }
+        advanceUntilIdle()
+
+        viewModel.onAppForegroundChanged(true)
+        advanceTimeBy(2_000)
+        advanceUntilIdle()
+
+        assertEquals(3, repository.retryConnectionCalls)
+
+        viewModel.onAppForegroundChanged(false)
+        advanceUntilIdle()
+        viewModel.onAppForegroundChanged(true)
+        advanceTimeBy(500)
+        advanceUntilIdle()
+
+        assertEquals(3, repository.retryConnectionCalls)
+
+        viewModel.retryConnection()
+        advanceUntilIdle()
+
+        assertEquals(4, repository.retryConnectionCalls)
+    }
+
+    @Test
+    fun `switch bridge preempts active reconnect recovery`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                onboardingCompleted = true,
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.RETRYING, attempt = 2),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "The trusted Mac is offline right now.",
+                    secureState = SecureConnectionState.RECONNECTING,
+                    attempt = 2,
+                    autoReconnectAllowed = true,
+                ),
+                trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
+                    deviceId = "mac-1",
+                    name = "Kai-MBP",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.activateBridgeProfile("profile-2")
+        runCurrent()
+
+        assertEquals(listOf("profile-2"), repository.activateBridgeProfileRequests)
+    }
+
+    @Test
     fun `manual disconnect suppresses foreground auto reconnect`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -2139,7 +2290,9 @@ class AppViewModelTest {
         var refreshRequests = 0
         var retryConnectionCalls = 0
         var disconnectCalls = 0
+        val activateBridgeProfileRequests = mutableListOf<String>()
         var dismissBridgeUpdatePromptCalls = 0
+        var onRetryConnection: (suspend TestRemodexAppRepository.() -> Unit)? = null
         var refreshDelayMs = 1_000L
         var hydrateDelayMs = 0L
         var sendPromptDelayMs = 0L
@@ -2377,7 +2530,10 @@ class AppViewModelTest {
 
         override suspend fun setMacNickname(deviceId: String, nickname: String?) = Unit
 
-        override suspend fun activateBridgeProfile(profileId: String): Boolean = true
+        override suspend fun activateBridgeProfile(profileId: String): Boolean {
+            activateBridgeProfileRequests += profileId
+            return true
+        }
 
         override suspend fun removeBridgeProfile(profileId: String): String? = null
 
@@ -2546,6 +2702,7 @@ class AppViewModelTest {
 
         override suspend fun retryConnection() {
             retryConnectionCalls += 1
+            onRetryConnection?.invoke(this)
         }
 
         override suspend fun disconnect() {

@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.feature.appshell
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -774,6 +775,10 @@ class AppViewModel(
     fun onAppForegroundChanged(isForeground: Boolean) {
         isAppForeground = isForeground
         isAppForegroundState.value = isForeground
+        logAutoReconnect(
+            event = "foregroundChanged",
+            extra = "isForeground=$isForeground",
+        )
         if (!isForeground) {
             invalidateVoiceCapture()
             return
@@ -2254,9 +2259,10 @@ class AppViewModel(
 
     fun activateBridgeProfile(profileId: String) {
         viewModelScope.launch {
-            stopAutoReconnectForManualRetry()
+            stopAutoReconnectForBridgeSwitch()
             suppressAutoReconnectUntilManualConnect = false
             repository.activateBridgeProfile(profileId)
+            clearAutoReconnectState()
         }
     }
 
@@ -2356,6 +2362,10 @@ class AppViewModel(
     private fun handleAutoReconnectSnapshot(
         snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     ) {
+        logAutoReconnect(
+            event = "handleAutoReconnectSnapshot",
+            snapshot = snapshot,
+        )
         when (snapshot.secureConnection.secureState) {
             SecureConnectionState.ENCRYPTED -> {
                 suppressAutoReconnectUntilManualConnect = false
@@ -2383,9 +2393,19 @@ class AppViewModel(
     private fun maybeStartAutoReconnect(
         snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     ) {
-        if (!shouldAttemptAutoReconnect(snapshot) || autoReconnectJob?.isActive == true) {
+        val blockReason = autoReconnectBlockReason(snapshot)
+        if (blockReason != null || autoReconnectJob?.isActive == true) {
+            logAutoReconnect(
+                event = "maybeStartAutoReconnectSkipped",
+                snapshot = snapshot,
+                extra = when {
+                    autoReconnectJob?.isActive == true -> "reason=jobActive"
+                    else -> "reason=$blockReason"
+                },
+            )
             return
         }
+        logAutoReconnect(event = "autoReconnectLoopStarting", snapshot = snapshot)
         autoReconnectJob = viewModelScope.launch {
             runAutoReconnectLoop()
         }.also { job ->
@@ -2400,28 +2420,57 @@ class AppViewModel(
     private fun shouldAttemptAutoReconnect(
         snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     ): Boolean {
-        if (!snapshot.onboardingCompleted || !isAppForeground || isManualScannerActive) {
-            return false
+        return autoReconnectBlockReason(snapshot) == null
+    }
+
+    private fun autoReconnectBlockReason(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ): String? {
+        if (!snapshot.onboardingCompleted) {
+            return "onboardingIncomplete"
         }
-        if (suppressAutoReconnectUntilManualConnect || snapshot.trustedMac == null) {
-            return false
+        if (!isAppForeground) {
+            return "background"
         }
-        return snapshot.secureConnection.secureState in setOf(
+        if (isManualScannerActive) {
+            return "manualScannerActive"
+        }
+        if (suppressAutoReconnectUntilManualConnect) {
+            return "suppressedUntilManualConnect"
+        }
+        if (snapshot.trustedMac == null) {
+            return "missingTrustedMac"
+        }
+        if (!snapshot.secureConnection.autoReconnectAllowed) {
+            return "secureStateDisallowsAutoReconnect"
+        }
+        val allowedState = snapshot.secureConnection.secureState in setOf(
             SecureConnectionState.TRUSTED_MAC,
             SecureConnectionState.LIVE_SESSION_UNRESOLVED,
         )
+        return if (allowedState) null else "secureState=${snapshot.secureConnection.secureState}"
     }
 
     private suspend fun runAutoReconnectLoop() {
         var attempt = 0
-        val maxAttempts = autoReconnectAttemptLimitOverride ?: 50
+        val maxAttempts = autoReconnectAttemptLimitOverride ?: defaultAutoReconnectAttemptLimit
+        logAutoReconnect(
+            event = "autoReconnectLoopEntered",
+            extra = "maxAttempts=$maxAttempts",
+        )
 
         try {
             while (shouldAttemptAutoReconnect(repository.session.value) && attempt < maxAttempts) {
                 val snapshot = repository.session.value
+                logAutoReconnect(
+                    event = "autoReconnectLoopTick",
+                    snapshot = snapshot,
+                    extra = "attempt=$attempt",
+                )
                 if (snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED ||
                     snapshot.secureConnection.secureState == SecureConnectionState.ENCRYPTED
                 ) {
+                    logAutoReconnect(event = "autoReconnectLoopStopped", snapshot = snapshot, extra = "reason=connected")
                     clearAutoReconnectState()
                     return
                 }
@@ -2449,6 +2498,11 @@ class AppViewModel(
                     isActive = true,
                     attempt = attempt,
                 )
+                logAutoReconnect(
+                    event = "autoReconnectAttempt",
+                    snapshot = snapshot,
+                    extra = "attempt=$attempt",
+                )
                 repository.retryConnection()
                 if (waitForReconnectAttemptOutcome(attempt)) {
                     return
@@ -2459,13 +2513,26 @@ class AppViewModel(
                     backoffSteps.last()
                 }
                 if (!sleepForReconnectBackoff(backoff)) {
+                    logAutoReconnect(event = "autoReconnectLoopStopped", extra = "reason=backoffCancelled attempt=$attempt")
                     return
                 }
             }
         } finally {
+            logAutoReconnect(
+                event = "autoReconnectLoopExited",
+                extra = "finalAttempt=$attempt connectionPhase=${repository.session.value.connectionStatus.phase}",
+            )
             if (repository.session.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
                 clearAutoReconnectState()
             }
+        }
+
+        if (attempt >= maxAttempts) {
+            suppressAutoReconnectUntilManualConnect = true
+            logAutoReconnect(
+                event = "autoReconnectExhausted",
+                extra = "attempts=$attempt",
+            )
         }
     }
 
@@ -2473,7 +2540,7 @@ class AppViewModel(
         attempt: Int,
     ): Boolean {
         var settleRemainingMs = 500L
-        while (shouldAttemptAutoReconnect(repository.session.value)) {
+        while (shouldContinueAutoReconnectWait(repository.session.value)) {
             val snapshot = repository.session.value
             when (snapshot.secureConnection.secureState) {
                 SecureConnectionState.ENCRYPTED -> {
@@ -2495,6 +2562,11 @@ class AppViewModel(
                         isActive = true,
                         attempt = attempt,
                     )
+                    logAutoReconnect(
+                        event = "waitForReconnectAttemptOutcome",
+                        snapshot = snapshot,
+                        extra = "attempt=$attempt state=${snapshot.secureConnection.secureState}",
+                    )
                     if (!sleepForReconnectBackoff(reconnectSleepChunkMillis())) {
                         return true
                     }
@@ -2514,6 +2586,25 @@ class AppViewModel(
             }
         }
         return true
+    }
+
+    private fun shouldContinueAutoReconnectWait(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ): Boolean {
+        if (shouldAttemptAutoReconnect(snapshot) || snapshot.isConnectedForRecovery()) {
+            return true
+        }
+        if (snapshot.connectionStatus.phase in setOf(
+                RemodexConnectionPhase.CONNECTING,
+                RemodexConnectionPhase.RETRYING,
+            )
+        ) {
+            return true
+        }
+        return snapshot.secureConnection.secureState in setOf(
+            SecureConnectionState.HANDSHAKING,
+            SecureConnectionState.RECONNECTING,
+        )
     }
 
     private suspend fun stopAutoReconnectForManualRetry() {
@@ -2543,6 +2634,11 @@ class AppViewModel(
         }
         waitForConnectionRecoveryToStop()
         clearAutoReconnectState()
+    }
+
+    private fun stopAutoReconnectForBridgeSwitch() {
+        isManualScannerActive = false
+        stopAutoReconnectLoop()
     }
 
     private suspend fun stopAutoReconnectForManualScan() {
@@ -2578,8 +2674,7 @@ class AppViewModel(
     private suspend fun sleepForReconnectBackoff(totalMillis: Long): Boolean {
         var remaining = totalMillis
         while (remaining > 0L) {
-            if (!shouldAttemptAutoReconnect(repository.session.value) &&
-                !repository.session.value.isConnectedForRecovery()
+            if (!shouldContinueAutoReconnectWait(repository.session.value)
             ) {
                 return false
             }
@@ -2587,7 +2682,7 @@ class AppViewModel(
             delay(chunk)
             remaining -= chunk
         }
-        return shouldAttemptAutoReconnect(repository.session.value) || repository.session.value.isConnectedForRecovery()
+        return shouldContinueAutoReconnectWait(repository.session.value)
     }
 
     private fun reconnectSleepChunkMillis(): Long {
@@ -2596,6 +2691,22 @@ class AppViewModel(
 
     private fun clearAutoReconnectState() {
         autoReconnectState.value = AutoReconnectUiState()
+    }
+
+    private fun logAutoReconnect(
+        event: String,
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot = repository.session.value,
+        extra: String = "",
+    ) {
+        val suffix = extra.takeIf(String::isNotBlank)?.let { " $it" }.orEmpty()
+        runCatching {
+            Log.d(
+                logTag,
+                "event=$event isForeground=$isAppForeground manualScanner=$isManualScannerActive suppressed=$suppressAutoReconnectUntilManualConnect " +
+                    "secureState=${snapshot.secureConnection.secureState} autoReconnectAllowed=${snapshot.secureConnection.autoReconnectAllowed} " +
+                    "connectionPhase=${snapshot.connectionStatus.phase} trustedMac=${snapshot.trustedMac != null}$suffix",
+            )
+        }
     }
 
     private fun detectThreadCompletionBanner(snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot) {
@@ -3664,6 +3775,8 @@ class AppViewModel(
     }
 
     companion object {
+        private const val logTag = "RemodexAutoReconnect"
+        private const val defaultAutoReconnectAttemptLimit = 3
         const val MaxComposerImages = 4
         const val MaxAutocompleteItems = 6
         const val MinAutocompleteQueryLength = 2

@@ -4,6 +4,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -101,6 +103,113 @@ class SecureConnectionCoordinatorTest {
     }
 
     @Test
+    fun `trusted reconnect close code 4002 stays auto-retryable`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-retryable-close",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = StaticTrustedSessionResolver(
+                TrustedSessionResolveResponse(
+                    ok = true,
+                    macDeviceId = "mac-retryable-close",
+                    macIdentityPublicKey = macIdentity.publicKeyBase64,
+                    displayName = "Desk Mac",
+                    sessionId = "session-retryable-close",
+                ),
+            ),
+            relayWebSocketFactory = ClosingRelayWebSocketFactory(closeCode = 4002),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.TRUSTED_MAC)
+
+        assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
+        assertTrue(coordinator.state.value.autoReconnectAllowed)
+        assertEquals(
+            "The trusted Mac session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your Mac, scan the new QR code.",
+            coordinator.state.value.phaseMessage,
+        )
+    }
+
+    @Test
+    fun `trusted reconnect permanent close disables auto reconnect and keeps saved pair presentation`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-permanent-close",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = StaticTrustedSessionResolver(
+                TrustedSessionResolveResponse(
+                    ok = true,
+                    macDeviceId = "mac-permanent-close",
+                    macIdentityPublicKey = macIdentity.publicKeyBase64,
+                    displayName = "Desk Mac",
+                    sessionId = "session-permanent-close",
+                ),
+            ),
+            relayWebSocketFactory = ClosingRelayWebSocketFactory(closeCode = 4001),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.LIVE_SESSION_UNRESOLVED)
+
+        assertEquals(SecureConnectionState.LIVE_SESSION_UNRESOLVED, coordinator.state.value.secureState)
+        assertFalse(coordinator.state.value.autoReconnectAllowed)
+        assertEquals(
+            "This relay session was replaced by another Mac connection. Scan a new QR code to reconnect.",
+            coordinator.state.value.phaseMessage,
+        )
+    }
+
+    @Test
+    fun `trusted reconnect failures stop auto reconnect after three attempts`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-stale-session",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = StaticTrustedSessionResolver(
+                TrustedSessionResolveResponse(
+                    ok = true,
+                    macDeviceId = "mac-stale-session",
+                    macIdentityPublicKey = macIdentity.publicKeyBase64,
+                    displayName = "Desk Mac",
+                    sessionId = "session-stale-session",
+                ),
+            ),
+            relayWebSocketFactory = ClosingRelayWebSocketFactory(closeCode = 4002),
+            scope = this,
+        )
+
+        repeat(3) {
+            coordinator.retryConnection()
+            advanceUntilIdle()
+        }
+
+        assertEquals(SecureConnectionState.LIVE_SESSION_UNRESOLVED, coordinator.state.value.secureState)
+        assertFalse(coordinator.state.value.autoReconnectAllowed)
+        assertEquals(
+            "Secure reconnect could not be restored from the saved session. Try reconnecting again.",
+            coordinator.state.value.phaseMessage,
+        )
+    }
+
+    @Test
     fun `saved bridge profiles can be activated and removed independently`() = runTest {
         val store = InMemorySecureStore()
         val firstMacIdentity = createTestMacIdentity()
@@ -148,6 +257,49 @@ class SecureConnectionCoordinatorTest {
         assertFalse(coordinator.bridgeProfiles.value.profiles.any { it.profileId == firstProfileId })
     }
 
+    @Test
+    fun `activating a saved bridge cancels pending requests instead of crashing`() = runTest {
+        val store = InMemorySecureStore()
+        val firstMacIdentity = createTestMacIdentity()
+        val secondMacIdentity = createTestMacIdentity()
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-one",
+                macIdentityPublicKey = firstMacIdentity.publicKeyBase64,
+                sessionId = "session-one",
+            ),
+        )
+        val firstProfileId = coordinator.bridgeProfiles.value.activeProfileId
+        requireNotNull(firstProfileId)
+
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-two",
+                macIdentityPublicKey = secondMacIdentity.publicKeyBase64,
+                sessionId = "session-two",
+            ),
+        )
+        val pendingRequest = launch {
+            suspendCancellableCoroutine<RpcMessage> { continuation ->
+                pendingRequests(coordinator)["request-1"] = continuation
+            }
+        }
+        advanceUntilIdle()
+
+        assertTrue(coordinator.activateBridgeProfile(firstProfileId))
+        advanceUntilIdle()
+
+        assertTrue(pendingRequest.isCancelled)
+        assertEquals(firstProfileId, coordinator.bridgeProfiles.value.activeProfileId)
+    }
+
     private suspend fun TestScope.awaitSecureState(
         coordinator: SecureConnectionCoordinator,
         expectedState: SecureConnectionState,
@@ -160,5 +312,14 @@ class SecureConnectionCoordinatorTest {
             Thread.sleep(10)
         }
         fail("Expected $expectedState but was ${coordinator.state.value.secureState}")
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun pendingRequests(
+        coordinator: SecureConnectionCoordinator,
+    ): LinkedHashMap<String, kotlinx.coroutines.CancellableContinuation<RpcMessage>> {
+        val field = SecureConnectionCoordinator::class.java.getDeclaredField("pendingRequests")
+        field.isAccessible = true
+        return field.get(coordinator) as LinkedHashMap<String, kotlinx.coroutines.CancellableContinuation<RpcMessage>>
     }
 }
