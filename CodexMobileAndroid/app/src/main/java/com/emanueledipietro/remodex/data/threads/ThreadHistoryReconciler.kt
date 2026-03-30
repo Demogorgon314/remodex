@@ -183,7 +183,6 @@ internal object ThreadHistoryReconciler {
             when (historyItem.kind) {
                 ConversationItemKind.REASONING,
                 ConversationItemKind.FILE_CHANGE,
-                ConversationItemKind.PLAN,
                 ConversationItemKind.SUBAGENT_ACTION,
                 ConversationItemKind.USER_INPUT_PROMPT,
                 -> {
@@ -191,6 +190,31 @@ internal object ThreadHistoryReconciler {
                         merged.indexOfLast { candidate ->
                             candidate.speaker == ConversationSpeaker.SYSTEM &&
                                 candidate.kind == historyItem.kind &&
+                                (candidate.turnId == null || candidate.turnId == turnId)
+                        }.takeIf { it >= 0 }?.let { return it }
+                    }
+                }
+
+                ConversationItemKind.PLAN -> {
+                    val incomingItemId = normalizedIdentifier(historyItem.itemId)
+                    if (incomingItemId != null) {
+                        merged.indexOfLast { candidate ->
+                            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                                candidate.kind == ConversationItemKind.PLAN &&
+                                normalizedIdentifier(candidate.itemId) == incomingItemId
+                        }.takeIf { it >= 0 }?.let { return it }
+                    }
+                    if (turnId != null) {
+                        merged.indexOfLast { candidate ->
+                            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                                candidate.kind == ConversationItemKind.PLAN &&
+                                (candidate.turnId == null || candidate.turnId == turnId) &&
+                                normalizedIdentifier(candidate.itemId) == null
+                        }.takeIf { it >= 0 }?.let { return it }
+
+                        merged.indexOfLast { candidate ->
+                            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                                candidate.kind == ConversationItemKind.PLAN &&
                                 (candidate.turnId == null || candidate.turnId == turnId)
                         }.takeIf { it >= 0 }?.let { return it }
                     }

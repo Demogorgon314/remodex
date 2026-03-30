@@ -5,6 +5,9 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.RemodexPlanState
+import com.emanueledipietro.remodex.model.RemodexPlanStep
+import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -362,6 +365,76 @@ class ThreadHistoryReconcilerTest {
         assertEquals(1, merged.size)
         assertEquals("command-item-local", merged.single().itemId)
         assertEquals(3L, merged.single().orderIndex)
+    }
+
+    @Test
+    fun `merge history items matches plan rows by item id before same turn fallback`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "plan-local-live",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.PLAN,
+                text = "Current active plan",
+                turnId = "turn-1",
+                itemId = "plan-item-live",
+                planState = RemodexPlanState(
+                    explanation = "Keep the active plan attached to the right row.",
+                ),
+                isStreaming = true,
+                orderIndex = 3L,
+            ),
+            RemodexConversationItem(
+                id = "plan-local-other",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.PLAN,
+                text = "Different plan row",
+                turnId = "turn-1",
+                itemId = "plan-item-other",
+                planState = RemodexPlanState(
+                    explanation = "This row should stay untouched.",
+                ),
+                orderIndex = 4L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "plan-history-live",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.PLAN,
+                text = "# Final plan\n- Verify reconnect merge",
+                turnId = "turn-1",
+                itemId = "plan-item-live",
+                planState = RemodexPlanState(
+                    explanation = "Keep the active plan attached to the right row.",
+                    steps = listOf(
+                        RemodexPlanStep(
+                            id = "step-1",
+                            step = "Verify reconnect merge",
+                            status = RemodexPlanStepStatus.IN_PROGRESS,
+                        ),
+                    ),
+                ),
+                isStreaming = true,
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = true,
+            threadIsRunning = true,
+        )
+
+        assertEquals(2, merged.size)
+        assertEquals("# Final plan\n- Verify reconnect merge", merged[0].text)
+        assertEquals("plan-item-live", merged[0].itemId)
+        assertEquals(
+            listOf("Verify reconnect merge"),
+            merged[0].planState?.steps?.map(RemodexPlanStep::step),
+        )
+        assertEquals("Different plan row", merged[1].text)
+        assertEquals("plan-item-other", merged[1].itemId)
     }
 
     @Test

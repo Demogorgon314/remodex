@@ -3111,6 +3111,72 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `plan delta does not overwrite a non plan row that happens to share the item id`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-collision",
+                    title = "Plan collision",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-collision",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "prompt-shared",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                                text = "Need one more answer before planning.",
+                                turnId = "turn-plan-collision",
+                                itemId = "shared-item-id",
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendPlanDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-plan-collision"))
+                put("turnId", JsonPrimitive("turn-plan-collision"))
+                put("itemId", JsonPrimitive("shared-item-id"))
+                put("delta", JsonPrimitive("# Final plan"))
+            },
+        )
+
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        val promptItem = items.firstOrNull { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT }
+        val planItem = items.firstOrNull { item -> item.kind == ConversationItemKind.PLAN }
+
+        assertEquals(
+            listOf(ConversationItemKind.PLAN, ConversationItemKind.USER_INPUT_PROMPT),
+            items.map(RemodexConversationItem::kind),
+        )
+        assertEquals("Need one more answer before planning.", promptItem?.text)
+        assertEquals("prompt-shared", promptItem?.id)
+        assertEquals("# Final plan", planItem?.text)
+        assertEquals("shared-item-id", planItem?.itemId)
+    }
+
+    @Test
     fun `structured user input request is inserted immediately and keeps blank header questions`() = runTest {
         val coordinator = SecureConnectionCoordinator(
             store = InMemorySecureStore(),

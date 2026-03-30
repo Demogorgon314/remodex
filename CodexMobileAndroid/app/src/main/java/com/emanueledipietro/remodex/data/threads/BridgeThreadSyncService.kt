@@ -3573,8 +3573,19 @@ class BridgeThreadSyncService(
     ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
         return TurnTimelineReducer.reduce(snapshot.timelineMutations).firstOrNull { item ->
-            item.id == messageId
-                || (item.itemId != null && itemId != null && item.itemId == itemId)
+            (
+                item.id == messageId &&
+                    item.kind == kind &&
+                    item.speaker == speaker
+                )
+                || (
+                    item.itemId != null &&
+                        itemId != null &&
+                        item.itemId == itemId &&
+                        item.kind == kind &&
+                        item.speaker == speaker &&
+                        (turnId == null || item.turnId == null || item.turnId == turnId)
+                    )
                 || (
                     item.itemId == null &&
                         itemId == null &&
