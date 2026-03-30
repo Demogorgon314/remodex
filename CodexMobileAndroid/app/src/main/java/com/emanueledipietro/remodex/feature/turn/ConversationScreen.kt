@@ -1604,7 +1604,7 @@ private fun ConversationTopOverlays(
     onRetryConnection: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    if (uiState.transientBanner == null && uiState.conversationBanner == null && uiState.isConnected) {
+    if (uiState.transientBanner == null && uiState.isConnected) {
         return
     }
 
@@ -1615,10 +1615,6 @@ private fun ConversationTopOverlays(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         uiState.transientBanner?.let { banner ->
-            BannerCard(text = banner)
-        }
-
-        uiState.conversationBanner?.let { banner ->
             BannerCard(text = banner)
         }
 
@@ -1692,6 +1688,20 @@ private fun BannerCard(text: String) {
             )
         }
     }
+}
+
+@Composable
+private fun ComposerInlineNotice(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        modifier = modifier.padding(horizontal = 12.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = color,
+    )
 }
 
 @Composable
@@ -3634,19 +3644,22 @@ private fun ComposerCard(
                 )
             }
 
+            uiState.conversationBanner?.let { banner ->
+                ComposerInlineNotice(
+                    text = banner,
+                    color = chrome.destructive,
+                )
+            }
+
             composer.attachmentLimitMessage?.let { limitMessage ->
-                Text(
+                ComposerInlineNotice(
                     text = limitMessage,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                    style = MaterialTheme.typography.bodySmall,
                     color = chrome.destructive,
                 )
             }
             composer.composerMessage?.let { message ->
-                Text(
+                ComposerInlineNotice(
                     text = message,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                    style = MaterialTheme.typography.bodySmall,
                     color = chrome.destructive,
                 )
             }

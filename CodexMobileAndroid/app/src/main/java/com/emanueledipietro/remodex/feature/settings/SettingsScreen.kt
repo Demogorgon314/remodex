@@ -211,13 +211,13 @@ fun SettingsScreen(
                         Text("Cancel")
                     }
                 },
-                title = { Text("Switch Bridge?") },
+                title = { Text("Switch to ${pendingProfile.name}?") },
                 text = {
                     Text(
                         if (hasRunningTurn) {
-                            "Switching to ${pendingProfile.name} will disconnect the current bridge. Any running turn will stop syncing live on this phone until you switch back."
+                            "This switches your phone to ${pendingProfile.name} and disconnects the current bridge. Any live run will stop syncing here until you switch back."
                         } else {
-                            "Switching to ${pendingProfile.name} will disconnect the current bridge and reconnect this phone to that saved bridge."
+                            "This switches your phone to ${pendingProfile.name} and disconnects the current bridge."
                         },
                     )
                 },
@@ -1401,14 +1401,14 @@ private fun SettingsGptMacInfoDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text(
-                    text = "ChatGPT voice is checked on your Mac. Remodex reads the ChatGPT session from your paired Mac bridge.",
+                    text = "Remodex uses the ChatGPT session that is already signed in on your paired Mac.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 GptSetupStep(
                     number = "1",
                     title = "Open ChatGPT on your Mac",
-                    detail = "Use the Mac that is paired with this Android device.",
+                    detail = "Use the Mac paired with this phone.",
                 )
                 GptSetupStep(
                     number = "2",
@@ -1421,7 +1421,7 @@ private fun SettingsGptMacInfoDialog(
                     detail = "Keep the bridge connected and reopen Settings if the status has not refreshed yet.",
                 )
                 Text(
-                    text = "You do not need to start ChatGPT login from this Android phone.",
+                    text = "You do not need to start ChatGPT login from this phone.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1456,12 +1456,12 @@ private fun SettingsGptLogoutConfirmDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "This removes the ChatGPT session that Remodex reads from your paired Mac bridge.",
+                    text = "Remodex will stop using the ChatGPT session from your paired Mac.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "Voice transcription will stop working until you sign in again on your Mac.",
+                    text = "Voice transcription will not work again until you sign in on your Mac.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1544,7 +1544,7 @@ private fun SettingsMacNameDialog(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                 )
                 Text(
-                    text = "This nickname stays on this Android phone and appears anywhere this Mac is shown.",
+                    text = "This nickname stays on this phone and appears anywhere this Mac is shown.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

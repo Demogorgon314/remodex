@@ -355,7 +355,7 @@ private fun PairingBridgeUpdateView(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                text = "Do these steps on your Mac",
+                text = "Run this on your Mac",
                 style = MaterialTheme.typography.labelLarge,
                 color = Color.White.copy(alpha = 0.7f),
             )
@@ -364,23 +364,23 @@ private fun PairingBridgeUpdateView(
                 number = "1",
                 title = "Update Remodex",
                 detail = prompt.command,
-                buttonLabel = if (didCopyCommand) "Copied" else "Copy Command",
+                buttonLabel = if (didCopyCommand) "Copied" else "Copy",
                 onButtonClick = { onCopyCommand(prompt.command) },
             )
             PairingBridgeUpdateStep(
                 number = "2",
-                title = "Start it again",
+                title = "Restart the bridge",
                 detail = "Run remodex up",
             )
             PairingBridgeUpdateStep(
                 number = "3",
-                title = "Make a new QR code",
+                title = "Show a new QR code",
                 detail = "Use the new QR shown in the terminal",
             )
             PairingBridgeUpdateStep(
                 number = "4",
-                title = "Come back here",
-                detail = "Then scan the new QR code from the Android app",
+                title = "Scan it here",
+                detail = "Then scan the new QR code from this phone",
             )
         }
 

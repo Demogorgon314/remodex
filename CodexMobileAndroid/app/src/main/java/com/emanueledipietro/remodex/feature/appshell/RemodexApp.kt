@@ -1189,7 +1189,7 @@ private fun BridgeUpdateDialogBody(
                 TextButton(
                     onClick = { onCopyCommand(prompt.command) },
                 ) {
-                    Text(if (didCopyCommand) "Copied" else "Copy Command")
+                    Text(if (didCopyCommand) "Copied" else "Copy")
                 }
             }
         }

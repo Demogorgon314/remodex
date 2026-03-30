@@ -2362,10 +2362,6 @@ class AppViewModel(
     private fun handleAutoReconnectSnapshot(
         snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     ) {
-        logAutoReconnect(
-            event = "handleAutoReconnectSnapshot",
-            snapshot = snapshot,
-        )
         when (snapshot.secureConnection.secureState) {
             SecureConnectionState.ENCRYPTED -> {
                 suppressAutoReconnectUntilManualConnect = false
@@ -3144,7 +3140,7 @@ class AppViewModel(
         }
         return when {
             secureConnection.secureState != SecureConnectionState.ENCRYPTED && selectedThread.isRunning -> {
-                "This turn will resume when the trusted connection comes back."
+                "Trying to reconnect to your Mac."
             }
             else -> null
         }
