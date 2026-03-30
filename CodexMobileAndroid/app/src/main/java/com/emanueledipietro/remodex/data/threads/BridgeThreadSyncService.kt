@@ -23,6 +23,7 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
@@ -43,8 +44,10 @@ import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
+import com.emanueledipietro.remodex.model.RemodexRequestedPermissions
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertConflict
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
@@ -766,11 +769,15 @@ class BridgeThreadSyncService(
     override suspend fun approvePendingApproval(forSession: Boolean) {
         val request = backingPendingApprovalRequest.value
             ?: throw IllegalStateException("No pending approval request.")
-        val normalizedMethod = request.method.trim()
-        val isCommandApproval =
-            normalizedMethod == "item/commandExecution/requestApproval" ||
-                normalizedMethod == "item/command_execution/request_approval"
-        val decision = if (forSession && isCommandApproval) {
+        if (request.kind == RemodexApprovalKind.PERMISSIONS) {
+            throw IllegalStateException("This request needs a permission grant response.")
+        }
+        val decision = if (
+            forSession && (
+                request.kind == RemodexApprovalKind.COMMAND ||
+                    request.kind == RemodexApprovalKind.FILE_CHANGE
+                )
+        ) {
             "acceptForSession"
         } else {
             "accept"
@@ -779,29 +786,56 @@ class BridgeThreadSyncService(
             id = request.requestId,
             result = buildApprovalDecisionResponse(decision),
         )
-        backingPendingApprovalRequest.value = null
-        request.threadId?.let { threadId ->
-            updateThreadWaitingOnApproval(
-                threadId = threadId,
-                isWaitingOnApproval = false,
-            )
-        }
+        clearPendingApprovalRequest(request)
     }
 
     override suspend fun declinePendingApproval() {
         val request = backingPendingApprovalRequest.value
             ?: throw IllegalStateException("No pending approval request.")
+        val result = if (request.kind == RemodexApprovalKind.PERMISSIONS) {
+            buildPermissionsApprovalResponse(
+                permissions = buildJsonObject { },
+                scope = RemodexPermissionGrantScope.TURN,
+            )
+        } else {
+            buildApprovalDecisionResponse("decline")
+        }
         secureConnectionCoordinator.sendResponse(
             id = request.requestId,
-            result = buildApprovalDecisionResponse("decline"),
+            result = result,
         )
-        backingPendingApprovalRequest.value = null
-        request.threadId?.let { threadId ->
-            updateThreadWaitingOnApproval(
-                threadId = threadId,
-                isWaitingOnApproval = false,
-            )
+        clearPendingApprovalRequest(request)
+    }
+
+    override suspend fun cancelPendingApproval() {
+        val request = backingPendingApprovalRequest.value
+            ?: throw IllegalStateException("No pending approval request.")
+        if (request.kind == RemodexApprovalKind.PERMISSIONS) {
+            throw IllegalStateException("Permission requests cannot stop the turn directly.")
         }
+        secureConnectionCoordinator.sendResponse(
+            id = request.requestId,
+            result = buildApprovalDecisionResponse("cancel"),
+        )
+        clearPendingApprovalRequest(request)
+    }
+
+    override suspend fun grantPendingPermissionsApproval(scope: RemodexPermissionGrantScope) {
+        val request = backingPendingApprovalRequest.value
+            ?: throw IllegalStateException("No pending approval request.")
+        if (request.kind != RemodexApprovalKind.PERMISSIONS) {
+            throw IllegalStateException("This approval request does not accept permission grants.")
+        }
+        val permissions = requestedPermissionsPayload(request)
+            ?: buildGrantedPermissionsProfile(request.requestedPermissions)
+        secureConnectionCoordinator.sendResponse(
+            id = request.requestId,
+            result = buildPermissionsApprovalResponse(
+                permissions = permissions,
+                scope = scope,
+            ),
+        )
+        clearPendingApprovalRequest(request)
     }
 
     override suspend fun continueOnMac(threadId: String) {
@@ -2480,13 +2514,25 @@ class BridgeThreadSyncService(
             reason = paramsObject?.firstString("reason"),
             threadId = paramsObject?.firstString("threadId", "thread_id"),
             turnId = paramsObject?.firstString("turnId", "turn_id"),
+            approvalId = paramsObject?.firstString("approvalId", "approval_id"),
+            cwd = paramsObject?.firstString("cwd", "workingDirectory", "working_directory"),
+            requestedPermissions = decodeRequestedPermissions(paramsObject),
             params = params,
         )
         if (approvalAccessMode(threadId = request.threadId) == RemodexAccessMode.FULL_ACCESS) {
             try {
+                val result = if (request.kind == RemodexApprovalKind.PERMISSIONS) {
+                    buildPermissionsApprovalResponse(
+                        permissions = requestedPermissionsPayload(request)
+                            ?: buildGrantedPermissionsProfile(request.requestedPermissions),
+                        scope = RemodexPermissionGrantScope.SESSION,
+                    )
+                } else {
+                    buildApprovalDecisionResponse("accept")
+                }
                 secureConnectionCoordinator.sendResponse(
                     id = requestId,
-                    result = buildApprovalDecisionResponse("accept"),
+                    result = result,
                 )
             } catch (error: Throwable) {
                 if (error is CancellationException) {
@@ -2509,6 +2555,89 @@ class BridgeThreadSyncService(
             )
         }
         backingPendingApprovalRequest.value = request
+    }
+
+    private fun clearPendingApprovalRequest(request: RemodexApprovalRequest) {
+        backingPendingApprovalRequest.value = null
+        request.threadId?.let { threadId ->
+            updateThreadWaitingOnApproval(
+                threadId = threadId,
+                isWaitingOnApproval = false,
+            )
+        }
+    }
+
+    private fun decodeRequestedPermissions(paramsObject: JsonObject?): RemodexRequestedPermissions? {
+        val permissionsObject = paramsObject?.firstObject("permissions") ?: return null
+        val fileSystemObject = permissionsObject.firstObject("fileSystem", "file_system")
+        val readPaths = fileSystemObject
+            ?.firstArray("read")
+            .orEmpty()
+            .mapNotNull(JsonElement::stringOrNull)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+        val writePaths = fileSystemObject
+            ?.firstArray("write")
+            .orEmpty()
+            .mapNotNull(JsonElement::stringOrNull)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+        val networkEnabled = permissionsObject.firstObject("network")?.firstBoolean("enabled")
+        if (networkEnabled == null && readPaths.isEmpty() && writePaths.isEmpty()) {
+            return null
+        }
+        return RemodexRequestedPermissions(
+            networkEnabled = networkEnabled,
+            readPaths = readPaths,
+            writePaths = writePaths,
+        )
+    }
+
+    private fun requestedPermissionsPayload(request: RemodexApprovalRequest): JsonObject? {
+        val paramsObject = request.params?.jsonObjectOrNull
+        return paramsObject?.firstObject("permissions")
+    }
+
+    private fun buildGrantedPermissionsProfile(
+        requestedPermissions: RemodexRequestedPermissions?,
+    ): JsonObject {
+        return buildJsonObject {
+            requestedPermissions?.networkEnabled?.let { enabled ->
+                put(
+                    "network",
+                    buildJsonObject {
+                        put("enabled", JsonPrimitive(enabled))
+                    },
+                )
+            }
+            if (requestedPermissions?.readPaths?.isNotEmpty() == true || requestedPermissions?.writePaths?.isNotEmpty() == true) {
+                put(
+                    "fileSystem",
+                    buildJsonObject {
+                        if (requestedPermissions.readPaths.isNotEmpty()) {
+                            put(
+                                "read",
+                                buildJsonArray {
+                                    requestedPermissions.readPaths.forEach { path ->
+                                        add(JsonPrimitive(path))
+                                    }
+                                },
+                            )
+                        }
+                        if (requestedPermissions.writePaths.isNotEmpty()) {
+                            put(
+                                "write",
+                                buildJsonArray {
+                                    requestedPermissions.writePaths.forEach { path ->
+                                        add(JsonPrimitive(path))
+                                    }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+        }
     }
 
     private fun appendFileChangeDelta(paramsObject: JsonObject) {
@@ -6832,6 +6961,16 @@ internal fun buildStructuredUserInputResponse(
 internal fun buildApprovalDecisionResponse(decision: String): JsonObject {
     return buildJsonObject {
         put("decision", JsonPrimitive(decision))
+    }
+}
+
+internal fun buildPermissionsApprovalResponse(
+    permissions: JsonObject,
+    scope: RemodexPermissionGrantScope,
+): JsonObject {
+    return buildJsonObject {
+        put("permissions", permissions)
+        put("scope", JsonPrimitive(scope.wireValue))
     }
 }
 

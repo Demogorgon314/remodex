@@ -6,6 +6,7 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
@@ -80,6 +81,12 @@ interface RemodexAppRepository {
     suspend fun approvePendingApproval(forSession: Boolean = false)
 
     suspend fun declinePendingApproval()
+
+    suspend fun cancelPendingApproval()
+
+    suspend fun grantPendingPermissionsApproval(
+        scope: RemodexPermissionGrantScope = RemodexPermissionGrantScope.TURN,
+    )
 
     suspend fun continueOnMac(threadId: String)
 

@@ -30,6 +30,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexModelOption
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -326,6 +327,14 @@ class FakeThreadSyncService(
     }
 
     override suspend fun declinePendingApproval() {
+        backingPendingApprovalRequest.value = null
+    }
+
+    override suspend fun cancelPendingApproval() {
+        backingPendingApprovalRequest.value = null
+    }
+
+    override suspend fun grantPendingPermissionsApproval(scope: RemodexPermissionGrantScope) {
         backingPendingApprovalRequest.value = null
     }
 

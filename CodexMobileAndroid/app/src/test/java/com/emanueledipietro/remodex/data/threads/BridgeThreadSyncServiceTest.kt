@@ -19,12 +19,15 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
+import com.emanueledipietro.remodex.model.RemodexRequestedPermissions
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
@@ -74,6 +77,201 @@ class BridgeThreadSyncServiceTest {
             },
             buildApprovalDecisionResponse("decline"),
         )
+    }
+
+    @Test
+    fun `permissions approval response wraps permissions and scope in object shape`() {
+        val permissions = buildJsonObject {
+            put(
+                "network",
+                buildJsonObject {
+                    put("enabled", JsonPrimitive(true))
+                },
+            )
+        }
+
+        assertEquals(
+            buildJsonObject {
+                put("permissions", permissions)
+                put("scope", JsonPrimitive("session"))
+            },
+            buildPermissionsApprovalResponse(
+                permissions = permissions,
+                scope = RemodexPermissionGrantScope.SESSION,
+            ),
+        )
+    }
+
+    @Test
+    fun `decode requested permissions parses network and filesystem access`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        val decoded = invokePrivateMethod(
+            service,
+            "decodeRequestedPermissions",
+            buildJsonObject {
+                put(
+                    "permissions",
+                    buildJsonObject {
+                        put(
+                            "network",
+                            buildJsonObject {
+                                put("enabled", JsonPrimitive(true))
+                            },
+                        )
+                        put(
+                            "fileSystem",
+                            buildJsonObject {
+                                put(
+                                    "read",
+                                    buildJsonArray {
+                                        add(JsonPrimitive("/tmp/readme.md"))
+                                    },
+                                )
+                                put(
+                                    "write",
+                                    buildJsonArray {
+                                        add(JsonPrimitive("/tmp/output.txt"))
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        ) as RemodexRequestedPermissions?
+
+        assertEquals(
+            RemodexRequestedPermissions(
+                networkEnabled = true,
+                readPaths = listOf("/tmp/readme.md"),
+                writePaths = listOf("/tmp/output.txt"),
+            ),
+            decoded,
+        )
+    }
+
+    @Test
+    fun `approve pending file change for session sends acceptForSession response`() = runTest {
+        val connected = createConnectedBridgeService()
+
+        try {
+            setPendingApprovalRequest(
+                connected.service,
+                RemodexApprovalRequest(
+                    id = "approval-file",
+                    requestId = JsonPrimitive("req-file"),
+                    method = "item/fileChange/requestApproval",
+                ),
+            )
+
+            connected.service.approvePendingApproval(forSession = true)
+            advanceUntilIdle()
+
+            val response = connected.relayFactory.receivedRequests.last()
+            assertEquals(JsonPrimitive("req-file"), response.id)
+            assertEquals(
+                buildApprovalDecisionResponse("acceptForSession"),
+                response.result,
+            )
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `granting pending permissions approval echoes requested permissions with scope`() = runTest {
+        val connected = createConnectedBridgeService()
+        val requestedPermissions = buildJsonObject {
+            put(
+                "network",
+                buildJsonObject {
+                    put("enabled", JsonPrimitive(true))
+                },
+            )
+            put(
+                "fileSystem",
+                buildJsonObject {
+                    put(
+                        "read",
+                        buildJsonArray {
+                            add(JsonPrimitive("/tmp/project"))
+                        },
+                    )
+                },
+            )
+        }
+
+        try {
+            setPendingApprovalRequest(
+                connected.service,
+                RemodexApprovalRequest(
+                    id = "approval-permissions",
+                    requestId = JsonPrimitive("req-permissions"),
+                    method = "item/permissions/requestApproval",
+                    params = buildJsonObject {
+                        put("permissions", requestedPermissions)
+                    },
+                ),
+            )
+
+            connected.service.grantPendingPermissionsApproval(RemodexPermissionGrantScope.SESSION)
+            advanceUntilIdle()
+
+            val response = connected.relayFactory.receivedRequests.last()
+            assertEquals(JsonPrimitive("req-permissions"), response.id)
+            assertEquals(
+                buildPermissionsApprovalResponse(
+                    permissions = requestedPermissions,
+                    scope = RemodexPermissionGrantScope.SESSION,
+                ),
+                response.result,
+            )
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `declining pending permissions approval sends empty permissions for the turn`() = runTest {
+        val connected = createConnectedBridgeService()
+
+        try {
+            setPendingApprovalRequest(
+                connected.service,
+                RemodexApprovalRequest(
+                    id = "approval-permissions",
+                    requestId = JsonPrimitive("req-permissions"),
+                    method = "item/permissions/requestApproval",
+                ),
+            )
+
+            connected.service.declinePendingApproval()
+            advanceUntilIdle()
+
+            val response = connected.relayFactory.receivedRequests.last()
+            assertEquals(JsonPrimitive("req-permissions"), response.id)
+            assertEquals(
+                buildPermissionsApprovalResponse(
+                    permissions = buildJsonObject { },
+                    scope = RemodexPermissionGrantScope.TURN,
+                ),
+                response.result,
+            )
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
     }
 
     @Test
@@ -5096,6 +5294,21 @@ class BridgeThreadSyncServiceTest {
         fail("Expected $expectedState but was ${coordinator.state.value.secureState}")
     }
 
+    private suspend fun TestScope.awaitSecureTransportReady(
+        coordinator: SecureConnectionCoordinator,
+    ) {
+        val field = coordinator.javaClass.getDeclaredField("secureSession")
+        field.isAccessible = true
+        repeat(40) {
+            advanceUntilIdle()
+            if (field.get(coordinator) != null) {
+                return
+            }
+            Thread.sleep(10)
+        }
+        fail("Expected secure transport session to be ready.")
+    }
+
     private suspend fun TestScope.awaitThreads(
         service: BridgeThreadSyncService,
         expectedCount: Int,
@@ -5132,5 +5345,65 @@ class BridgeThreadSyncServiceTest {
         val state = field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<List<ThreadSyncSnapshot>>
         state.value = snapshots
     }
+
+    private suspend fun TestScope.createConnectedBridgeService(): ConnectedBridgeService {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-approval-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        awaitSecureTransportReady(coordinator)
+        advanceUntilIdle()
+
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        return ConnectedBridgeService(
+            service = service,
+            coordinator = coordinator,
+            relayFactory = relayFactory,
+        )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setPendingApprovalRequest(
+        service: BridgeThreadSyncService,
+        request: RemodexApprovalRequest?,
+    ) {
+        val field = service.javaClass.getDeclaredField("backingPendingApprovalRequest")
+        field.isAccessible = true
+        val state = field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<RemodexApprovalRequest?>
+        state.value = request
+    }
+
+    private data class ConnectedBridgeService(
+        val service: BridgeThreadSyncService,
+        val coordinator: SecureConnectionCoordinator,
+        val relayFactory: ScriptedRpcRelayWebSocketFactory,
+    )
 
 }

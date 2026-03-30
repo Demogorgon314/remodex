@@ -34,6 +34,7 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -202,6 +203,71 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals(1, repository.declinePendingApprovalRequests)
+    }
+
+    @Test
+    fun `approving pending approval for session delegates command approvals to repository`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                pendingApprovalRequest = RemodexApprovalRequest(
+                    id = "approval-1",
+                    requestId = JsonPrimitive("req-1"),
+                    method = "item/commandExecution/requestApproval",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.approvePendingApprovalForSession()
+        advanceUntilIdle()
+
+        assertEquals(listOf(true), repository.approvePendingApprovalRequests)
+    }
+
+    @Test
+    fun `approving permissions approval delegates grant scope to repository`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                pendingApprovalRequest = RemodexApprovalRequest(
+                    id = "approval-1",
+                    requestId = JsonPrimitive("req-1"),
+                    method = "item/permissions/requestApproval",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.approvePendingApproval()
+        viewModel.approvePendingApprovalForSession()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RemodexPermissionGrantScope.TURN, RemodexPermissionGrantScope.SESSION),
+            repository.grantPendingPermissionsApprovalScopes,
+        )
+        assertTrue(repository.approvePendingApprovalRequests.isEmpty())
+    }
+
+    @Test
+    fun `canceling pending approval delegates to repository`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                pendingApprovalRequest = RemodexApprovalRequest(
+                    id = "approval-1",
+                    requestId = JsonPrimitive("req-1"),
+                    method = "item/fileChange/requestApproval",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.cancelPendingApproval()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.cancelPendingApprovalRequests)
     }
 
     @Test
@@ -2063,6 +2129,7 @@ class AppViewModelTest {
         val commitAndPushRequests = mutableListOf<Pair<String, String?>>()
         val continueOnMacRequests = mutableListOf<String>()
         val approvePendingApprovalRequests = mutableListOf<Boolean>()
+        val grantPendingPermissionsApprovalScopes = mutableListOf<RemodexPermissionGrantScope>()
         val discardRuntimeChangesRequests = mutableListOf<String>()
         val moveThreadToProjectPathRequests = mutableListOf<Pair<String, String>>()
         val forkThreadRequests = mutableListOf<Triple<String, RemodexComposerForkDestination, String?>>()
@@ -2082,6 +2149,7 @@ class AppViewModelTest {
         var sendPromptError: Throwable? = null
         var continueOnMacError: Throwable? = null
         var declinePendingApprovalRequests = 0
+        var cancelPendingApprovalRequests = 0
         var forkThreadError: Throwable? = null
         var forkThreadResult: String? = null
         var forkThreadFailureSessionSnapshot: RemodexSessionSnapshot? = null
@@ -2232,6 +2300,14 @@ class AppViewModelTest {
 
         override suspend fun declinePendingApproval() {
             declinePendingApprovalRequests += 1
+        }
+
+        override suspend fun cancelPendingApproval() {
+            cancelPendingApprovalRequests += 1
+        }
+
+        override suspend fun grantPendingPermissionsApproval(scope: RemodexPermissionGrantScope) {
+            grantPendingPermissionsApprovalScopes += scope
         }
 
         override suspend fun continueOnMac(threadId: String) {

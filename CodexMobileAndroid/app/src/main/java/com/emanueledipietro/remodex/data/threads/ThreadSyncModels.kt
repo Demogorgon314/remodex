@@ -20,6 +20,7 @@ import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanState
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
@@ -97,6 +98,12 @@ interface ThreadCommandService {
     suspend fun approvePendingApproval(forSession: Boolean = false)
 
     suspend fun declinePendingApproval()
+
+    suspend fun cancelPendingApproval()
+
+    suspend fun grantPendingPermissionsApproval(
+        scope: RemodexPermissionGrantScope = RemodexPermissionGrantScope.TURN,
+    )
 
     suspend fun continueOnMac(threadId: String)
 

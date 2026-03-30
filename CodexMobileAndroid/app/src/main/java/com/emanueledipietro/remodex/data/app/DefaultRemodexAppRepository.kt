@@ -43,6 +43,7 @@ import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexGptAccountStatus
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
@@ -887,6 +888,14 @@ class DefaultRemodexAppRepository(
 
     override suspend fun declinePendingApproval() {
         threadCommandService.declinePendingApproval()
+    }
+
+    override suspend fun cancelPendingApproval() {
+        threadCommandService.cancelPendingApproval()
+    }
+
+    override suspend fun grantPendingPermissionsApproval(scope: RemodexPermissionGrantScope) {
+        threadCommandService.grantPendingPermissionsApproval(scope)
     }
 
     override suspend fun continueOnMac(threadId: String) {

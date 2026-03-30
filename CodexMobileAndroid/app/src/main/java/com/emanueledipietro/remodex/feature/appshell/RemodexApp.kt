@@ -106,6 +106,7 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeDetailSheet
 import com.emanueledipietro.remodex.feature.turn.FileChangeSheetPresentation
 import com.emanueledipietro.remodex.feature.turn.buildRepositoryDiffSheetPresentation
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
@@ -1093,17 +1094,24 @@ private fun MainPane(
         uiState.pendingApprovalRequest?.let { request ->
             AlertDialog(
                 onDismissRequest = {},
-                dismissButton = {
-                    TextButton(onClick = viewModel::declinePendingApproval) {
-                        Text("Decline")
-                    }
-                },
                 confirmButton = {
-                    Button(onClick = viewModel::approvePendingApproval) {
-                        Text("Approve")
-                    }
+                    ApprovalRequestActions(
+                        request = request,
+                        onDecline = viewModel::declinePendingApproval,
+                        onAllowOnce = viewModel::approvePendingApproval,
+                        onAllowForSession = viewModel::approvePendingApprovalForSession,
+                        onCancel = viewModel::cancelPendingApproval,
+                    )
                 },
-                title = { Text("Approval request") },
+                title = {
+                    Text(
+                        if (request.kind == RemodexApprovalKind.PERMISSIONS) {
+                            "Permission request"
+                        } else {
+                            "Approval request"
+                        },
+                    )
+                },
                 text = { Text(remodexApprovalRequestMessage(request)) },
             )
         }
@@ -1721,6 +1729,43 @@ private fun HomeEmptyState(
             }
             TextButton(onClick = onForgetPair) {
                 Text("Forget Pair")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalRequestActions(
+    request: RemodexApprovalRequest,
+    onDecline: () -> Unit,
+    onAllowOnce: () -> Unit,
+    onAllowForSession: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = onDecline) {
+                Text("Decline")
+            }
+            if (request.kind != RemodexApprovalKind.PERMISSIONS) {
+                TextButton(onClick = onCancel) {
+                    Text("Stop turn")
+                }
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = onAllowForSession) {
+                Text("Allow this session")
+            }
+            Button(onClick = onAllowOnce) {
+                Text("Allow once")
             }
         }
     }

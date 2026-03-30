@@ -128,6 +128,34 @@ data class RemodexStructuredUserInputRequest(
 }
 
 @Serializable
+enum class RemodexApprovalKind {
+    COMMAND,
+    FILE_CHANGE,
+    PERMISSIONS,
+    UNKNOWN,
+}
+
+@Serializable
+enum class RemodexPermissionGrantScope {
+    TURN,
+    SESSION,
+    ;
+
+    val wireValue: String
+        get() = when (this) {
+            TURN -> "turn"
+            SESSION -> "session"
+        }
+}
+
+@Serializable
+data class RemodexRequestedPermissions(
+    val networkEnabled: Boolean? = null,
+    val readPaths: List<String> = emptyList(),
+    val writePaths: List<String> = emptyList(),
+)
+
+@Serializable
 data class RemodexApprovalRequest(
     val id: String,
     val requestId: JsonElement,
@@ -136,19 +164,48 @@ data class RemodexApprovalRequest(
     val reason: String? = null,
     val threadId: String? = null,
     val turnId: String? = null,
+    val approvalId: String? = null,
+    val cwd: String? = null,
+    val requestedPermissions: RemodexRequestedPermissions? = null,
     val params: JsonElement? = null,
-)
+) {
+    val kind: RemodexApprovalKind
+        get() = when (method.trim()) {
+            "item/commandExecution/requestApproval",
+            "item/command_execution/request_approval" -> RemodexApprovalKind.COMMAND
+            "item/fileChange/requestApproval",
+            "item/file_change/request_approval" -> RemodexApprovalKind.FILE_CHANGE
+            "item/permissions/requestApproval",
+            "item/permissions/request_approval" -> RemodexApprovalKind.PERMISSIONS
+            else -> RemodexApprovalKind.UNKNOWN
+        }
+}
 
 fun remodexApprovalRequestMessage(request: RemodexApprovalRequest): String {
     val lines = buildList {
-        request.reason
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-            ?.let(::add)
-        request.command
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-            ?.let { command -> add("Command: $command") }
+        when (request.kind) {
+            RemodexApprovalKind.PERMISSIONS -> {
+                request.reason
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(::add)
+                requestedPermissionsMessage(request.requestedPermissions)?.let(::add)
+            }
+            else -> {
+                request.reason
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(::add)
+                request.command
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let { command -> add("Command: $command") }
+                request.cwd
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let { cwd -> add("Working directory: $cwd") }
+            }
+        }
     }
     return if (lines.isEmpty()) {
         "Codex is requesting permission to continue."
@@ -158,14 +215,60 @@ fun remodexApprovalRequestMessage(request: RemodexApprovalRequest): String {
 }
 
 fun remodexApprovalRequestSummary(request: RemodexApprovalRequest): String {
-    return request.reason
-        ?.trim()
-        ?.takeIf(String::isNotEmpty)
-        ?: request.command
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-            ?.let { command -> "Command: $command" }
-        ?: "Codex is requesting permission to continue."
+    return when (request.kind) {
+        RemodexApprovalKind.PERMISSIONS -> {
+            request.reason
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?: requestedPermissionsSummary(request.requestedPermissions)
+                ?: "Codex is requesting additional permissions."
+        }
+        else -> {
+            request.reason
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?: request.command
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let { command -> "Command: $command" }
+                ?: "Codex is requesting permission to continue."
+        }
+    }
+}
+
+private fun requestedPermissionsMessage(requestedPermissions: RemodexRequestedPermissions?): String? {
+    val permissions = requestedPermissions ?: return null
+    val sections = buildList {
+        permissions.networkEnabled?.let { enabled ->
+            add("Network: ${if (enabled) "enabled" else "restricted"}")
+        }
+        if (permissions.readPaths.isNotEmpty()) {
+            add("Read paths:\n${permissions.readPaths.joinToString(separator = "\n")}")
+        }
+        if (permissions.writePaths.isNotEmpty()) {
+            add("Write paths:\n${permissions.writePaths.joinToString(separator = "\n")}")
+        }
+    }
+    return sections.takeIf(List<String>::isNotEmpty)?.joinToString(separator = "\n\n")
+}
+
+private fun requestedPermissionsSummary(requestedPermissions: RemodexRequestedPermissions?): String? {
+    val permissions = requestedPermissions ?: return null
+    val parts = buildList {
+        if (permissions.networkEnabled == true) {
+            add("network")
+        }
+        if (permissions.readPaths.isNotEmpty()) {
+            add("file read")
+        }
+        if (permissions.writePaths.isNotEmpty()) {
+            add("file write")
+        }
+    }
+    if (parts.isEmpty()) {
+        return null
+    }
+    return "Requested permissions: ${parts.joinToString()}"
 }
 
 @Serializable

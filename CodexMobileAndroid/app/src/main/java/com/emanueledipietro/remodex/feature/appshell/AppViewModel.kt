@@ -15,6 +15,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertSheetState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
+import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
@@ -41,6 +42,7 @@ import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
+import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -1138,7 +1140,12 @@ class AppViewModel(
     fun approvePendingApproval() {
         viewModelScope.launch {
             runCatching {
-                repository.approvePendingApproval()
+                when (uiState.value.pendingApprovalRequest?.kind) {
+                    RemodexApprovalKind.PERMISSIONS -> {
+                        repository.grantPendingPermissionsApproval(RemodexPermissionGrantScope.TURN)
+                    }
+                    else -> repository.approvePendingApproval()
+                }
             }.onFailure { error ->
                 if (error is CancellationException) {
                     throw error
@@ -1157,6 +1164,37 @@ class AppViewModel(
                     throw error
                 }
                 presentTransientBanner(error.message ?: "Could not decline this request.")
+            }
+        }
+    }
+
+    fun approvePendingApprovalForSession() {
+        viewModelScope.launch {
+            runCatching {
+                when (uiState.value.pendingApprovalRequest?.kind) {
+                    RemodexApprovalKind.PERMISSIONS -> {
+                        repository.grantPendingPermissionsApproval(RemodexPermissionGrantScope.SESSION)
+                    }
+                    else -> repository.approvePendingApproval(forSession = true)
+                }
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                presentTransientBanner(error.message ?: "Could not approve this request for the session.")
+            }
+        }
+    }
+
+    fun cancelPendingApproval() {
+        viewModelScope.launch {
+            runCatching {
+                repository.cancelPendingApproval()
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                presentTransientBanner(error.message ?: "Could not stop this turn.")
             }
         }
     }
