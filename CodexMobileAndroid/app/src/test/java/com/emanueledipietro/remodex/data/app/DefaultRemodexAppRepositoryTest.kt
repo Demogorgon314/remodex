@@ -762,6 +762,73 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `stale deferred thread list publish does not restore the previous selection after create thread`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val staleBaseThreads = repository.session.value.threads
+        val staleGeneration = invokePrivateMethod<Long>(
+            repository,
+            "nextThreadListPublishGeneration",
+        )
+        invokePrivateMethod<Unit>(
+            repository,
+            "scheduleThreadListPublish",
+            staleBaseThreads,
+            AppPreferences(selectedThreadId = "thread-notifications"),
+            repository.session.value.availableModels,
+            repository.session.value.secureConnection,
+            repository.session.value.notificationRegistration,
+            staleGeneration,
+        )
+
+        repository.createThread("/tmp/new-project")
+        advanceUntilIdle()
+        awaitSelectedThread(
+            repository = repository,
+            description = "the newly created chat thread after a stale deferred publish",
+        ) { thread ->
+            thread?.projectPath == "/tmp/new-project"
+        }
+
+        val session = repository.session.value
+        val selectedThread = session.selectedThread
+        assertEquals("/tmp/new-project", selectedThread?.projectPath)
+        assertEquals(selectedThread?.id, session.selectedThreadId)
+        assertTrue(session.threads.any { thread -> thread.projectPath == "/tmp/new-project" })
+    }
+
+    @Test
+    fun `stale thread list rebuild keeps sticky selected thread when the new thread is temporarily missing`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        advanceUntilIdle()
+        val previousThreads = repository.session.value.threads
+        val previousPreferences = AppPreferences(selectedThreadId = "thread-notifications")
+
+        repository.createThread("/tmp/new-project")
+        advanceUntilIdle()
+        val selectedAfterCreate = requireNotNull(repository.session.value.selectedThread) {
+            "Expected the new thread to be selected after create"
+        }
+
+        invokePrivateMethod<Unit>(
+            repository,
+            "publishMaterializedThreads",
+            previousThreads,
+            previousPreferences,
+            repository.session.value.availableModels,
+            repository.session.value.secureConnection,
+            repository.session.value.notificationRegistration,
+        )
+        advanceUntilIdle()
+
+        assertEquals(selectedAfterCreate.id, repository.session.value.selectedThread?.id)
+        assertEquals("/tmp/new-project", repository.session.value.selectedThread?.projectPath)
+    }
+
+    @Test
     fun `create thread normalizes unsupported reasoning defaults for the selected model`() = runTest {
         val syncService = CreateThreadDefaultsCaptureSyncService()
         val repository = DefaultRemodexAppRepository(

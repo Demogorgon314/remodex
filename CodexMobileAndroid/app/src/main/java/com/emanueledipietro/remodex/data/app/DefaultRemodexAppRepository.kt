@@ -83,6 +83,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 private object NoopVoiceTranscriptionService : RemodexVoiceTranscriptionService {
     override suspend fun transcribeVoiceAudioFile(
@@ -123,6 +125,8 @@ class DefaultRemodexAppRepository(
         .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
         .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
         .map(CachedThreadRecord::toBaseThreadSummary)
+    private val threadListPublishGeneration = AtomicLong(0L)
+    private val preferredSelectedThreadId = AtomicReference<String?>(initialBaseThreads.firstOrNull()?.id)
     private val baseThreadsState = MutableStateFlow(initialBaseThreads)
     private val preferencesState = MutableStateFlow(AppPreferences())
 
@@ -254,13 +258,19 @@ class DefaultRemodexAppRepository(
                     preferences = preferences,
                     availableModels = resolvedAvailableModels,
                 )
+                val currentSessionSnapshot = sessionState.value
+                val inMemorySelectedThreadId = preferredSelectedThreadId.get()
                 val selectedThreadId = resolveSelectedThreadId(
                     preferredThreadId = preferredSelectedThreadId(
+                        inMemorySelectedThreadId = inMemorySelectedThreadId,
                         persistedSelectedThreadId = preferences.selectedThreadId,
-                        sessionSelectedThreadId = sessionState.value.selectedThreadId,
+                        sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
                     ),
+                    stickyThreadId = currentSessionSnapshot.selectedThreadId,
+                    stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
                     threads = threads,
                 )
+                preferredSelectedThreadId.set(selectedThreadId)
                 if (selectedThreadId != preferences.selectedThreadId) {
                     appPreferencesRepository.setSelectedThreadId(selectedThreadId)
                 }
@@ -285,8 +295,11 @@ class DefaultRemodexAppRepository(
                         supportsThreadFork = inputs.supportsThreadFork,
                         threads = threads,
                         selectedThreadId = selectedThreadId,
-                        selectedThreadSnapshot = threads.firstOrNull { thread -> thread.id == selectedThreadId }
-                            ?: threads.firstOrNull(),
+                        selectedThreadSnapshot = resolveSelectedThreadSnapshot(
+                            selectedThreadId = selectedThreadId,
+                            threads = threads,
+                            currentSelectedThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
+                        ),
                         notificationRegistration = inputs.notificationRegistration,
                     )
                 }
@@ -473,6 +486,7 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun persistSelectedThreadIdLocally(threadId: String?) {
+        preferredSelectedThreadId.set(threadId)
         appPreferencesRepository.setSelectedThreadId(threadId)
         preferencesState.value = preferencesState.value.copy(selectedThreadId = threadId)
         sessionState.update { snapshot ->
@@ -1763,15 +1777,23 @@ class DefaultRemodexAppRepository(
         deferThreadListUpdate: Boolean = false,
         preferredSelectedThreadIdOverride: String? = null,
     ) {
+        val publishGeneration = nextThreadListPublishGeneration()
         baseThreadsState.value = baseThreads
         val resolvedAvailableModels = resolveAvailableModels(baseThreads)
+        val currentSessionSnapshot = sessionState.value
+        val previousSessionSelectedThreadId = currentSessionSnapshot.selectedThreadId
+        val inMemorySelectedThreadId = preferredSelectedThreadId.get()
         val selectedThreadId = resolveSelectedThreadId(
             preferredThreadId = preferredSelectedThreadIdOverride ?: preferredSelectedThreadId(
+                inMemorySelectedThreadId = inMemorySelectedThreadId,
                 persistedSelectedThreadId = preferencesState.value.selectedThreadId,
-                sessionSelectedThreadId = sessionState.value.selectedThreadId,
+                sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
             ),
+            stickyThreadId = currentSessionSnapshot.selectedThreadId,
+            stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
             threads = baseThreads,
         )
+        preferredSelectedThreadId.set(selectedThreadId)
         if (selectedThreadId != preferencesState.value.selectedThreadId) {
             preferencesState.value = preferencesState.value.copy(selectedThreadId = selectedThreadId)
             repositoryScope.launch {
@@ -1791,6 +1813,7 @@ class DefaultRemodexAppRepository(
                 availableModels = resolvedAvailableModels,
                 secureConnection = sessionState.value.secureConnection,
                 notificationRegistration = sessionState.value.notificationRegistration,
+                publishGeneration = publishGeneration,
             )
         } else {
             cancelPendingThreadListPublish()
@@ -1810,12 +1833,20 @@ class DefaultRemodexAppRepository(
         availableModels: List<RemodexModelOption>,
         selectedThreadId: String?,
     ) {
-        val selectedBaseThread = baseThreads.firstOrNull { thread -> thread.id == selectedThreadId }
-            ?: baseThreads.firstOrNull()
-        val selectedThread = selectedBaseThread?.materialize(
-            preferences = preferences,
-            availableModels = availableModels,
-        )
+        val currentSelectedThreadSnapshot = sessionState.value.selectedThreadSnapshot
+        val selectedThread = baseThreads
+            .firstOrNull { thread -> thread.id == selectedThreadId }
+            ?.materialize(
+                preferences = preferences,
+                availableModels = availableModels,
+            )
+            ?: currentSelectedThreadSnapshot?.takeIf { snapshot ->
+                snapshot.id == selectedThreadId
+            }
+            ?: baseThreads.firstOrNull()?.materialize(
+                preferences = preferences,
+                availableModels = availableModels,
+            )
         sessionState.update { snapshot ->
             snapshot.copy(
                 availableModels = availableModels,
@@ -1844,13 +1875,20 @@ class DefaultRemodexAppRepository(
             preferences = preferences,
             availableModels = availableModels,
         )
+        val currentSessionSnapshot = sessionState.value
+        val previousSessionSelectedThreadId = currentSessionSnapshot.selectedThreadId
+        val inMemorySelectedThreadId = preferredSelectedThreadId.get()
         val selectedThreadId = resolveSelectedThreadId(
             preferredThreadId = preferredSelectedThreadId(
+                inMemorySelectedThreadId = inMemorySelectedThreadId,
                 persistedSelectedThreadId = preferences.selectedThreadId,
-                sessionSelectedThreadId = sessionState.value.selectedThreadId,
+                sessionSelectedThreadId = currentSessionSnapshot.selectedThreadId,
             ),
+            stickyThreadId = currentSessionSnapshot.selectedThreadId,
+            stickyThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
             threads = threads,
         )
+        preferredSelectedThreadId.set(selectedThreadId)
         sessionState.update { snapshot ->
             snapshot.copy(
                 onboardingCompleted = preferences.onboardingCompleted,
@@ -1870,8 +1908,11 @@ class DefaultRemodexAppRepository(
                 ),
                 threads = threads,
                 selectedThreadId = selectedThreadId,
-                selectedThreadSnapshot = threads.firstOrNull { thread -> thread.id == selectedThreadId }
-                    ?: threads.firstOrNull(),
+                selectedThreadSnapshot = resolveSelectedThreadSnapshot(
+                    selectedThreadId = selectedThreadId,
+                    threads = threads,
+                    currentSelectedThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot,
+                ),
                 notificationRegistration = notificationRegistration,
             )
         }
@@ -1883,10 +1924,15 @@ class DefaultRemodexAppRepository(
         availableModels: List<RemodexModelOption>,
         secureConnection: SecureConnectionSnapshot,
         notificationRegistration: RemodexNotificationRegistrationState,
+        publishGeneration: Long,
     ) {
         threadListPublishJob?.cancel()
         threadListPublishJob = repositoryScope.launch {
             delay(SelectedThreadStreamingThreadListDebounceMs)
+            val currentGeneration = threadListPublishGeneration.get()
+            if (publishGeneration != currentGeneration) {
+                return@launch
+            }
             publishMaterializedThreads(
                 baseThreads = baseThreads,
                 preferences = preferences,
@@ -1900,6 +1946,10 @@ class DefaultRemodexAppRepository(
     private fun cancelPendingThreadListPublish() {
         threadListPublishJob?.cancel()
         threadListPublishJob = null
+    }
+
+    private fun nextThreadListPublishGeneration(): Long {
+        return threadListPublishGeneration.incrementAndGet()
     }
 
     private suspend fun mutateRuntimeDefaults(
@@ -2014,19 +2064,41 @@ private data class SessionInputs(
 
 private fun resolveSelectedThreadId(
     preferredThreadId: String?,
+    stickyThreadId: String?,
+    stickyThreadSnapshot: RemodexThreadSummary?,
     threads: List<RemodexThreadSummary>,
 ): String? {
     if (preferredThreadId != null && threads.any { it.id == preferredThreadId }) {
         return preferredThreadId
     }
+    if (preferredThreadId != null &&
+        (preferredThreadId == stickyThreadId || stickyThreadSnapshot?.id == preferredThreadId)
+    ) {
+        return preferredThreadId
+    }
     return threads.firstOrNull()?.id
 }
 
+private fun resolveSelectedThreadSnapshot(
+    selectedThreadId: String?,
+    threads: List<RemodexThreadSummary>,
+    currentSelectedThreadSnapshot: RemodexThreadSummary?,
+): RemodexThreadSummary? {
+    if (selectedThreadId != null) {
+        threads.firstOrNull { thread -> thread.id == selectedThreadId }?.let { return it }
+        currentSelectedThreadSnapshot?.takeIf { snapshot ->
+            snapshot.id == selectedThreadId
+        }?.let { return it }
+    }
+    return threads.firstOrNull()
+}
+
 private fun preferredSelectedThreadId(
+    inMemorySelectedThreadId: String?,
     persistedSelectedThreadId: String?,
     sessionSelectedThreadId: String?,
 ): String? {
-    return sessionSelectedThreadId ?: persistedSelectedThreadId
+    return inMemorySelectedThreadId ?: sessionSelectedThreadId ?: persistedSelectedThreadId
 }
 
 private fun materializeThreads(
