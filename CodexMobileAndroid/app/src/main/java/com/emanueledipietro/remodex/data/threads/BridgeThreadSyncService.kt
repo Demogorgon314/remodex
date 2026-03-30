@@ -735,6 +735,8 @@ class BridgeThreadSyncService(
         val turnId = extractTurnId(response.result)
         if (turnId != null) {
             setActiveTurnId(threadId = threadId, turnId = turnId)
+            confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
+            beginAssistantMessage(threadId = threadId, turnId = turnId)
         } else {
             markThreadAsRunningFallback(threadId)
         }
@@ -2684,27 +2686,10 @@ class BridgeThreadSyncService(
             if (resolvedTurnId.isNullOrBlank()) {
                 return
             }
-            upsertStreamingItem(
+            beginAssistantMessage(
                 threadId = threadId,
-                item = timelineItem(
-                    id = resolvedMessageId,
-                    speaker = ConversationSpeaker.ASSISTANT,
-                    text = assistantLifecycleStartedText(existingItem?.text),
-                    kind = ConversationItemKind.CHAT,
-                    turnId = resolvedTurnId,
-                    itemId = effectiveItemId,
-                    isStreaming = true,
-                    orderIndex = resolveOrderIndex(
-                        threadId = threadId,
-                        messageId = resolvedMessageId,
-                        turnId = resolvedTurnId,
-                        itemId = effectiveItemId,
-                        speaker = ConversationSpeaker.ASSISTANT,
-                        kind = ConversationItemKind.CHAT,
-                    ),
-                    assistantChangeSet = existingItem?.assistantChangeSet,
-                ),
-                isRunning = true,
+                turnId = resolvedTurnId,
+                itemId = effectiveItemId,
             )
             return
         }
@@ -2816,6 +2801,13 @@ class BridgeThreadSyncService(
                 turnId = resolvedTurnId ?: existingItem?.turnId,
                 itemId = itemId ?: existingItem?.itemId,
                 deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                createdAtEpochMs = existingItem?.createdAtEpochMs
+                    ?: decodeHistoryTimestampMillis(
+                        itemObject,
+                        "createdAt",
+                        "created_at",
+                        "timestamp",
+                    ),
                 attachments = resolvedAttachments,
                 orderIndex = existingItem?.orderIndex ?: resolveOrderIndex(
                     threadId = threadId,
@@ -3752,6 +3744,56 @@ class BridgeThreadSyncService(
                             (normalizedItemId != null && candidate.itemId == normalizedItemId)
                         )
             }
+    }
+
+    private fun beginAssistantMessage(
+        threadId: String,
+        turnId: String,
+        itemId: String? = null,
+    ) {
+        val preferredMessageId = streamingMessageId(
+            itemId = itemId,
+            turnId = turnId,
+            fallbackPrefix = "assistant",
+        )
+        val existingItem = projectedTimelineItem(
+            threadId = threadId,
+            messageId = preferredMessageId,
+            turnId = turnId,
+            itemId = itemId,
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+        ) ?: reusableAssistantStreamingItem(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = itemId,
+            preferredMessageId = preferredMessageId,
+        )
+        val resolvedMessageId = existingItem?.id ?: preferredMessageId
+        val resolvedItemId = itemId ?: existingItem?.itemId
+        upsertStreamingItem(
+            threadId = threadId,
+            item = timelineItem(
+                id = resolvedMessageId,
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = assistantLifecycleStartedText(existingItem?.text),
+                kind = ConversationItemKind.CHAT,
+                turnId = turnId,
+                itemId = resolvedItemId,
+                isStreaming = true,
+                createdAtEpochMs = existingItem?.createdAtEpochMs,
+                orderIndex = existingItem?.orderIndex ?: resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = resolvedMessageId,
+                    turnId = turnId,
+                    itemId = resolvedItemId,
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                ),
+                assistantChangeSet = existingItem?.assistantChangeSet,
+            ),
+            isRunning = true,
+        )
     }
 
     private fun shouldSuppressAssistantCompletion(

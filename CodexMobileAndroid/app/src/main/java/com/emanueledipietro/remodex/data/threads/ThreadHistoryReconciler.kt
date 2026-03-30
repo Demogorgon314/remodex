@@ -357,6 +357,7 @@ internal object ThreadHistoryReconciler {
             subagentAction = nextSubagentAction,
             structuredUserInputRequest = nextStructuredRequest,
             assistantChangeSet = nextAssistantChangeSet,
+            createdAtEpochMs = value.createdAtEpochMs ?: serverItem.createdAtEpochMs,
             isStreaming = nextStreaming,
         )
     }

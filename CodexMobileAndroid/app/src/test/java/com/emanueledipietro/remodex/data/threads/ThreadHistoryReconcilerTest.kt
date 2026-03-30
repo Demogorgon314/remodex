@@ -199,6 +199,44 @@ class ThreadHistoryReconcilerTest {
     }
 
     @Test
+    fun `merge history items backfills missing local timestamp from history`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "hello",
+                turnId = "turn-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                createdAtEpochMs = null,
+                orderIndex = 1L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history",
+                speaker = ConversationSpeaker.USER,
+                kind = ConversationItemKind.CHAT,
+                text = "hello",
+                turnId = "turn-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                createdAtEpochMs = 42L,
+                orderIndex = 2L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals(42L, merged.single().createdAtEpochMs)
+    }
+
+    @Test
     fun `merge history items matches command execution by item id before turn fallback`() {
         val existing = listOf(
             RemodexConversationItem(

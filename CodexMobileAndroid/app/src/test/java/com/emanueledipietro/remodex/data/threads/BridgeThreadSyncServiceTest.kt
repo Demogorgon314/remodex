@@ -1043,6 +1043,115 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `send prompt confirms optimistic user and creates assistant placeholder when turn start returns turn id like ios`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-send-placeholder",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-send"))
+                                        put("title", JsonPrimitive("Send thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-send"))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-send"))
+                                put("title", JsonPrimitive("Send thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-send"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to {
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-send"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.sendPrompt(
+                threadId = "thread-send",
+                prompt = "Ship the Android fix.",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            val matchingThreads = service.threads.value.filter { it.id == "thread-send" }
+            val projectedTimelines = matchingThreads.map { candidate ->
+                candidate to TurnTimelineReducer.reduceProjected(candidate.timelineMutations)
+            }
+
+            assertTrue("expected thread-send snapshot to exist", matchingThreads.isNotEmpty())
+            assertTrue(
+                "expected at least one confirmed user row with preserved timestamp after turn/start",
+                projectedTimelines.any { (_, items) ->
+                    items.any { item ->
+                        item.speaker == ConversationSpeaker.USER &&
+                            item.deliveryState == RemodexMessageDeliveryState.CONFIRMED &&
+                            item.turnId == "turn-send" &&
+                            item.createdAtEpochMs != null
+                    }
+                },
+            )
+            assertTrue(
+                "expected an empty streaming assistant placeholder row for turn-send",
+                projectedTimelines.any { (_, items) ->
+                    items.any { item ->
+                        item.speaker == ConversationSpeaker.ASSISTANT &&
+                            item.turnId == "turn-send" &&
+                            item.isStreaming &&
+                            item.text.isEmpty()
+                    }
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `bridge thread sync service loads real threads and hydrates history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -3395,6 +3504,67 @@ class BridgeThreadSyncServiceTest {
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, items.single().deliveryState)
         assertEquals("turn-image-lifecycle", items.single().turnId)
         assertEquals("data:image/jpeg;base64,LOCAL", items.single().attachments.single().previewDataUrl)
+    }
+
+    @Test
+    fun `user lifecycle preserves optimistic timestamp when confirming local message`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-user-time",
+                    title = "User timestamp",
+                    preview = "hello",
+                    projectPath = "/tmp/project-user-time",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-time",
+                                speaker = ConversationSpeaker.USER,
+                                text = "hello",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                createdAtEpochMs = 1234L,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleUserMessageLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-user-time"))
+                put("turnId", JsonPrimitive("turn-user-time"))
+            },
+            buildJsonObject {
+                put("id", JsonPrimitive("item-user-time"))
+                put("type", JsonPrimitive("user_message"))
+                put("text", JsonPrimitive("hello"))
+            },
+        )
+
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        assertEquals(1, items.size)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, items.single().deliveryState)
+        assertEquals("turn-user-time", items.single().turnId)
+        assertEquals(1234L, items.single().createdAtEpochMs)
     }
 
     @Test
