@@ -1108,7 +1108,7 @@ fun ConversationScreen(
                                 .fillMaxWidth()
                                 .weight(1f)
                                 .padding(horizontal = 16.dp),
-                            contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp),
+                            contentPadding = PaddingValues(top = 12.dp, bottom = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.Bottom),
                         ) {
                             if (timelineItems.isEmpty()) {
@@ -3560,9 +3560,7 @@ private fun ComposerCard(
         shape = RemodexConversationShapes.composer,
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp, bottom = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (composer.attachments.isNotEmpty() ||
@@ -3584,7 +3582,7 @@ private fun ComposerCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 12.dp, top = 3.dp, end = 12.dp),
+                    .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 8.dp),
             ) {
                 if (composerInputValue.text.isBlank()) {
                     Text(
@@ -3593,7 +3591,10 @@ private fun ComposerCard(
                         } else {
                             "Ask anything... @files, \$skills, /commands"
                         },
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 14.sp,
+                            lineHeight = 21.sp,
+                        ),
                         color = chrome.secondaryText.copy(alpha = 0.86f),
                     )
                 }
@@ -3612,7 +3613,9 @@ private fun ComposerCard(
                         },
                     minLines = 1,
                     maxLines = 8,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
                         color = chrome.bodyText,
                     ),
                     keyboardOptions = KeyboardOptions(
@@ -3643,7 +3646,7 @@ private fun ComposerCard(
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
+                    .padding(start = 16.dp, top = 6.dp, end = 16.dp, bottom = 6.dp),
             ) {
                 val compactSpacing = if (maxWidth < 360.dp) 2.dp else 4.dp
                 Row(
@@ -3851,7 +3854,9 @@ private fun ComposerAccessoryStrip(
         )
     }
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (composer.attachments.isNotEmpty()) {
