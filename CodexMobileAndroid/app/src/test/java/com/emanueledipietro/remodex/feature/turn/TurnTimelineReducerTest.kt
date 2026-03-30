@@ -97,6 +97,57 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `assistant deltas preserve repeated markdown fence characters across chunk boundaries`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "``",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "`kotlin\nprintln(1)\n```",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals(
+            "```kotlin\nprintln(1)\n```",
+            projected.first().text,
+        )
+    }
+
+    @Test
+    fun `assistant deltas preserve repeated single character chunks`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "`",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.AssistantTextDelta(
+                    messageId = "assistant-1",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    delta = "`",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals("``", projected.first().text)
+    }
+
+    @Test
     fun `reasoning deltas preserve whitespace only chunks while streaming`() {
         val projected = TurnTimelineReducer.reduce(
             listOf(
@@ -127,6 +178,30 @@ class TurnTimelineReducerTest {
         assertEquals(1, projected.size)
         assertEquals("  indented\n    detail", projected.first().text)
         assertTrue(projected.first().isStreaming)
+    }
+
+    @Test
+    fun `reasoning deltas preserve repeated markdown fence characters across chunk boundaries`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.ReasoningTextDelta(
+                    messageId = "reasoning-1",
+                    turnId = "turn-1",
+                    itemId = "reasoning-item",
+                    delta = "``",
+                    orderIndex = 1,
+                ),
+                TimelineMutation.ReasoningTextDelta(
+                    messageId = "reasoning-1",
+                    turnId = "turn-1",
+                    itemId = "reasoning-item",
+                    delta = "`thinking",
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals("```thinking", projected.first().text)
     }
 
     @Test
@@ -462,6 +537,33 @@ class TurnTimelineReducerTest {
         assertEquals(1, projected.size)
         assertTrue(projected.first().text.contains("running pwd"))
         assertTrue(projected.first().text.contains("/tmp/remodex"))
+        assertTrue(projected.first().isStreaming)
+    }
+
+    @Test
+    fun `file change deltas preserve repeated diff fence characters across chunk boundaries`() {
+        val projected = TurnTimelineReducer.reduce(
+            listOf(
+                TimelineMutation.SystemTextDelta(
+                    messageId = "file-1",
+                    turnId = "turn-1",
+                    itemId = "file-item",
+                    delta = "@@",
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    orderIndex = 1,
+                ),
+                TimelineMutation.SystemTextDelta(
+                    messageId = "file-1",
+                    turnId = "turn-1",
+                    itemId = "file-item",
+                    delta = "@ -1 +1 @@\n+value",
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    orderIndex = 1,
+                ),
+            ),
+        )
+
+        assertEquals("@@@ -1 +1 @@\n+value", projected.first().text)
         assertTrue(projected.first().isStreaming)
     }
 

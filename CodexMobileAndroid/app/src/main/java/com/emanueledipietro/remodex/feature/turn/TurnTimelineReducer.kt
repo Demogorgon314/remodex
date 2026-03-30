@@ -186,7 +186,10 @@ object TurnTimelineReducer {
         }
 
         val existing = items[existingIndex]
-        val nextText = mergeText(existing.text, delta)
+        // Assistant message deltas are incremental protocol chunks, not
+        // cumulative snapshots. Appending them verbatim preserves repeated
+        // characters like markdown fences that may legitimately span chunks.
+        val nextText = appendIncrementalText(existing.text, delta)
         val nextTurnId = turnId.ifBlank { existing.turnId.orEmpty() }
         val nextItemId = itemId ?: existing.itemId
 
@@ -284,6 +287,9 @@ object TurnTimelineReducer {
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
     ): String {
+        if (usesIncrementalDeltaAppend(speaker = speaker, kind = kind)) {
+            return appendIncrementalText(existing, incoming)
+        }
         if (preservesStreamingWhitespace(speaker = speaker, kind = kind)) {
             return mergeText(existing, incoming)
         }
@@ -445,6 +451,31 @@ object TurnTimelineReducer {
         }
 
         return existing + incoming
+    }
+
+    private fun appendIncrementalText(
+        existing: String,
+        incoming: String,
+    ): String {
+        if (incoming.isEmpty()) {
+            return existing
+        }
+        if (existing.isEmpty()) {
+            return incoming
+        }
+        return existing + incoming
+    }
+
+    private fun usesIncrementalDeltaAppend(
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): Boolean {
+        return when (speaker) {
+            ConversationSpeaker.ASSISTANT -> kind == ConversationItemKind.CHAT
+            ConversationSpeaker.SYSTEM -> kind == ConversationItemKind.REASONING ||
+                kind == ConversationItemKind.FILE_CHANGE
+            ConversationSpeaker.USER -> false
+        }
     }
 
     private fun normalizeIncomingDelta(
