@@ -508,6 +508,64 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `visible codex system activity items keep their intended intra turn ordering`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Final answer",
+                    turnId = "turn-1",
+                    itemId = "assistant-item",
+                    orderIndex = 9,
+                ),
+                RemodexConversationItem(
+                    id = "search-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.WEB_SEARCH,
+                    text = "Searched the web",
+                    turnId = "turn-1",
+                    itemId = "search-item",
+                    orderIndex = 3,
+                ),
+                RemodexConversationItem(
+                    id = "reasoning-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Inspecting available tools",
+                    turnId = "turn-1",
+                    itemId = "reasoning-item",
+                    orderIndex = 1,
+                ),
+                RemodexConversationItem(
+                    id = "mcp-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.MCP_TOOL_CALL,
+                    text = "Called web/search_query",
+                    turnId = "turn-1",
+                    itemId = "mcp-item",
+                    orderIndex = 2,
+                ),
+                RemodexConversationItem(
+                    id = "image-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.IMAGE_GENERATION,
+                    text = "Generated Image",
+                    turnId = "turn-1",
+                    itemId = "image-item",
+                    orderIndex = 4,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("reasoning-1", "mcp-1", "search-1", "image-1", "assistant-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `system text deltas keep command status and append streaming output`() {
         val projected = TurnTimelineReducer.reduce(
             listOf(

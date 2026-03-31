@@ -235,11 +235,13 @@ object TurnTimelineReducer {
             kind = kind,
         )
         val existingIndex = items.indexOfFirst { item ->
-            item.id == messageId || (
-                item.kind == kind &&
-                    item.speaker == speaker &&
-                    item.turnId == turnId &&
-                    item.itemId == itemId
+            matchesStreamingMessageTarget(
+                item = item,
+                messageId = messageId,
+                turnId = turnId,
+                itemId = itemId,
+                speaker = speaker,
+                kind = kind,
             )
         }
         val nextItem = if (existingIndex == -1) {
@@ -330,13 +332,13 @@ object TurnTimelineReducer {
     ): List<RemodexConversationItem> {
         val trimmedLine = line.trim()
         val existingIndex = items.indexOfFirst { item ->
-            (
-                item.id == messageId &&
-                    item.kind == ConversationItemKind.TOOL_ACTIVITY
-            ) || (
-                item.turnId == turnId &&
-                    item.itemId == itemId &&
-                    item.kind == ConversationItemKind.TOOL_ACTIVITY
+            matchesStreamingMessageTarget(
+                item = item,
+                messageId = messageId,
+                turnId = turnId,
+                itemId = itemId,
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.TOOL_ACTIVITY,
             )
         }
         val nextItem = if (existingIndex == -1) {
@@ -473,6 +475,10 @@ object TurnTimelineReducer {
         return when (speaker) {
             ConversationSpeaker.ASSISTANT -> kind == ConversationItemKind.CHAT
             ConversationSpeaker.SYSTEM -> kind == ConversationItemKind.REASONING ||
+                kind == ConversationItemKind.MCP_TOOL_CALL ||
+                kind == ConversationItemKind.WEB_SEARCH ||
+                kind == ConversationItemKind.IMAGE_VIEW ||
+                kind == ConversationItemKind.IMAGE_GENERATION ||
                 kind == ConversationItemKind.FILE_CHANGE
             ConversationSpeaker.USER -> false
         }
@@ -498,6 +504,10 @@ object TurnTimelineReducer {
             ConversationSpeaker.ASSISTANT -> kind == ConversationItemKind.CHAT
             ConversationSpeaker.SYSTEM -> kind == ConversationItemKind.CHAT ||
                 kind == ConversationItemKind.REASONING ||
+                kind == ConversationItemKind.MCP_TOOL_CALL ||
+                kind == ConversationItemKind.WEB_SEARCH ||
+                kind == ConversationItemKind.IMAGE_VIEW ||
+                kind == ConversationItemKind.IMAGE_GENERATION ||
                 kind == ConversationItemKind.PLAN ||
                 kind == ConversationItemKind.FILE_CHANGE
             ConversationSpeaker.USER -> false
@@ -605,10 +615,14 @@ object TurnTimelineReducer {
         return when (item.kind) {
             ConversationItemKind.REASONING,
             ConversationItemKind.TOOL_ACTIVITY,
+            ConversationItemKind.MCP_TOOL_CALL,
+            ConversationItemKind.WEB_SEARCH,
             ConversationItemKind.COMMAND_EXECUTION,
             -> true
 
             ConversationItemKind.CHAT,
+            ConversationItemKind.IMAGE_VIEW,
+            ConversationItemKind.IMAGE_GENERATION,
             ConversationItemKind.FILE_CHANGE,
             ConversationItemKind.SUBAGENT_ACTION,
             ConversationItemKind.PLAN,
@@ -623,7 +637,11 @@ object TurnTimelineReducer {
             ConversationSpeaker.SYSTEM -> when (item.kind) {
                 ConversationItemKind.REASONING -> 1
                 ConversationItemKind.TOOL_ACTIVITY -> 2
+                ConversationItemKind.MCP_TOOL_CALL -> 2
+                ConversationItemKind.WEB_SEARCH -> 2
                 ConversationItemKind.COMMAND_EXECUTION -> 2
+                ConversationItemKind.IMAGE_VIEW -> 3
+                ConversationItemKind.IMAGE_GENERATION -> 3
                 ConversationItemKind.SUBAGENT_ACTION -> 3
                 ConversationItemKind.CHAT,
                 ConversationItemKind.PLAN,
@@ -925,6 +943,75 @@ object TurnTimelineReducer {
         }
 
         return result
+    }
+
+    private fun matchesStreamingMessageTarget(
+        item: RemodexConversationItem,
+        messageId: String,
+        turnId: String,
+        itemId: String?,
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+    ): Boolean {
+        if (item.id == messageId) {
+            return true
+        }
+        if (item.kind != kind || item.speaker != speaker) {
+            return false
+        }
+
+        val normalizedTurnId = turnId.trim().takeIf(String::isNotEmpty)
+        if (normalizedTurnId != null && item.turnId != normalizedTurnId) {
+            return false
+        }
+        if (item.itemId == itemId) {
+            return normalizedTurnId == null || item.turnId == normalizedTurnId
+        }
+
+        if (normalizedTurnId == null || itemId.isNullOrBlank() || item.itemId != null) {
+            return false
+        }
+
+        return item.id == turnScopedStreamingMessageId(
+            speaker = speaker,
+            kind = kind,
+            turnId = normalizedTurnId,
+        )
+    }
+
+    private fun turnScopedStreamingMessageId(
+        speaker: ConversationSpeaker,
+        kind: ConversationItemKind,
+        turnId: String,
+    ): String? {
+        val normalizedTurnId = turnId.trim().takeIf(String::isNotEmpty) ?: return null
+        val prefix = when (speaker) {
+            ConversationSpeaker.ASSISTANT -> {
+                if (kind == ConversationItemKind.CHAT) {
+                    "assistant"
+                } else {
+                    null
+                }
+            }
+
+            ConversationSpeaker.SYSTEM -> when (kind) {
+                ConversationItemKind.REASONING -> "reasoning"
+                ConversationItemKind.TOOL_ACTIVITY -> "toolactivity"
+                ConversationItemKind.MCP_TOOL_CALL -> "mcptoolcall"
+                ConversationItemKind.WEB_SEARCH -> "websearch"
+                ConversationItemKind.COMMAND_EXECUTION -> "commandexecution"
+                ConversationItemKind.IMAGE_VIEW -> "imageview"
+                ConversationItemKind.IMAGE_GENERATION -> "imagegeneration"
+                ConversationItemKind.FILE_CHANGE -> "filechange"
+                ConversationItemKind.PLAN -> "plan"
+                ConversationItemKind.USER_INPUT_PROMPT -> "userinputprompt"
+                ConversationItemKind.SUBAGENT_ACTION -> "subagentaction"
+                ConversationItemKind.CHAT -> null
+            }
+
+            ConversationSpeaker.USER -> null
+        } ?: return null
+        return "$prefix-$normalizedTurnId"
     }
 
     private fun preservedStreamingOrderIndex(

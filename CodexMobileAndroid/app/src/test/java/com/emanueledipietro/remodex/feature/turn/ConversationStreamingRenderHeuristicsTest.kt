@@ -36,58 +36,18 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
-    fun `streaming markdown preview allows lightweight inline formatting`() {
-        assertTrue(
-            shouldRenderStreamingMarkdownPreview(
-                "Status is **ready** and run `./gradlew test`.",
-            ),
-        )
-    }
-
-    @Test
-    fun `streaming markdown preview skips mermaid blocks`() {
+    fun `attachment thumbnails skip desktop file uris`() {
         assertFalse(
-            shouldRenderStreamingMarkdownPreview(
-                """
-                ```mermaid
-                graph TD
-                A-->B
-                ```
-                """.trimIndent(),
+            canRenderAttachmentThumbnail(
+                "file:/Users/wangkai/chat_timeline_concept_search_based_20260331.png",
             ),
         )
     }
 
     @Test
-    fun `streaming markdown preview skips markdown tables`() {
-        assertFalse(
-            shouldRenderStreamingMarkdownPreview(
-                """
-                | Name | Value |
-                | --- | --- |
-                | A | B |
-                """.trimIndent(),
-            ),
-        )
-    }
-
-    @Test
-    fun `streaming markdown preview skips markdown images`() {
-        assertFalse(
-            shouldRenderStreamingMarkdownPreview(
-                "Look at ![diagram](https://example.com/diagram.png)",
-            ),
-        )
-    }
-
-    @Test
-    fun `streaming markdown preview skips very long content`() {
-        val longText = buildString {
-            repeat(3_501) {
-                append('a')
-            }
-        }
-
-        assertFalse(shouldRenderStreamingMarkdownPreview(longText))
+    fun `attachment thumbnails allow android accessible uris`() {
+        assertTrue(canRenderAttachmentThumbnail("content://media/external/images/media/1"))
+        assertTrue(canRenderAttachmentThumbnail("https://example.com/image.png"))
+        assertTrue(canRenderAttachmentThumbnail("file:///storage/emulated/0/Pictures/test.png"))
     }
 }

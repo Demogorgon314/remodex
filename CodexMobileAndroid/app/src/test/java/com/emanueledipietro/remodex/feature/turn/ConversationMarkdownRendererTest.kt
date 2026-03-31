@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.feature.turn
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -104,5 +105,28 @@ class ConversationMarkdownRendererTest {
         val onlySegment = segments.single()
         assertTrue(onlySegment is ConversationMarkdownSegment.Markdown)
         assertEquals(markdown, (onlySegment as ConversationMarkdownSegment.Markdown).text)
+    }
+
+    @Test
+    fun `long markdown falls back to plain text rendering`() {
+        val markdown = buildString {
+            repeat(200) {
+                append("This is a long markdown paragraph with [a link](https://example.com).\n")
+            }
+        }
+
+        assertTrue(shouldUsePlainTextMarkdownFallback(markdown))
+    }
+
+    @Test
+    fun `short markdown keeps rich rendering`() {
+        val markdown = """
+            ## Status
+
+            - First
+            - Second
+        """.trimIndent()
+
+        assertFalse(shouldUsePlainTextMarkdownFallback(markdown))
     }
 }

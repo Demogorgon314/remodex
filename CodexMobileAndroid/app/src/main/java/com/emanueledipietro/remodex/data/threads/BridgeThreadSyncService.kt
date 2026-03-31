@@ -96,6 +96,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.io.File
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
@@ -2149,6 +2150,8 @@ class BridgeThreadSyncService(
             "item/commandExecution/terminalInteraction",
             "item/command_execution/terminalInteraction" -> paramsObject?.let(::handleCommandExecutionTerminalInteraction)
 
+            "item/mcpToolCall/progress" -> paramsObject?.let(::handleMcpToolCallProgressNotification)
+
             "item/completed",
             "codex/event/item_completed",
             "codex/event/agent_message" -> paramsObject?.let { handleItemLifecycle(it, isCompleted = true) }
@@ -2885,6 +2888,56 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun handleMcpToolCallProgressNotification(paramsObject: JsonObject) {
+        val context = resolveNotificationContext(paramsObject) ?: return
+        val progressMessage = summarizeTimelineSupportingText(
+            paramsObject.firstString("message")?.trim()?.takeIf(String::isNotEmpty),
+        ) ?: return
+        val messageId = streamingMessageId(
+            itemId = context.itemId,
+            turnId = context.turnId,
+            fallbackPrefix = streamingFallbackPrefix(ConversationItemKind.MCP_TOOL_CALL),
+        )
+        val existingItem = projectedTimelineItem(
+            threadId = context.threadId,
+            messageId = messageId,
+            turnId = context.turnId,
+            itemId = context.itemId,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.MCP_TOOL_CALL,
+        ) ?: reusableSystemStreamingItem(
+            threadId = context.threadId,
+            turnId = context.turnId,
+            itemId = context.itemId,
+            kind = ConversationItemKind.MCP_TOOL_CALL,
+            text = "Calling MCP tool",
+        )
+        val baseText = existingItem?.text?.takeIf(String::isNotBlank) ?: "Calling MCP tool"
+        upsertStreamingItem(
+            threadId = context.threadId,
+            item = timelineItem(
+                id = existingItem?.id ?: messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = baseText,
+                kind = ConversationItemKind.MCP_TOOL_CALL,
+                supportingText = progressMessage,
+                turnId = context.turnId,
+                itemId = context.itemId ?: existingItem?.itemId,
+                isStreaming = true,
+                attachments = existingItem?.attachments.orEmpty(),
+                orderIndex = resolveOrderIndex(
+                    threadId = context.threadId,
+                    messageId = existingItem?.id ?: messageId,
+                    turnId = context.turnId,
+                    itemId = context.itemId ?: existingItem?.itemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.MCP_TOOL_CALL,
+                ),
+            ),
+            isRunning = true,
+        )
+    }
+
     private fun appendCommandExecutionDelta(paramsObject: JsonObject) {
         val context = resolveNotificationContext(paramsObject) ?: return
         val existingItem = projectedTimelineItem(
@@ -3348,83 +3401,20 @@ class BridgeThreadSyncService(
         }
         val itemId = extractItemId(paramsObject = paramsObject, eventObject = eventObject, itemObject = itemObject)
 
-        val kind: ConversationItemKind
-        val body: String
-        val planState: RemodexPlanState?
-        val subagentAction: RemodexSubagentAction?
-        when {
-            itemType == "reasoning" -> {
-                kind = ConversationItemKind.REASONING
-                body = decodeIncomingReasoningBody(itemObject)
-                planState = null
-                subagentAction = null
-            }
-
-            itemType == "filechange" || itemType == "diff" -> {
-                kind = ConversationItemKind.FILE_CHANGE
-                body = decodeFileChangeLifecycleBody(
-                    itemObject = itemObject,
-                    itemType = itemType,
-                    isCompleted = isCompleted,
-                )
-                planState = null
-                subagentAction = null
-            }
-
-            itemType == "toolcall" -> {
-                if (isLikelyFileChangeToolCall(itemObject, decodeItemText(itemObject))) {
-                    kind = ConversationItemKind.FILE_CHANGE
-                    body = decodeFileChangeLifecycleBody(
-                        itemObject = itemObject,
-                        itemType = itemType,
-                        isCompleted = isCompleted,
-                    )
-                } else {
-                    kind = ConversationItemKind.TOOL_ACTIVITY
-                    body = decodeToolCallActivityBody(
-                        itemObject = itemObject,
-                        isCompleted = isCompleted,
-                    )
-                }
-                planState = null
-                subagentAction = null
-            }
-
-            itemType == "commandexecution" || itemType == "enteredreviewmode" || itemType == "contextcompaction" -> {
-                kind = ConversationItemKind.COMMAND_EXECUTION
-                body = when (itemType) {
-                    "enteredreviewmode" -> decodeEnteredReviewModeText(itemObject)
-                    "contextcompaction" -> if (isCompleted) "Context compacted" else "Compacting context..."
-                    else -> decodeCommandExecutionStatusText(
-                        payloadObject = itemObject,
-                        isCompleted = isCompleted,
-                    )
-                }
-                planState = null
-                subagentAction = null
-            }
-
-            itemType == "plan" -> {
-                kind = ConversationItemKind.PLAN
-                body = decodePlanItemText(itemObject).ifBlank {
-                    if (isCompleted) "Plan updated." else "Planning..."
-                }
-                planState = decodeHistoryPlanState(itemObject)
-                subagentAction = null
-            }
-
-            else -> {
-                kind = ConversationItemKind.SUBAGENT_ACTION
-                body = ""
-                planState = null
-                subagentAction = decodeSubagentAction(itemObject)
-            }
-        }
+        val presentation = decodeStructuredTimelinePresentation(
+            itemObject = itemObject,
+            itemType = itemType,
+            isCompleted = isCompleted,
+        )
+        val kind = presentation.kind
+        val body = presentation.body
+        val planState = presentation.planState
+        val subagentAction = presentation.subagentAction
 
         val messageId = streamingMessageId(
             itemId = itemId,
             turnId = resolvedTurnId,
-            fallbackPrefix = kind.name.lowercase(Locale.ROOT),
+            fallbackPrefix = streamingFallbackPrefix(kind),
         )
         if (debugEnabled) {
             emitReviewDebugLog(
@@ -3505,7 +3495,13 @@ class BridgeThreadSyncService(
             )
             return true
         }
-        if (subagentAction == null && body.isBlank() && isCompleted) {
+        if (
+            subagentAction == null &&
+            body.isBlank() &&
+            presentation.supportingText.isNullOrBlank() &&
+            presentation.attachments.isEmpty() &&
+            isCompleted
+        ) {
             if (debugEnabled) {
                 emitReviewDebugLog(
                     "stage=structuredShortCircuit threadId=$threadId turnId=${resolvedTurnId.orEmpty()} itemType=$itemType reason=blankBodyCompleted messageId=$messageId",
@@ -3534,11 +3530,18 @@ class BridgeThreadSyncService(
                     else -> body.ifBlank { kind.name.replace('_', ' ') }
                 },
                 kind = kind,
+                supportingText = presentation.supportingText ?: existingItem?.supportingText,
                 turnId = resolvedTurnId,
                 itemId = itemId ?: existingItem?.itemId,
                 isStreaming = !isCompleted,
+                attachments = if (presentation.attachments.isNotEmpty()) {
+                    presentation.attachments
+                } else {
+                    existingItem?.attachments.orEmpty()
+                },
                 planState = planState,
                 subagentAction = subagentAction,
+                structuredUserInputRequest = presentation.structuredUserInputRequest,
                 orderIndex = resolveOrderIndex(
                     threadId = threadId,
                     messageId = existingItem?.id ?: messageId,
@@ -4115,7 +4118,9 @@ class BridgeThreadSyncService(
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
     ): Boolean {
-        val resolvedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        val resolvedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty)
+            ?: existingItem.turnId?.trim()?.takeIf(String::isNotEmpty)
+            ?: return false
         if (speaker != ConversationSpeaker.SYSTEM) {
             return false
         }
@@ -4136,10 +4141,14 @@ class BridgeThreadSyncService(
         return when (kind) {
             ConversationItemKind.REASONING,
             ConversationItemKind.TOOL_ACTIVITY,
+            ConversationItemKind.MCP_TOOL_CALL,
+            ConversationItemKind.WEB_SEARCH,
             ConversationItemKind.COMMAND_EXECUTION,
             -> true
 
             ConversationItemKind.CHAT,
+            ConversationItemKind.IMAGE_VIEW,
+            ConversationItemKind.IMAGE_GENERATION,
             ConversationItemKind.FILE_CHANGE,
             ConversationItemKind.SUBAGENT_ACTION,
             ConversationItemKind.PLAN,
@@ -4188,26 +4197,61 @@ class BridgeThreadSyncService(
         kind: ConversationItemKind,
         text: String,
     ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
-        if (kind != ConversationItemKind.COMMAND_EXECUTION) {
-            return null
-        }
-
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
         val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return null
         val normalizedItemId = itemId?.trim()?.takeIf(String::isNotEmpty)
-        val commandKey = normalizedCommandExecutionPreviewKey(text) ?: return null
+        val projected = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+        if (kind == ConversationItemKind.COMMAND_EXECUTION) {
+            val commandKey = normalizedCommandExecutionPreviewKey(text) ?: return null
+            return projected
+                .asReversed()
+                .firstOrNull { candidate ->
+                    candidate.speaker == ConversationSpeaker.SYSTEM &&
+                        candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                        candidate.turnId == normalizedTurnId &&
+                        (
+                            (normalizedItemId != null && candidate.itemId == normalizedItemId) ||
+                                normalizedCommandExecutionPreviewKey(candidate.text) == commandKey
+                            )
+                }
+        }
 
-        return TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
-            .asReversed()
-            .firstOrNull { candidate ->
-                candidate.speaker == ConversationSpeaker.SYSTEM &&
-                    candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
-                    candidate.turnId == normalizedTurnId &&
-                    (
-                        (normalizedItemId != null && candidate.itemId == normalizedItemId) ||
-                            normalizedCommandExecutionPreviewKey(candidate.text) == commandKey
-                        )
-            }
+        if (normalizedItemId == null) {
+            return null
+        }
+
+        val turnScopedMessageId = streamingMessageId(
+            itemId = null,
+            turnId = normalizedTurnId,
+            fallbackPrefix = streamingFallbackPrefix(kind),
+        )
+        val candidates = projected.filter { candidate ->
+            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                candidate.kind == kind &&
+                candidate.turnId == normalizedTurnId &&
+                candidate.itemId == null &&
+                candidate.id == turnScopedMessageId
+        }
+        return candidates.singleOrNull()
+    }
+
+    private fun streamingFallbackPrefix(
+        kind: ConversationItemKind,
+    ): String {
+        return when (kind) {
+            ConversationItemKind.REASONING -> "reasoning"
+            ConversationItemKind.TOOL_ACTIVITY -> "toolactivity"
+            ConversationItemKind.MCP_TOOL_CALL -> "mcptoolcall"
+            ConversationItemKind.WEB_SEARCH -> "websearch"
+            ConversationItemKind.COMMAND_EXECUTION -> "commandexecution"
+            ConversationItemKind.IMAGE_VIEW -> "imageview"
+            ConversationItemKind.IMAGE_GENERATION -> "imagegeneration"
+            ConversationItemKind.FILE_CHANGE -> "filechange"
+            ConversationItemKind.PLAN -> "plan"
+            ConversationItemKind.USER_INPUT_PROMPT -> "userinputprompt"
+            ConversationItemKind.SUBAGENT_ACTION -> "subagentaction"
+            ConversationItemKind.CHAT -> "chat"
+        }
     }
 
     private fun reusablePlanStreamingItem(
@@ -4610,7 +4654,360 @@ class BridgeThreadSyncService(
             || itemType == "plan"
             || itemType == "enteredreviewmode"
             || itemType == "contextcompaction"
+            || itemType == "userinputprompt"
+            || itemType == "requestuserinput"
+            || itemType == "mcptoolcall"
+            || itemType == "websearch"
+            || itemType == "imageview"
+            || itemType == "imagegeneration"
             || isSubagentHistoryItemType(itemType)
+            || (
+                itemType.isNotBlank() &&
+                    itemType != "hookprompt" &&
+                    itemType != "usermessage" &&
+                    itemType != "agentmessage" &&
+                    itemType != "assistantmessage" &&
+                    itemType != "message"
+                )
+    }
+
+    private fun decodeStructuredTimelinePresentation(
+        itemObject: JsonObject,
+        itemType: String,
+        isCompleted: Boolean,
+    ): StructuredTimelinePresentation {
+        return when {
+            itemType == "reasoning" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.REASONING,
+                body = decodeIncomingReasoningBody(itemObject),
+            )
+
+            itemType == "filechange" || itemType == "diff" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.FILE_CHANGE,
+                body = decodeFileChangeLifecycleBody(
+                    itemObject = itemObject,
+                    itemType = itemType,
+                    isCompleted = isCompleted,
+                ),
+            )
+
+            itemType == "toolcall" -> {
+                if (isLikelyFileChangeToolCall(itemObject, decodeItemText(itemObject))) {
+                    StructuredTimelinePresentation(
+                        kind = ConversationItemKind.FILE_CHANGE,
+                        body = decodeFileChangeLifecycleBody(
+                            itemObject = itemObject,
+                            itemType = itemType,
+                            isCompleted = isCompleted,
+                        ),
+                    )
+                } else {
+                    StructuredTimelinePresentation(
+                        kind = ConversationItemKind.TOOL_ACTIVITY,
+                        body = decodeToolCallActivityBody(
+                            itemObject = itemObject,
+                            isCompleted = isCompleted,
+                        ),
+                    )
+                }
+            }
+
+            itemType == "commandexecution" || itemType == "enteredreviewmode" || itemType == "contextcompaction" -> {
+                StructuredTimelinePresentation(
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    body = when (itemType) {
+                        "enteredreviewmode" -> decodeEnteredReviewModeText(itemObject)
+                        "contextcompaction" -> if (isCompleted) "Context compacted" else "Compacting context..."
+                        else -> decodeCommandExecutionStatusText(
+                            payloadObject = itemObject,
+                            isCompleted = isCompleted,
+                        )
+                    },
+                )
+            }
+
+            itemType == "plan" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.PLAN,
+                body = decodePlanItemText(itemObject).ifBlank {
+                    if (isCompleted) "Plan updated." else "Planning..."
+                },
+                planState = decodeHistoryPlanState(itemObject),
+            )
+
+            itemType == "userinputprompt" || itemType == "requestuserinput" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                body = decodeStructuredUserInputSummary(itemObject),
+                structuredUserInputRequest = decodeStructuredUserInputRequest(itemObject),
+            )
+
+            itemType == "mcptoolcall" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.MCP_TOOL_CALL,
+                body = decodeMcpToolCallBody(itemObject = itemObject, isCompleted = isCompleted),
+                supportingText = decodeMcpToolCallSupportingText(itemObject),
+            )
+
+            itemType == "websearch" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.WEB_SEARCH,
+                body = decodeWebSearchBody(isCompleted = isCompleted),
+                supportingText = decodeWebSearchSupportingText(itemObject),
+            )
+
+            itemType == "imageview" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.IMAGE_VIEW,
+                body = "Viewed Image",
+                supportingText = decodeImageViewSupportingText(itemObject),
+                attachments = decodeImageViewAttachments(itemObject),
+            )
+
+            itemType == "imagegeneration" -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.IMAGE_GENERATION,
+                body = "Generated Image",
+                supportingText = decodeImageGenerationSupportingText(itemObject),
+                attachments = decodeImageGenerationAttachments(itemObject),
+            )
+
+            isSubagentHistoryItemType(itemType) -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.SUBAGENT_ACTION,
+                body = "",
+                subagentAction = decodeSubagentAction(itemObject),
+            )
+
+            else -> StructuredTimelinePresentation(
+                kind = ConversationItemKind.CHAT,
+                body = decodeUnknownStructuredItemBody(
+                    itemType = itemType,
+                    itemObject = itemObject,
+                    isCompleted = isCompleted,
+                ),
+            )
+        }
+    }
+
+    private fun decodeStructuredUserInputSummary(itemObject: JsonObject): String {
+        return decodeItemText(itemObject)
+            .trim()
+            .takeIf(String::isNotEmpty)
+            ?: itemObject.firstArray("questions")
+                ?.size
+                ?.takeIf { size -> size > 0 }
+                ?.let { size -> "Codex needs $size answer${if (size == 1) "" else "s"} to continue." }
+            ?: "Codex needs your input to continue."
+    }
+
+    private fun decodeMcpToolCallBody(
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String {
+        val invocation = formatMcpInvocation(itemObject)
+        val normalizedStatus = normalizeStatus(itemObject.firstString("status").orEmpty())
+        return when {
+            normalizedStatus.contains("fail") || normalizedStatus.contains("error") -> "MCP failed: $invocation"
+            isCompleted -> "Called $invocation"
+            else -> "Calling $invocation"
+        }
+    }
+
+    private fun decodeMcpToolCallSupportingText(itemObject: JsonObject): String? {
+        val errorMessage = itemObject.firstObject("error")
+            ?.firstString("message", "detail", "description")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        if (errorMessage != null) {
+            return summarizeTimelineSupportingText(errorMessage)
+        }
+        return summarizeTimelineSupportingText(
+            extractStructuredOutputText(itemObject)
+            ?.lineSequence()
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.joinToString(separator = "\n")
+            ?.takeIf(String::isNotBlank),
+        )
+    }
+
+    private fun formatMcpInvocation(itemObject: JsonObject): String {
+        val server = itemObject.firstString("server", "serverName", "server_name")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        val tool = itemObject.firstString("tool", "name")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        return listOfNotNull(server, tool)
+            .joinToString(separator = "/")
+            .ifBlank { "MCP tool" }
+    }
+
+    private fun decodeWebSearchBody(
+        isCompleted: Boolean,
+    ): String = if (isCompleted) "Searched the web" else "Searching the web"
+
+    private fun decodeWebSearchSupportingText(itemObject: JsonObject): String? {
+        val actionObject = itemObject.firstObject("action")
+        val query = itemObject.firstString("query")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        val actionType = normalizeItemType(actionObject?.firstString("type").orEmpty())
+        return when (actionType) {
+            "search" -> {
+                val queries = actionObject?.firstArray("queries")
+                    .orEmpty()
+                    .mapNotNull(JsonElement::stringOrNull)
+                    .map(String::trim)
+                    .filter(String::isNotEmpty)
+                when {
+                    queries.isNotEmpty() -> queries.joinToString(separator = "\n")
+                    !query.isNullOrBlank() -> query
+                    else -> actionObject?.firstString("query")?.trim()?.takeIf(String::isNotEmpty)
+                }
+            }
+
+            "openpage" -> actionObject?.firstString("url")?.trim()?.takeIf(String::isNotEmpty)
+            "findinpage" -> listOfNotNull(
+                actionObject?.firstString("url")?.trim()?.takeIf(String::isNotEmpty),
+                actionObject?.firstString("pattern")?.trim()?.takeIf(String::isNotEmpty),
+            ).joinToString(separator = "\n").takeIf(String::isNotBlank)
+
+            else -> query
+        }?.let(::summarizeTimelineSupportingText)
+    }
+
+    private fun summarizeTimelineSupportingText(
+        value: String?,
+        maxLines: Int = 24,
+        maxChars: Int = 4_000,
+    ): String? {
+        val normalized = value
+            ?.lineSequence()
+            ?.map(String::trimEnd)
+            ?.joinToString(separator = "\n")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: return null
+
+        val lines = normalized.lineSequence().toList()
+        val limitedByLines = if (lines.size > maxLines) {
+            lines.take(maxLines).joinToString(separator = "\n")
+        } else {
+            normalized
+        }
+        val limitedByChars = if (limitedByLines.length > maxChars) {
+            limitedByLines.take(maxChars)
+        } else {
+            limitedByLines
+        }.trimEnd()
+
+        val wasTruncated = lines.size > maxLines || normalized.length > maxChars
+        return if (wasTruncated) {
+            "$limitedByChars\n…"
+        } else {
+            limitedByChars
+        }
+    }
+
+    private fun decodeImageViewSupportingText(itemObject: JsonObject): String? {
+        return itemObject.firstString("path")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+    }
+
+    private fun decodeImageViewAttachments(itemObject: JsonObject): List<RemodexConversationAttachment> {
+        val path = itemObject.firstString("path")?.trim()?.takeIf(String::isNotEmpty) ?: return emptyList()
+        return listOfNotNull(
+            conversationAttachmentForPath(
+                rawPath = path,
+                itemId = itemObject.firstString("id"),
+                fallbackName = "Viewed image",
+            ),
+        )
+    }
+
+    private fun decodeImageGenerationSupportingText(itemObject: JsonObject): String? {
+        val lines = buildList {
+            itemObject.firstString("revisedPrompt", "revised_prompt")
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let(::add)
+            itemObject.firstString("savedPath", "saved_path")
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let { savedPath -> add("Saved to: $savedPath") }
+            if (isEmpty()) {
+                itemObject.firstString("result")
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(::add)
+            }
+        }
+        return lines.joinToString(separator = "\n").takeIf(String::isNotBlank)
+    }
+
+    private fun decodeImageGenerationAttachments(itemObject: JsonObject): List<RemodexConversationAttachment> {
+        val savedPath = itemObject.firstString("savedPath", "saved_path")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: return emptyList()
+        return listOfNotNull(
+            conversationAttachmentForPath(
+                rawPath = savedPath,
+                itemId = itemObject.firstString("id"),
+                fallbackName = "Generated image",
+            ),
+        )
+    }
+
+    private fun conversationAttachmentForPath(
+        rawPath: String,
+        itemId: String?,
+        fallbackName: String,
+    ): RemodexConversationAttachment? {
+        val normalizedPath = rawPath.trim().takeIf(String::isNotEmpty) ?: return null
+        val displayName = File(normalizedPath).name.takeIf(String::isNotBlank) ?: fallbackName
+        return RemodexConversationAttachment(
+            id = itemId ?: "attachment-$displayName",
+            uriString = normalizeConversationAttachmentUri(normalizedPath),
+            displayName = displayName,
+            previewDataUrl = normalizedPath.takeIf(::isInlineImageDataUrl),
+        )
+    }
+
+    private fun normalizeConversationAttachmentUri(rawPath: String): String {
+        val trimmed = rawPath.trim()
+        return when {
+            trimmed.isEmpty() -> trimmed
+            isInlineImageDataUrl(trimmed) -> trimmed
+            "://" in trimmed -> trimmed
+            trimmed.startsWith("file:") -> trimmed
+            trimmed.startsWith("/") -> File(trimmed).toURI().toString()
+            else -> trimmed
+        }
+    }
+
+    private fun decodeUnknownStructuredItemBody(
+        itemType: String,
+        itemObject: JsonObject,
+        isCompleted: Boolean,
+    ): String {
+        val decodedText = decodeItemText(itemObject)
+            .trim()
+            .takeIf(String::isNotEmpty)
+            ?: extractStructuredOutputText(itemObject)
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+        if (decodedText != null) {
+            return decodedText
+        }
+        val label = itemType
+            .replace(Regex("([a-z])([A-Z])"), "$1 $2")
+            .replace(Regex("(?<=.)([A-Z])"), " $1")
+            .replace('_', ' ')
+            .replace('-', ' ')
+            .trim()
+            .replaceFirstChar { char -> char.titlecase(Locale.ROOT) }
+        return if (isCompleted) {
+            label.ifEmpty { "System activity completed" }
+        } else {
+            label.ifEmpty { "System activity" }
+        }
     }
 
     private fun decodeIncomingReasoningBody(itemObject: JsonObject): String {
@@ -5514,6 +5911,7 @@ class BridgeThreadSyncService(
         return objectValue.firstValue("content", "status", "output") != null
             || objectValue.firstValue("changes", "files", "diff", "patch") != null
             || objectValue.firstValue("result", "payload", "data") != null
+            || objectValue.firstValue("path", "savedPath", "saved_path", "action", "query") != null
     }
 
     private fun extractItemId(
@@ -5624,6 +6022,16 @@ class BridgeThreadSyncService(
         val turnId: String?,
         val itemId: String?,
         val payloadObject: JsonObject,
+    )
+
+    private data class StructuredTimelinePresentation(
+        val kind: ConversationItemKind,
+        val body: String,
+        val supportingText: String? = null,
+        val attachments: List<RemodexConversationAttachment> = emptyList(),
+        val planState: RemodexPlanState? = null,
+        val subagentAction: RemodexSubagentAction? = null,
+        val structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
     )
 
     private data class TurnReadState(
@@ -5772,55 +6180,47 @@ class BridgeThreadSyncService(
 
                     else -> ConversationSpeaker.SYSTEM
                 }
-                val kind = when (itemType) {
-                    "reasoning" -> ConversationItemKind.REASONING
-                    "plan" -> ConversationItemKind.PLAN
-                    "filechange", "diff" -> ConversationItemKind.FILE_CHANGE
-                    "toolcall" -> if (isLikelyFileChangeToolCall(itemObject, decodeItemText(itemObject))) {
-                        ConversationItemKind.FILE_CHANGE
-                    } else {
-                        ConversationItemKind.TOOL_ACTIVITY
-                    }
-                    "commandexecution", "enteredreviewmode", "contextcompaction" -> ConversationItemKind.COMMAND_EXECUTION
-                    "userinputprompt", "requestuserinput" -> ConversationItemKind.USER_INPUT_PROMPT
-                    else -> if (isSubagentHistoryItemType(itemType)) {
-                        ConversationItemKind.SUBAGENT_ACTION
-                    } else {
-                        ConversationItemKind.CHAT
-                    }
+                val presentation = if (speaker == ConversationSpeaker.SYSTEM) {
+                    decodeStructuredTimelinePresentation(
+                        itemObject = itemObject,
+                        itemType = itemType,
+                        isCompleted = true,
+                    )
+                } else {
+                    StructuredTimelinePresentation(
+                        kind = ConversationItemKind.CHAT,
+                        body = "",
+                    )
+                }
+                val kind = if (speaker == ConversationSpeaker.SYSTEM) {
+                    presentation.kind
+                } else {
+                    ConversationItemKind.CHAT
                 }
                 val attachments = if (speaker == ConversationSpeaker.USER) {
                     decodeImageAttachments(itemObject)
+                } else if (speaker == ConversationSpeaker.SYSTEM) {
+                    presentation.attachments
                 } else {
                     emptyList()
                 }
                 val planState = if (kind == ConversationItemKind.PLAN) {
-                    decodeHistoryPlanState(itemObject)
+                    presentation.planState
                 } else {
                     null
                 }
                 val structuredUserInputRequest = if (kind == ConversationItemKind.USER_INPUT_PROMPT) {
-                    decodeStructuredUserInputRequest(itemObject)
+                    presentation.structuredUserInputRequest
                 } else {
                     null
                 }
                 val subagentAction = if (kind == ConversationItemKind.SUBAGENT_ACTION) {
-                    decodeSubagentAction(itemObject)
+                    presentation.subagentAction
                 } else {
                     null
                 }
                 val resolvedText = when {
-                    kind == ConversationItemKind.PLAN -> decodePlanItemText(itemObject)
-                    kind == ConversationItemKind.REASONING -> decodeHistoryReasoningBody(itemObject)
-                    kind == ConversationItemKind.FILE_CHANGE -> decodeFileChangeHistoryBody(
-                        itemObject = itemObject,
-                        itemType = itemType,
-                    )
-                    itemType == "enteredreviewmode" -> decodeEnteredReviewModeText(itemObject)
-                    itemType == "toolcall" -> decodeToolCallActivityBody(
-                        itemObject = itemObject,
-                        isCompleted = true,
-                    )
+                    speaker == ConversationSpeaker.SYSTEM -> presentation.body
                     itemType == "exitedreviewmode" -> decodeCompletedAssistantBody(
                         itemType = itemType,
                         itemObject = itemObject,
@@ -5861,6 +6261,7 @@ class BridgeThreadSyncService(
                 }
                 if (
                     resolvedText.isNotBlank()
+                    || !presentation.supportingText.isNullOrBlank()
                     || itemType == "plan"
                     || attachments.isNotEmpty()
                     || structuredUserInputRequest != null
@@ -5874,6 +6275,7 @@ class BridgeThreadSyncService(
                             speaker = speaker,
                             text = resolvedText.ifBlank { itemType.replaceFirstChar { char -> char.titlecase(Locale.ROOT) } },
                             kind = kind,
+                            supportingText = presentation.supportingText,
                             turnId = turnId,
                             itemId = itemId,
                             createdAtEpochMs = resolvedTimestampMs.takeIf { it > 0L },

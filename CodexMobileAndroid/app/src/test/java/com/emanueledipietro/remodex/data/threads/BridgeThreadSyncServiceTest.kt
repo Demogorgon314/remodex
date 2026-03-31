@@ -5579,6 +5579,716 @@ class BridgeThreadSyncServiceTest {
         }
     }
 
+    @Test
+    fun `mcp tool call progress and completion keep a dedicated MCP row`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-mcp",
+                    title = "MCP thread",
+                    preview = "Search docs",
+                    projectPath = "/tmp/project-mcp",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-mcp"))
+                put("turnId", JsonPrimitive("turn-mcp"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("mcp-item-1"))
+                        put("type", JsonPrimitive("mcpToolCall"))
+                        put("server", JsonPrimitive("web"))
+                        put("tool", JsonPrimitive("search_query"))
+                        put("status", JsonPrimitive("in_progress"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleMcpToolCallProgressNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-mcp"))
+                put("turnId", JsonPrimitive("turn-mcp"))
+                put("itemId", JsonPrimitive("mcp-item-1"))
+                put("message", JsonPrimitive("Searching official docs"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-mcp"))
+                put("turnId", JsonPrimitive("turn-mcp"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("mcp-item-1"))
+                        put("type", JsonPrimitive("mcpToolCall"))
+                        put("server", JsonPrimitive("web"))
+                        put("tool", JsonPrimitive("search_query"))
+                        put("status", JsonPrimitive("completed"))
+                        put(
+                            "result",
+                            buildJsonObject {
+                                put(
+                                    "content",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("type", JsonPrimitive("text"))
+                                                put("text", JsonPrimitive("Found the networking docs"))
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-mcp" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val mcpItems = projected.filter { item -> item.kind == ConversationItemKind.MCP_TOOL_CALL }
+
+        assertEquals(1, mcpItems.size)
+        assertEquals("Called web/search_query", mcpItems.single().text)
+        assertEquals("mcp-item-1", mcpItems.single().itemId)
+        assertTrue(mcpItems.single().supportingText.orEmpty().contains("Found the networking docs"))
+        assertFalse(mcpItems.single().isStreaming)
+    }
+
+    @Test
+    fun `mcp progress rebind keeps the same row when item id arrives after turn scoped placeholder`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-mcp-rebind",
+                    title = "MCP rebind thread",
+                    preview = "First response",
+                    projectPath = "/tmp/project-mcp-rebind",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Inspecting tools",
+                                turnId = "turn-mcp-rebind",
+                                itemId = "thinking-1",
+                                isStreaming = false,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "First response",
+                                turnId = "turn-mcp-rebind",
+                                itemId = "assistant-item-1",
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-mcp-rebind"))
+                put("turnId", JsonPrimitive("turn-mcp-rebind"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("type", JsonPrimitive("mcpToolCall"))
+                        put("server", JsonPrimitive("web"))
+                        put("tool", JsonPrimitive("search_query"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleMcpToolCallProgressNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-mcp-rebind"))
+                put("turnId", JsonPrimitive("turn-mcp-rebind"))
+                put("itemId", JsonPrimitive("mcp-item-1"))
+                put("message", JsonPrimitive("Searching official docs"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-mcp-rebind" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val mcpItems = projected.filter { item -> item.kind == ConversationItemKind.MCP_TOOL_CALL }
+
+        assertEquals(1, mcpItems.size)
+        assertEquals("mcp-item-1", mcpItems.single().itemId)
+        assertEquals(
+            listOf("thinking-1", "assistant-1", mcpItems.single().id),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals("Searching official docs", mcpItems.single().supportingText)
+    }
+
+    @Test
+    fun `mcp lifecycle truncates oversized supporting text before it reaches the timeline`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-mcp-large-result",
+                    title = "Large MCP result thread",
+                    preview = "Search",
+                    projectPath = "/tmp/project-mcp-large-result",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        val largeResult = (1..200).joinToString(separator = "\n") { index ->
+            "result line $index ${"x".repeat(80)}"
+        }
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-mcp-large-result"))
+                put("turnId", JsonPrimitive("turn-mcp-large-result"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("mcp-item-large"))
+                        put("type", JsonPrimitive("mcpToolCall"))
+                        put("server", JsonPrimitive("web"))
+                        put("tool", JsonPrimitive("search_query"))
+                        put(
+                            "result",
+                            buildJsonObject {
+                                put(
+                                    "content",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("type", JsonPrimitive("text"))
+                                                put("text", JsonPrimitive(largeResult))
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-mcp-large-result" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val mcpItem = projected.single { item -> item.kind == ConversationItemKind.MCP_TOOL_CALL }
+
+        assertTrue(mcpItem.supportingText.orEmpty().length <= 4_002)
+        assertTrue(mcpItem.supportingText.orEmpty().endsWith("…"))
+    }
+
+    @Test
+    fun `web search lifecycle renders as dedicated web search row`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-web-search",
+                    title = "Web search thread",
+                    preview = "Search",
+                    projectPath = "/tmp/project-web-search",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-web-search"))
+                put("turnId", JsonPrimitive("turn-web-search"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("search-item-1"))
+                        put("type", JsonPrimitive("webSearch"))
+                        put("query", JsonPrimitive("kotlin stateflow"))
+                        put(
+                            "action",
+                            buildJsonObject {
+                                put("type", JsonPrimitive("search"))
+                                put(
+                                    "queries",
+                                    buildJsonArray {
+                                        add(JsonPrimitive("kotlin stateflow"))
+                                        add(JsonPrimitive("android compose flow"))
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-web-search" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val webSearchItem = projected.single { item -> item.kind == ConversationItemKind.WEB_SEARCH }
+
+        assertEquals("Searched the web", webSearchItem.text)
+        assertTrue(webSearchItem.supportingText.orEmpty().contains("kotlin stateflow"))
+        assertTrue(webSearchItem.supportingText.orEmpty().contains("android compose flow"))
+        assertFalse(webSearchItem.isStreaming)
+    }
+
+    @Test
+    fun `web search completion without turn id still stays after assistant in interleaved turns`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-web-search-refresh",
+                    title = "Web search refresh thread",
+                    preview = "First response",
+                    projectPath = "/tmp/project-web-search-refresh",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Inspecting search results",
+                                turnId = "turn-web-search-refresh",
+                                itemId = "thinking-1",
+                                isStreaming = false,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "search-item-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.WEB_SEARCH,
+                                text = "Searching the web",
+                                supportingText = "kotlin stateflow",
+                                turnId = "turn-web-search-refresh",
+                                itemId = "search-item-1",
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "First response",
+                                turnId = "turn-web-search-refresh",
+                                itemId = "assistant-item-1",
+                                isStreaming = true,
+                                orderIndex = 2L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-web-search-refresh"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("search-item-1"))
+                        put("type", JsonPrimitive("webSearch"))
+                        put("query", JsonPrimitive("kotlin stateflow"))
+                        put(
+                            "action",
+                            buildJsonObject {
+                                put("type", JsonPrimitive("search"))
+                                put(
+                                    "queries",
+                                    buildJsonArray {
+                                        add(JsonPrimitive("kotlin stateflow"))
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-web-search-refresh" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(
+            listOf("thinking-1", "assistant-1", "search-item-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals("Searched the web", projected.last().text)
+    }
+
+    @Test
+    fun `tool activity delta rebind keeps the same row when item id arrives after turn scoped placeholder`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-tool-activity-rebind",
+                    title = "Tool activity rebind thread",
+                    preview = "First response",
+                    projectPath = "/tmp/project-tool-activity-rebind",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Inspecting files",
+                                turnId = "turn-tool-activity-rebind",
+                                itemId = "thinking-1",
+                                isStreaming = false,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "toolactivity-turn-tool-activity-rebind",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.TOOL_ACTIVITY,
+                                text = "search src",
+                                turnId = "turn-tool-activity-rebind",
+                                itemId = null,
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "First response",
+                                turnId = "turn-tool-activity-rebind",
+                                itemId = "assistant-item-1",
+                                isStreaming = true,
+                                orderIndex = 2L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendToolCallDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-tool-activity-rebind"))
+                put("turnId", JsonPrimitive("turn-tool-activity-rebind"))
+                put("itemId", JsonPrimitive("tool-item-1"))
+                put("delta", JsonPrimitive("searched src/main"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-tool-activity-rebind" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val toolItems = projected.filter { item -> item.kind == ConversationItemKind.TOOL_ACTIVITY }
+
+        assertEquals(1, toolItems.size)
+        assertEquals("tool-item-1", toolItems.single().itemId)
+        assertEquals(
+            listOf("thinking-1", "assistant-1", "toolactivity-turn-tool-activity-rebind"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertTrue(toolItems.single().text.contains("search src"))
+        assertTrue(toolItems.single().text.contains("searched src/main"))
+    }
+
+    @Test
+    fun `hydrate thread decodes visible codex items into dedicated Android timeline rows`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-visible-items-history",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-visible-items"))
+                                            put("title", JsonPrimitive("Visible items thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-visible-items"))
+                                            put("updatedAt", JsonPrimitive(1_713_555_666))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-visible-items"))
+                                put("title", JsonPrimitive("Visible items thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-visible-items"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-visible-items"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("mcp-history-1"))
+                                                                put("type", JsonPrimitive("mcp_tool_call"))
+                                                                put("server", JsonPrimitive("web"))
+                                                                put("tool", JsonPrimitive("search_query"))
+                                                                put("status", JsonPrimitive("completed"))
+                                                                put(
+                                                                    "result",
+                                                                    buildJsonObject {
+                                                                        put(
+                                                                            "content",
+                                                                            buildJsonArray {
+                                                                                add(
+                                                                                    buildJsonObject {
+                                                                                        put("type", JsonPrimitive("text"))
+                                                                                        put("text", JsonPrimitive("MCP result summary"))
+                                                                                    },
+                                                                                )
+                                                                            },
+                                                                        )
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("search-history-1"))
+                                                                put("type", JsonPrimitive("web_search"))
+                                                                put("query", JsonPrimitive("compose image preview"))
+                                                                put(
+                                                                    "action",
+                                                                    buildJsonObject {
+                                                                        put("type", JsonPrimitive("openPage"))
+                                                                        put("url", JsonPrimitive("https://developer.android.com"))
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("image-view-1"))
+                                                                put("type", JsonPrimitive("image_view"))
+                                                                put("path", JsonPrimitive("/tmp/preview.png"))
+                                                            },
+                                                        )
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("image-generation-1"))
+                                                                put("type", JsonPrimitive("image_generation"))
+                                                                put("revisedPrompt", JsonPrimitive("A local architecture diagram"))
+                                                                put("savedPath", JsonPrimitive("/tmp/generated-diagram.png"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-visible-items")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-visible-items" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+            val mcpItem = projected.single { item -> item.kind == ConversationItemKind.MCP_TOOL_CALL }
+            assertEquals("Called web/search_query", mcpItem.text)
+            assertTrue(mcpItem.supportingText.orEmpty().contains("MCP result summary"))
+
+            val webSearchItem = projected.single { item -> item.kind == ConversationItemKind.WEB_SEARCH }
+            assertEquals("Searched the web", webSearchItem.text)
+            assertTrue(webSearchItem.supportingText.orEmpty().contains("https://developer.android.com"))
+
+            val imageViewItem = projected.single { item -> item.kind == ConversationItemKind.IMAGE_VIEW }
+            assertEquals("Viewed Image", imageViewItem.text)
+            assertEquals(1, imageViewItem.attachments.size)
+            assertTrue(imageViewItem.attachments.single().uriString.startsWith("file:"))
+
+            val imageGenerationItem = projected.single { item -> item.kind == ConversationItemKind.IMAGE_GENERATION }
+            assertEquals("Generated Image", imageGenerationItem.text)
+            assertTrue(imageGenerationItem.supportingText.orEmpty().contains("A local architecture diagram"))
+            assertEquals(1, imageGenerationItem.attachments.size)
+            assertTrue(imageGenerationItem.attachments.single().uriString.startsWith("file:"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
     private suspend fun TestScope.awaitSecureState(
         coordinator: SecureConnectionCoordinator,
         expectedState: SecureConnectionState,

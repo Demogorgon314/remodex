@@ -6,7 +6,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.SystemClock
 import android.text.format.DateFormat
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -163,6 +162,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -259,17 +259,6 @@ private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
 private val ComposerStopGlyphSize = 10.dp
 private val ComposerStopGlyphCornerRadius = 2.5.dp
-private const val StreamingMarkdownPreviewThrottleMs = 150L
-private const val StreamingMarkdownPreviewMaxChars = 3_500
-private val StreamingMarkdownImageRegex = Regex("""!\[[^\]]*]\([^)]+\)""")
-private val StreamingMarkdownTableDelimiterRegex = Regex(
-    """^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$""",
-    setOf(RegexOption.MULTILINE),
-)
-private val StreamingMarkdownTableRowRegex = Regex(
-    """^\s*\|(?:[^|\n]*\|){2,}\s*$""",
-    setOf(RegexOption.MULTILINE),
-)
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
@@ -1668,29 +1657,6 @@ private fun ConversationMarkdownText(
 
 internal fun formatStreamingPlainTextForDisplay(text: String): String {
     return text
-}
-
-internal fun shouldRenderStreamingMarkdownPreview(text: String): Boolean {
-    if (text.isBlank()) {
-        return false
-    }
-    if (text.length > StreamingMarkdownPreviewMaxChars) {
-        return false
-    }
-    return !containsHeavyStreamingMarkdownBlock(text)
-}
-
-internal fun containsHeavyStreamingMarkdownBlock(text: String): Boolean {
-    if (text.contains("```mermaid", ignoreCase = true)) {
-        return true
-    }
-    if (StreamingMarkdownImageRegex.containsMatchIn(text)) {
-        return true
-    }
-    if (!StreamingMarkdownTableDelimiterRegex.containsMatchIn(text)) {
-        return false
-    }
-    return StreamingMarkdownTableRowRegex.containsMatchIn(text)
 }
 
 @Composable
@@ -6314,7 +6280,7 @@ private fun AssistantConversationRow(
         ) {
             if (item.text.isNotBlank()) {
                 if (item.isStreaming) {
-                    StreamingAssistantMarkdownText(
+                    LightweightStreamingAssistantMarkdownText(
                         text = item.text,
                         chrome = chrome,
                     )
@@ -6357,52 +6323,18 @@ private fun AssistantConversationRow(
 }
 
 @Composable
-private fun StreamingAssistantMarkdownText(
+private fun LightweightStreamingAssistantMarkdownText(
     text: String,
     chrome: RemodexConversationChrome,
 ) {
     val displayText = remember(text) { formatStreamingPlainTextForDisplay(text) }
-    val allowsMarkdownPreview = remember(text) {
-        shouldRenderStreamingMarkdownPreview(text)
-    }
-    var previewText by remember { mutableStateOf<String?>(null) }
-    var lastPreviewAppliedAtMs by remember { mutableStateOf(0L) }
-
-    LaunchedEffect(text, allowsMarkdownPreview) {
-        if (!allowsMarkdownPreview) {
-            previewText = null
-            lastPreviewAppliedAtMs = 0L
-            return@LaunchedEffect
-        }
-
-        val now = SystemClock.uptimeMillis()
-        val elapsed = now - lastPreviewAppliedAtMs
-        if (previewText == null || elapsed >= StreamingMarkdownPreviewThrottleMs) {
-            previewText = text
-            lastPreviewAppliedAtMs = now
-            return@LaunchedEffect
-        }
-
-        delay(StreamingMarkdownPreviewThrottleMs - elapsed)
-        previewText = text
-        lastPreviewAppliedAtMs = SystemClock.uptimeMillis()
-    }
-
-    if (previewText == text && allowsMarkdownPreview) {
-        ConversationMarkdownText(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = chrome.bodyText,
-        )
-    } else {
-        Text(
-            text = displayText,
-            modifier = Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-            color = chrome.bodyText,
-            softWrap = true,
-        )
-    }
+    Text(
+        text = displayText,
+        modifier = Modifier.fillMaxWidth(),
+        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+        color = chrome.bodyText,
+        softWrap = true,
+    )
 }
 
 @Composable
@@ -6430,6 +6362,22 @@ private fun SystemConversationRow(
                 accessoryState = accessoryState,
             )
             ConversationItemKind.TOOL_ACTIVITY -> ToolActivityConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+            ConversationItemKind.MCP_TOOL_CALL -> McpToolCallConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+            ConversationItemKind.WEB_SEARCH -> WebSearchConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+            ConversationItemKind.IMAGE_VIEW -> ImageViewConversationRow(
+                item = item,
+                accessoryState = accessoryState,
+            )
+            ConversationItemKind.IMAGE_GENERATION -> ImageGenerationConversationRow(
                 item = item,
                 accessoryState = accessoryState,
             )
@@ -6514,6 +6462,211 @@ private fun ToolActivityConversationRow(
                 TerminalRunningIndicator()
             }
         }
+    }
+}
+
+@Composable
+private fun McpToolCallConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
+    StructuredSystemSummaryRow(
+        item = item,
+        accessoryState = accessoryState,
+    )
+}
+
+@Composable
+private fun WebSearchConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
+    StructuredSystemSummaryRow(
+        item = item,
+        accessoryState = accessoryState,
+    )
+}
+
+@Composable
+private fun ImageViewConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
+    StructuredSystemSummaryRow(
+        item = item,
+        accessoryState = accessoryState,
+        showAttachments = true,
+    )
+}
+
+@Composable
+private fun ImageGenerationConversationRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+) {
+    StructuredSystemSummaryRow(
+        item = item,
+        accessoryState = accessoryState,
+        showAttachments = true,
+    )
+}
+
+@Composable
+private fun StructuredSystemSummaryRow(
+    item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
+    showAttachments: Boolean = false,
+) {
+    val chrome = remodexConversationChrome()
+    val appearance = remember(item.kind, chrome) {
+        structuredSystemSummaryAppearance(
+            kind = item.kind,
+            chrome = chrome,
+        )
+    }
+    val hasDetails = remember(item.supportingText, item.attachments, showAttachments) {
+        item.supportingText?.isNotBlank() == true || (showAttachments && item.attachments.isNotEmpty())
+    }
+    var expanded by rememberSaveable(item.id) { mutableStateOf(item.isStreaming && hasDetails) }
+    var wasStreaming by rememberSaveable(item.id) { mutableStateOf(item.isStreaming) }
+
+    LaunchedEffect(item.id, item.isStreaming, hasDetails) {
+        when {
+            item.isStreaming && hasDetails && !wasStreaming -> expanded = true
+            !item.isStreaming && wasStreaming -> expanded = false
+            !hasDetails -> expanded = false
+        }
+        wasStreaming = item.isStreaming
+    }
+
+    ConversationMessageActionContainer(
+        text = listOfNotNull(
+            item.text.takeIf(String::isNotBlank),
+            item.supportingText?.takeIf(String::isNotBlank),
+        ).joinToString(separator = "\n\n"),
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+    ) { showContextMenuAt ->
+        Column(
+            modifier = Modifier.animateContentSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = if (hasDetails) {
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                } else {
+                    Modifier.fillMaxWidth()
+                },
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                appearance.icon?.let { icon ->
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = appearance.titleColor,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                item.text.takeIf(String::isNotBlank)?.let { text ->
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                        color = appearance.titleColor,
+                        modifier = Modifier.weight(1f),
+                    )
+                } ?: Spacer(modifier = Modifier.weight(1f))
+                if (hasDetails) {
+                    Icon(
+                        imageVector = Icons.Outlined.ExpandMore,
+                        contentDescription = if (expanded) "Collapse details" else "Expand details",
+                        tint = appearance.detailColor,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .graphicsLayer {
+                                rotationZ = if (expanded) 180f else 0f
+                            },
+                    )
+                }
+            }
+            AnimatedVisibility(visible = !hasDetails || expanded) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                )
+                {
+                    item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
+                        Text(
+                            text = supportingText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = appearance.detailColor,
+                        )
+                    }
+                    if (showAttachments && item.attachments.isNotEmpty()) {
+                        MessageAttachmentStrip(
+                            attachments = item.attachments,
+                            alignToEnd = false,
+                        )
+                    }
+                }
+            }
+            if (item.isStreaming && accessoryState?.showsRunningIndicator != true) {
+                MiniTypingIndicator()
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
+        }
+    }
+}
+
+private data class StructuredSystemSummaryAppearance(
+    val icon: ImageVector?,
+    val titleColor: Color,
+    val detailColor: Color,
+)
+
+private fun structuredSystemSummaryAppearance(
+    kind: ConversationItemKind,
+    chrome: RemodexConversationChrome,
+): StructuredSystemSummaryAppearance {
+    val neutralTitle = chrome.secondaryText.copy(alpha = 0.94f)
+    val neutralDetail = chrome.tertiaryText
+    return when (kind) {
+        ConversationItemKind.WEB_SEARCH -> StructuredSystemSummaryAppearance(
+            icon = Icons.Outlined.Search,
+            titleColor = lerp(neutralTitle, chrome.accent, 0.34f),
+            detailColor = lerp(neutralDetail, chrome.accent, 0.1f),
+        )
+
+        ConversationItemKind.MCP_TOOL_CALL -> StructuredSystemSummaryAppearance(
+            icon = Icons.Outlined.Bolt,
+            titleColor = lerp(neutralTitle, chrome.titleText, 0.16f),
+            detailColor = neutralDetail,
+        )
+
+        ConversationItemKind.IMAGE_VIEW -> StructuredSystemSummaryAppearance(
+            icon = Icons.Outlined.CameraAlt,
+            titleColor = lerp(neutralTitle, chrome.warning, 0.28f),
+            detailColor = lerp(neutralDetail, chrome.warning, 0.08f),
+        )
+
+        ConversationItemKind.IMAGE_GENERATION -> StructuredSystemSummaryAppearance(
+            icon = Icons.Outlined.AddPhotoAlternate,
+            titleColor = lerp(neutralTitle, chrome.warning, 0.34f),
+            detailColor = lerp(neutralDetail, chrome.warning, 0.12f),
+        )
+
+        else -> StructuredSystemSummaryAppearance(
+            icon = null,
+            titleColor = neutralTitle,
+            detailColor = neutralDetail,
+        )
     }
 }
 
@@ -9729,12 +9882,20 @@ private fun MessageAttachmentStrip(
                         modifier = Modifier.padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        val inlinePreviewBitmap = remember(attachment.renderUriString) {
-                            decodeInlineImageDataUrlBytes(attachment.renderUriString)
+                        val renderUri = attachment.renderUriString
+                        val canRenderThumbnail = remember(renderUri) {
+                            canRenderAttachmentThumbnail(renderUri)
+                        }
+                        val inlinePreviewBitmap = remember(renderUri, canRenderThumbnail) {
+                            if (!canRenderThumbnail) {
+                                null
+                            } else {
+                                decodeInlineImageDataUrlBytes(renderUri)
                                 ?.let { previewBytes ->
                                     BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size)
                                 }
                                 ?.asImageBitmap()
+                            }
                         }
                         if (inlinePreviewBitmap != null) {
                             Image(
@@ -9745,9 +9906,22 @@ private fun MessageAttachmentStrip(
                                     .height(76.dp),
                                 contentScale = ContentScale.Crop,
                             )
+                        } else if (!canRenderThumbnail) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(76.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = "Preview on Mac only",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = chrome.secondaryText,
+                                )
+                            }
                         } else {
                             AsyncImage(
-                                model = attachment.renderUriString,
+                                model = renderUri,
                                 contentDescription = attachment.displayName,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -9767,6 +9941,31 @@ private fun MessageAttachmentStrip(
             }
         }
     }
+}
+
+internal fun canRenderAttachmentThumbnail(uriString: String): Boolean {
+    val normalized = uriString.trim().lowercase()
+    if (normalized.isEmpty()) {
+        return false
+    }
+    if (normalized.startsWith("data:image")) {
+        return true
+    }
+    if (
+        normalized.startsWith("http://") ||
+        normalized.startsWith("https://") ||
+        normalized.startsWith("content://") ||
+        normalized.startsWith("android.resource://")
+    ) {
+        return true
+    }
+    if (!normalized.startsWith("file:")) {
+        return false
+    }
+    return normalized.startsWith("file:///storage/") ||
+        normalized.startsWith("file:///sdcard/") ||
+        normalized.startsWith("file:///data/user/") ||
+        normalized.startsWith("file:///data/data/")
 }
 
 @Composable

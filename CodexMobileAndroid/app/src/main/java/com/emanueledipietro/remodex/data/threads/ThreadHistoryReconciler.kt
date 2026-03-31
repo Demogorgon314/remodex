@@ -182,6 +182,10 @@ internal object ThreadHistoryReconciler {
             val turnId = normalizedIdentifier(historyItem.turnId)
             when (historyItem.kind) {
                 ConversationItemKind.REASONING,
+                ConversationItemKind.MCP_TOOL_CALL,
+                ConversationItemKind.WEB_SEARCH,
+                ConversationItemKind.IMAGE_VIEW,
+                ConversationItemKind.IMAGE_GENERATION,
                 ConversationItemKind.FILE_CHANGE,
                 ConversationItemKind.SUBAGENT_ACTION,
                 ConversationItemKind.USER_INPUT_PROMPT,
@@ -241,6 +245,10 @@ internal object ThreadHistoryReconciler {
                     }
                 }
 
+                ConversationItemKind.MCP_TOOL_CALL,
+                ConversationItemKind.WEB_SEARCH,
+                ConversationItemKind.IMAGE_VIEW,
+                ConversationItemKind.IMAGE_GENERATION,
                 ConversationItemKind.COMMAND_EXECUTION -> {
                     val incomingItemId = normalizedIdentifier(historyItem.itemId)
                     if (incomingItemId != null) {
@@ -251,7 +259,11 @@ internal object ThreadHistoryReconciler {
                         }.takeIf { it >= 0 }?.let { return it }
                     }
                     val incomingCommandKey = normalizedCommandExecutionPreviewKey(historyItem.text)
-                    if (turnId != null && incomingCommandKey != null) {
+                    if (
+                        historyItem.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                        turnId != null &&
+                        incomingCommandKey != null
+                    ) {
                         merged.indexOfLast { candidate ->
                             candidate.speaker == ConversationSpeaker.SYSTEM &&
                                 candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
@@ -326,7 +338,13 @@ internal object ThreadHistoryReconciler {
                 ) ||
             (
                 value.speaker == ConversationSpeaker.SYSTEM &&
-                    value.kind == ConversationItemKind.TOOL_ACTIVITY &&
+                    (
+                        value.kind == ConversationItemKind.TOOL_ACTIVITY ||
+                            value.kind == ConversationItemKind.MCP_TOOL_CALL ||
+                            value.kind == ConversationItemKind.WEB_SEARCH ||
+                            value.kind == ConversationItemKind.IMAGE_VIEW ||
+                            value.kind == ConversationItemKind.IMAGE_GENERATION
+                        ) &&
                     serverItemId != null &&
                     localItemId != serverItemId
                 )
@@ -338,6 +356,9 @@ internal object ThreadHistoryReconciler {
         }
         if (value.attachments.isEmpty() && serverItem.attachments.isNotEmpty()) {
             value = value.copy(attachments = serverItem.attachments)
+        }
+        if (value.supportingText.isNullOrBlank() && !serverItem.supportingText.isNullOrBlank()) {
+            value = value.copy(supportingText = serverItem.supportingText)
         }
 
         val serverText = normalizedText(serverItem.text)

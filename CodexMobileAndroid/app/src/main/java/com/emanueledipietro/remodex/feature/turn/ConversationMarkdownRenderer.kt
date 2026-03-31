@@ -118,6 +118,8 @@ private val mermaidFenceRegex = Regex(
     option = RegexOption.IGNORE_CASE,
 )
 private val markdownImageTitleRegex = Regex("""^(.*)\s+(?:"([^"]*)"|'([^']*)')$""")
+private const val MarkdownAndroidViewMaxChars = 1_500
+private const val MarkdownAndroidViewMaxLines = 48
 
 private data class ConversationMarkdownTextRenderToken(
     val markdownToken: String,
@@ -400,6 +402,46 @@ private fun ConversationMarkdownTextSegment(
     enablesSelection: Boolean,
     onLongPress: ((IntOffset) -> Unit)?,
 ) {
+    if (shouldUsePlainTextMarkdownFallback(markdown)) {
+        val longPressModifier = if (!enablesSelection && onLongPress != null) {
+            Modifier.pointerInput(onLongPress) {
+                detectTapGestures(
+                    onLongPress = { offset ->
+                        onLongPress(
+                            IntOffset(
+                                x = offset.x.toInt(),
+                                y = offset.y.toInt(),
+                            ),
+                        )
+                    },
+                )
+            }
+        } else {
+            Modifier
+        }
+        val contentModifier = Modifier
+            .fillMaxWidth()
+            .then(longPressModifier)
+        if (enablesSelection) {
+            SelectionContainer {
+                androidx.compose.material3.Text(
+                    text = markdown,
+                    modifier = contentModifier,
+                    style = style,
+                    color = color,
+                )
+            }
+        } else {
+            androidx.compose.material3.Text(
+                text = markdown,
+                modifier = contentModifier,
+                style = style,
+                color = color,
+            )
+        }
+        return
+    }
+
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val density = LocalDensity.current
@@ -564,6 +606,13 @@ private fun ConversationMarkdownTextSegment(
             }
         },
     )
+}
+
+internal fun shouldUsePlainTextMarkdownFallback(markdown: String): Boolean {
+    if (markdown.length > MarkdownAndroidViewMaxChars) {
+        return true
+    }
+    return markdown.lineSequence().count() > MarkdownAndroidViewMaxLines
 }
 
 @Composable
