@@ -22,6 +22,7 @@ enum class ConversationItemKind {
     COMMAND_EXECUTION,
     CONTEXT_COMPACTION,
     SUBAGENT_ACTION,
+    PLAN_UPDATE,
     PLAN,
     USER_INPUT_PROMPT,
 }

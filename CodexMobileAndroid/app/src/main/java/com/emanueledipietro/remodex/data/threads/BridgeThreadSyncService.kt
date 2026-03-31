@@ -2520,11 +2520,9 @@ class BridgeThreadSyncService(
         val turnId = extractTurnId(paramsObject)?.takeIf(String::isNotBlank) ?: return
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
         threadIdByTurnId[turnId] = threadId
-        upsertPlanMessage(
+        upsertPlanUpdateMessage(
             threadId = threadId,
             turnId = turnId,
-            itemId = null,
-            text = null,
             planState = decodeHistoryPlanState(paramsObject),
             isStreaming = true,
         )
@@ -3673,6 +3671,65 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun upsertPlanUpdateMessage(
+        threadId: String,
+        turnId: String?,
+        planState: RemodexPlanState?,
+        isStreaming: Boolean,
+    ) {
+        val messageId = streamingMessageId(
+            itemId = null,
+            turnId = turnId,
+            fallbackPrefix = "planupdate",
+        )
+        val existingItem = projectedTimelineItem(
+            threadId = threadId,
+            messageId = messageId,
+            turnId = turnId,
+            itemId = null,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.PLAN_UPDATE,
+        )
+        val resolvedPlanState = when {
+            existingItem?.planState == null -> planState
+            planState == null -> existingItem.planState
+            else -> existingItem.planState.copy(
+                explanation = planState.explanation ?: existingItem.planState.explanation,
+                steps = if (planState.steps.isNotEmpty()) planState.steps else existingItem.planState.steps,
+            )
+        }
+        val resolvedText = resolvedPlanText(
+            existingText = existingItem?.text,
+            incomingText = null,
+            resolvedPlanState = resolvedPlanState,
+            isStreaming = isStreaming,
+            incomingTextIsDelta = false,
+        ) ?: if (isStreaming) "Updating plan..." else "Updated plan."
+        upsertStreamingItem(
+            threadId = threadId,
+            item = timelineItem(
+                id = existingItem?.id ?: messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = resolvedText,
+                kind = ConversationItemKind.PLAN_UPDATE,
+                turnId = turnId,
+                itemId = null,
+                isStreaming = isStreaming,
+                planState = resolvedPlanState,
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = existingItem?.id ?: messageId,
+                    turnId = turnId,
+                    itemId = null,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.PLAN_UPDATE,
+                ),
+                assistantChangeSet = existingItem?.assistantChangeSet,
+            ),
+            isRunning = isStreaming || activeTurnIdByThread[threadId] != null,
+        )
+    }
+
     private fun upsertStructuredUserInputPrompt(
         threadId: String,
         turnId: String?,
@@ -4228,6 +4285,7 @@ class BridgeThreadSyncService(
             ConversationItemKind.CHAT,
             ConversationItemKind.REASONING,
             ConversationItemKind.FILE_CHANGE,
+            ConversationItemKind.PLAN_UPDATE,
             ConversationItemKind.PLAN,
             ConversationItemKind.USER_INPUT_PROMPT -> ConversationSystemTurnOrderingHint.AUTO
         }
@@ -4324,6 +4382,7 @@ class BridgeThreadSyncService(
             ConversationItemKind.IMAGE_VIEW -> "imageview"
             ConversationItemKind.IMAGE_GENERATION -> "imagegeneration"
             ConversationItemKind.FILE_CHANGE -> "filechange"
+            ConversationItemKind.PLAN_UPDATE -> "planupdate"
             ConversationItemKind.PLAN -> "plan"
             ConversationItemKind.USER_INPUT_PROMPT -> "userinputprompt"
             ConversationItemKind.SUBAGENT_ACTION -> "subagentaction"

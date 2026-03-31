@@ -189,6 +189,7 @@ internal object ThreadHistoryReconciler {
                 ConversationItemKind.IMAGE_GENERATION,
                 ConversationItemKind.FILE_CHANGE,
                 ConversationItemKind.SUBAGENT_ACTION,
+                ConversationItemKind.PLAN_UPDATE,
                 ConversationItemKind.USER_INPUT_PROMPT,
                 -> {
                     if (turnId != null) {

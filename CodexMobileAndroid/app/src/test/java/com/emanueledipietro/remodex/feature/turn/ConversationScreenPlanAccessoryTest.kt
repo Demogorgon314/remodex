@@ -98,6 +98,32 @@ class ConversationScreenPlanAccessoryTest {
     }
 
     @Test
+    fun `timeline layout pins checklist plan updates above the composer`() {
+        val planUpdate = RemodexConversationItem(
+            id = "plan-update",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.PLAN_UPDATE,
+            text = "Track migration work",
+            isStreaming = true,
+            planState = RemodexPlanState(
+                explanation = "Track migration work",
+                steps = listOf(
+                    RemodexPlanStep(id = "1", step = "Inspect Android path", status = RemodexPlanStepStatus.IN_PROGRESS),
+                    RemodexPlanStep(id = "2", step = "Split plan semantics", status = RemodexPlanStepStatus.PENDING),
+                ),
+            ),
+        )
+
+        val layout = buildConversationTimelineLayout(
+            listOf(planUpdate),
+            activePlanningMode = RemodexPlanningMode.AUTO,
+        )
+
+        assertEquals("plan-update", layout.pinnedPlanItem?.id)
+        assertTrue(layout.timelineItems.isEmpty())
+    }
+
+    @Test
     fun `timeline layout hides composer takeover prompt while keeping completed plan visible`() {
         val prompt = promptItem(id = "prompt")
         val completedPlan = planItem(

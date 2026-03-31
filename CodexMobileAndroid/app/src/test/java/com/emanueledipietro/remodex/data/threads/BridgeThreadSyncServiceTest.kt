@@ -3336,7 +3336,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `item plan delta after turn plan update reuses the synthetic plan row`() = runTest {
+    fun `item plan delta after turn plan update stays separate from checklist plan updates`() = runTest {
         val coordinator = SecureConnectionCoordinator(
             store = InMemorySecureStore(),
             trustedSessionResolver = UnusedTrustedSessionResolver,
@@ -3411,22 +3411,26 @@ class BridgeThreadSyncServiceTest {
             },
         )
 
-        val planItems = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
-            .filter { item -> item.kind == ConversationItemKind.PLAN }
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        val planUpdateItems = items.filter { item -> item.kind == ConversationItemKind.PLAN_UPDATE }
+        val planItems = items.filter { item -> item.kind == ConversationItemKind.PLAN }
 
-        assertEquals(1, planItems.size)
-        assertEquals("plan-turn-plan-live", planItems.single().id)
-        assertEquals("plan-item-1", planItems.single().itemId)
-        assertEquals("# Final plan\n- Audit current flow\n- Implement Android fix", planItems.single().text)
-        assertNotNull(planItems.single().planState)
+        assertEquals(1, planUpdateItems.size)
+        assertEquals("planupdate-turn-plan-live", planUpdateItems.single().id)
+        assertEquals("Work through the rollout safely.", planUpdateItems.single().text)
         assertEquals(
             listOf("Audit current flow", "Implement Android fix"),
-            planItems.single().planState?.steps?.map { step -> step.step },
+            planUpdateItems.single().planState?.steps?.map { step -> step.step },
         )
+        assertEquals(1, planItems.size)
+        assertEquals("plan-item-1", planItems.single().id)
+        assertEquals("plan-item-1", planItems.single().itemId)
+        assertEquals("# Final plan\n- Audit current flow\n- Implement Android fix", planItems.single().text)
+        assertNull(planItems.single().planState)
     }
 
     @Test
-    fun `completed plan lifecycle after turn plan update keeps one row and preserves plan state`() = runTest {
+    fun `completed plan lifecycle after turn plan update keeps checklist and proposed plan rows separate`() = runTest {
         val coordinator = SecureConnectionCoordinator(
             store = InMemorySecureStore(),
             trustedSessionResolver = UnusedTrustedSessionResolver,
@@ -3523,11 +3527,17 @@ class BridgeThreadSyncServiceTest {
             true,
         )
 
-        val planItems = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
-            .filter { item -> item.kind == ConversationItemKind.PLAN }
+        val items = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+        val planUpdateItems = items.filter { item -> item.kind == ConversationItemKind.PLAN_UPDATE }
+        val planItems = items.filter { item -> item.kind == ConversationItemKind.PLAN }
 
+        assertEquals(1, planUpdateItems.size)
+        assertEquals(
+            listOf("Align identifiers", "Verify focused tests"),
+            planUpdateItems.single().planState?.steps?.map { step -> step.step },
+        )
         assertEquals(1, planItems.size)
-        assertEquals("plan-turn-plan-complete", planItems.single().id)
+        assertEquals("plan-item-complete", planItems.single().id)
         assertEquals("plan-item-complete", planItems.single().itemId)
         assertFalse(planItems.single().isStreaming)
         assertEquals("# Final plan\n- Align identifiers\n- Verify focused tests", planItems.single().text)

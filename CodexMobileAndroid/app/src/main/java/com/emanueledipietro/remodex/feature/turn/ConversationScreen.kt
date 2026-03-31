@@ -396,7 +396,8 @@ internal fun buildConversationTimelineLayout(
 }
 
 private fun RemodexConversationItem.isPlanSystemMessage(): Boolean {
-    return speaker == ConversationSpeaker.SYSTEM && kind == ConversationItemKind.PLAN
+    return speaker == ConversationSpeaker.SYSTEM &&
+        (kind == ConversationItemKind.PLAN || kind == ConversationItemKind.PLAN_UPDATE)
 }
 
 private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(
@@ -404,6 +405,10 @@ private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(
 ): Boolean {
     if (!isPlanSystemMessage()) {
         return false
+    }
+
+    if (kind == ConversationItemKind.PLAN_UPDATE) {
+        return true
     }
 
     if (activePlanningMode == RemodexPlanningMode.PLAN) {
@@ -517,6 +522,28 @@ private fun planExplanationText(planItem: RemodexConversationItem): String? {
 private fun planPrimaryBodyText(planItem: RemodexConversationItem): String? {
     return normalizedPlanText(planItem.text)
         ?: normalizedPlanText(planItem.planState?.explanation)
+}
+
+private fun planUpdateSummaryText(item: RemodexConversationItem): String? {
+    return normalizedPlanText(item.planState?.explanation)
+        ?: normalizedPlanText(item.text)
+        ?: item.planState?.steps?.firstOrNull()?.step?.trim()?.takeIf(String::isNotEmpty)
+}
+
+private fun planUpdateCopyText(item: RemodexConversationItem): String {
+    val summaryText = planUpdateSummaryText(item)
+    val stepLines = item.planState?.steps.orEmpty().map { step ->
+        val marker = when (step.status) {
+            RemodexPlanStepStatus.PENDING -> "[ ]"
+            RemodexPlanStepStatus.IN_PROGRESS -> "[~]"
+            RemodexPlanStepStatus.COMPLETED -> "[x]"
+        }
+        "$marker ${step.step}"
+    }
+    return buildList {
+        summaryText?.let(::add)
+        addAll(stepLines)
+    }.joinToString(separator = "\n").trim()
 }
 
 internal fun shouldCollapsePlanConversationRow(
@@ -886,7 +913,10 @@ fun ConversationScreen(
     val timelineItems = conversationLayout.timelineItems
     val selectedPlanSheetItem = remember(thread.messages, selectedPlanSheetItemId) {
         selectedPlanSheetItemId?.let { planItemId ->
-            thread.messages.firstOrNull { item -> item.id == planItemId && item.kind == ConversationItemKind.PLAN }
+            thread.messages.firstOrNull { item ->
+                item.id == planItemId &&
+                    (item.kind == ConversationItemKind.PLAN || item.kind == ConversationItemKind.PLAN_UPDATE)
+            }
         }
     }
     val blockAccessories = remember(
@@ -6412,6 +6442,9 @@ private fun SystemConversationRow(
                 onOpenSubagentThread = onOpenSubagentThread,
                 onHydrateSubagentThread = onHydrateSubagentThread,
             )
+            ConversationItemKind.PLAN_UPDATE -> PlanUpdateConversationRow(
+                item = item,
+            )
             ConversationItemKind.USER_INPUT_PROMPT -> if (item.isStreaming) {
                 StructuredUserInputRow(
                     request = item.structuredUserInputRequest,
@@ -6428,8 +6461,92 @@ private fun SystemConversationRow(
                 accessoryState = accessoryState,
             )
         }
-        accessoryState?.copyText?.takeUnless { item.kind == ConversationItemKind.PLAN }?.let { copyText ->
+        accessoryState?.copyText?.takeUnless {
+            item.kind == ConversationItemKind.PLAN || item.kind == ConversationItemKind.PLAN_UPDATE
+        }?.let { copyText ->
             ConversationCopyBlockButton(text = copyText)
+        }
+    }
+}
+
+@Composable
+private fun PlanUpdateConversationRow(
+    item: RemodexConversationItem,
+) {
+    val chrome = remodexConversationChrome()
+    val steps = remember(item) { item.planState?.steps.orEmpty() }
+    val summaryText = remember(item) { planUpdateSummaryText(item) }
+    val copyText = remember(item) { planUpdateCopyText(item) }
+    val completedCount = remember(steps) {
+        steps.count { step -> step.status == RemodexPlanStepStatus.COMPLETED }
+    }
+
+    ConversationMessageActionContainer(
+        text = copyText,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = copyText.isNotBlank(),
+    ) { _ ->
+        Surface(
+            color = chrome.mutedSurface,
+            shape = RemodexConversationShapes.card,
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Checklist,
+                        contentDescription = null,
+                        tint = chrome.secondaryText,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = if (item.isStreaming) "Updating plan" else "Updated plan",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (steps.isNotEmpty()) {
+                        Text(
+                            text = "$completedCount/${steps.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = chrome.tertiaryText,
+                        )
+                    }
+                    if (item.isStreaming) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 1.75.dp,
+                            color = chrome.secondaryText,
+                        )
+                    }
+                }
+                summaryText?.let { summary ->
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
+                    )
+                }
+                if (steps.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        steps.forEach { step ->
+                            PlanDetailStepRow(step = step)
+                        }
+                    }
+                }
+            }
         }
     }
 }

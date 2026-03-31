@@ -24,6 +24,7 @@ object TurnTimelineReducer {
         IMAGE_GENERATION(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         SUBAGENT_ACTION(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         CHAT(leadingPriority = 4, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
+        PLAN_UPDATE(leadingPriority = 4, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
         PLAN(leadingPriority = 4, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
         FILE_CHANGE(leadingPriority = 5, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
         USER_INPUT_PROMPT(leadingPriority = 6, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
@@ -43,6 +44,7 @@ object TurnTimelineReducer {
             ConversationItemKind.IMAGE_GENERATION -> SystemTurnOrderingPolicy.IMAGE_GENERATION
             ConversationItemKind.SUBAGENT_ACTION -> SystemTurnOrderingPolicy.SUBAGENT_ACTION
             ConversationItemKind.CHAT -> SystemTurnOrderingPolicy.CHAT
+            ConversationItemKind.PLAN_UPDATE -> SystemTurnOrderingPolicy.PLAN_UPDATE
             ConversationItemKind.PLAN -> SystemTurnOrderingPolicy.PLAN
             ConversationItemKind.FILE_CHANGE -> SystemTurnOrderingPolicy.FILE_CHANGE
             ConversationItemKind.USER_INPUT_PROMPT -> SystemTurnOrderingPolicy.USER_INPUT_PROMPT
@@ -581,6 +583,7 @@ object TurnTimelineReducer {
                 kind == ConversationItemKind.WEB_SEARCH ||
                 kind == ConversationItemKind.IMAGE_VIEW ||
                 kind == ConversationItemKind.IMAGE_GENERATION ||
+                kind == ConversationItemKind.PLAN_UPDATE ||
                 kind == ConversationItemKind.PLAN ||
                 kind == ConversationItemKind.FILE_CHANGE
             ConversationSpeaker.USER -> false
@@ -1063,6 +1066,7 @@ object TurnTimelineReducer {
                 ConversationItemKind.IMAGE_VIEW -> "imageview"
                 ConversationItemKind.IMAGE_GENERATION -> "imagegeneration"
                 ConversationItemKind.FILE_CHANGE -> "filechange"
+                ConversationItemKind.PLAN_UPDATE -> "planupdate"
                 ConversationItemKind.PLAN -> "plan"
                 ConversationItemKind.USER_INPUT_PROMPT -> "userinputprompt"
                 ConversationItemKind.SUBAGENT_ACTION -> "subagentaction"
