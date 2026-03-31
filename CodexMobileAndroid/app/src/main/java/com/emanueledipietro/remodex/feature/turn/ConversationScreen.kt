@@ -305,6 +305,18 @@ internal data class PlanComposerFlowSnapshot(
     val completedPlanItem: RemodexConversationItem? = null,
 )
 
+internal sealed interface ConversationTimelineEmptyStatePresentation {
+    data object Welcome : ConversationTimelineEmptyStatePresentation
+
+    data class PinnedPlan(
+        val snapshot: PlanAccessorySnapshot,
+    ) : ConversationTimelineEmptyStatePresentation
+
+    data class StructuredUserInput(
+        val questionCount: Int,
+    ) : ConversationTimelineEmptyStatePresentation
+}
+
 internal enum class PlanAccessoryStatus(val label: String) {
     PENDING("Pending"),
     IN_PROGRESS("In progress"),
@@ -504,6 +516,30 @@ internal fun planAccessorySnapshot(planItem: RemodexConversationItem): PlanAcces
         isStreaming = planItem.isStreaming,
         stepStatuses = steps.map { step -> step.status },
     )
+}
+
+internal fun resolveConversationTimelineEmptyStatePresentation(
+    timelineItems: List<RemodexConversationItem>,
+    pinnedPlanItem: RemodexConversationItem?,
+    takeoverPromptItem: RemodexConversationItem?,
+): ConversationTimelineEmptyStatePresentation {
+    if (timelineItems.isNotEmpty()) {
+        return ConversationTimelineEmptyStatePresentation.Welcome
+    }
+
+    takeoverPromptItem?.structuredUserInputRequest?.let { request ->
+        return ConversationTimelineEmptyStatePresentation.StructuredUserInput(
+            questionCount = request.questions.size,
+        )
+    }
+
+    pinnedPlanItem?.let { planItem ->
+        return ConversationTimelineEmptyStatePresentation.PinnedPlan(
+            snapshot = planAccessorySnapshot(planItem),
+        )
+    }
+
+    return ConversationTimelineEmptyStatePresentation.Welcome
 }
 
 private fun normalizedPlanText(rawValue: String?): String? {
@@ -911,6 +947,18 @@ fun ConversationScreen(
     }
     val pinnedPlanItem = conversationLayout.pinnedPlanItem
     val timelineItems = conversationLayout.timelineItems
+    val emptyTimelineStatePresentation = remember(
+        timelineItems,
+        pinnedPlanItem?.id,
+        planComposerFlow.takeoverPromptItem?.id,
+        planComposerFlow.takeoverPromptItem?.structuredUserInputRequest?.requestIdKey,
+    ) {
+        resolveConversationTimelineEmptyStatePresentation(
+            timelineItems = timelineItems,
+            pinnedPlanItem = pinnedPlanItem,
+            takeoverPromptItem = planComposerFlow.takeoverPromptItem,
+        )
+    }
     val selectedPlanSheetItem = remember(thread.messages, selectedPlanSheetItemId) {
         selectedPlanSheetItemId?.let { planItemId ->
             thread.messages.firstOrNull { item ->
@@ -940,9 +988,11 @@ fun ConversationScreen(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val showsEmptyTimelineState = timelineItems.isEmpty() && pinnedPlanItem == null
+    val showsEmptyTimelineState = timelineItems.isEmpty()
     val showsTimelineLoadingState =
-        showsEmptyTimelineState && (uiState.isSelectedThreadHydrating || showsThreadRunningUi)
+        showsEmptyTimelineState &&
+            emptyTimelineStatePresentation == ConversationTimelineEmptyStatePresentation.Welcome &&
+            (uiState.isSelectedThreadHydrating || showsThreadRunningUi)
     val lastTimelineItem = timelineItems.lastOrNull()
     val lastTimelineItemId = lastTimelineItem?.id
     val bottomAnchorIndex = timelineItems.size
@@ -1198,7 +1248,10 @@ fun ConversationScreen(
                                 .padding(horizontal = 16.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            ThreadWelcomeTimelineState(isLoading = showsTimelineLoadingState)
+                            ConversationTimelineEmptyState(
+                                presentation = emptyTimelineStatePresentation,
+                                isLoading = showsTimelineLoadingState,
+                            )
                         }
                     } else {
                         LazyColumn(
@@ -2153,6 +2206,123 @@ private fun ThreadWelcomeTimelineState(
         if (isLoading) {
             WelcomeLoadingIndicator()
         }
+    }
+}
+
+@Composable
+private fun ConversationTimelineEmptyState(
+    presentation: ConversationTimelineEmptyStatePresentation,
+    isLoading: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    when (presentation) {
+        ConversationTimelineEmptyStatePresentation.Welcome -> {
+            ThreadWelcomeTimelineState(
+                isLoading = isLoading,
+                modifier = modifier,
+            )
+        }
+
+        is ConversationTimelineEmptyStatePresentation.PinnedPlan -> {
+            val title = if (presentation.snapshot.status == PlanAccessoryStatus.IN_PROGRESS) {
+                "Plan in progress"
+            } else {
+                "Plan ready"
+            }
+            val summary = presentation.snapshot.summary
+                .trim()
+                .takeIf(String::isNotEmpty)
+                ?: "Codex prepared a plan for this chat."
+            TimelineAccessoryEmptyState(
+                icon = Icons.Outlined.Checklist,
+                tint = when (presentation.snapshot.status) {
+                    PlanAccessoryStatus.PENDING -> Color(0xFF4F46E5)
+                    PlanAccessoryStatus.IN_PROGRESS -> Color(0xFF2563EB)
+                    PlanAccessoryStatus.COMPLETED -> Color(0xFF16A34A)
+                },
+                title = title,
+                summary = summary,
+                detail = "Open the plan card above the composer to review the current steps.",
+                modifier = modifier,
+            )
+        }
+
+        is ConversationTimelineEmptyStatePresentation.StructuredUserInput -> {
+            val title = if (presentation.questionCount == 1) {
+                "One answer needed"
+            } else {
+                "Answers needed"
+            }
+            val summary = when (presentation.questionCount) {
+                0 -> "Codex is waiting for your input before it can continue."
+                1 -> "Codex is waiting for one answer before it can continue."
+                else -> "Codex is waiting for ${presentation.questionCount} answers before it can continue."
+            }
+            TimelineAccessoryEmptyState(
+                icon = Icons.Outlined.Info,
+                tint = Color(0xFF4F46E5),
+                title = title,
+                summary = summary,
+                detail = "Open the prompt above the composer to review the questions and reply.",
+                modifier = modifier,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TimelineAccessoryEmptyState(
+    icon: ImageVector,
+    tint: Color,
+    title: String,
+    summary: String,
+    detail: String,
+    modifier: Modifier = Modifier,
+) {
+    val chrome = remodexConversationChrome()
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .background(
+                    color = tint.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(18.dp),
+                )
+                .border(
+                    border = BorderStroke(1.dp, tint.copy(alpha = 0.18f)),
+                    shape = RoundedCornerShape(18.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(28.dp),
+            )
+        }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = chrome.titleText,
+        )
+        Text(
+            text = summary,
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.secondaryText,
+        )
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = chrome.tertiaryText,
+        )
     }
 }
 

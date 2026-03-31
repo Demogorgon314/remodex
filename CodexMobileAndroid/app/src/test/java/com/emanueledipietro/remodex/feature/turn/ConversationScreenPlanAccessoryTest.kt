@@ -160,6 +160,69 @@ class ConversationScreenPlanAccessoryTest {
     }
 
     @Test
+    fun `timeline empty state presentation surfaces pinned plan when timeline has no rows`() {
+        val pinnedPlan = planItem(
+            id = "plan-active",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Patch Android", status = RemodexPlanStepStatus.IN_PROGRESS),
+            ),
+        )
+
+        val presentation = resolveConversationTimelineEmptyStatePresentation(
+            timelineItems = emptyList(),
+            pinnedPlanItem = pinnedPlan,
+            takeoverPromptItem = null,
+        )
+
+        assertEquals(
+            ConversationTimelineEmptyStatePresentation.PinnedPlan(
+                snapshot = planAccessorySnapshot(pinnedPlan),
+            ),
+            presentation,
+        )
+    }
+
+    @Test
+    fun `timeline empty state presentation prioritizes pending structured input over pinned plan`() {
+        val pinnedPlan = planItem(
+            id = "plan-active",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Patch Android", status = RemodexPlanStepStatus.IN_PROGRESS),
+            ),
+        )
+        val prompt = promptItem(id = "prompt")
+
+        val presentation = resolveConversationTimelineEmptyStatePresentation(
+            timelineItems = emptyList(),
+            pinnedPlanItem = pinnedPlan,
+            takeoverPromptItem = prompt,
+        )
+
+        assertEquals(
+            ConversationTimelineEmptyStatePresentation.StructuredUserInput(questionCount = 1),
+            presentation,
+        )
+    }
+
+    @Test
+    fun `timeline empty state presentation stays welcome when completed plan remains in timeline`() {
+        val completedPlan = planItem(
+            id = "plan-complete",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Done", status = RemodexPlanStepStatus.COMPLETED),
+            ),
+        )
+
+        val presentation = resolveConversationTimelineEmptyStatePresentation(
+            timelineItems = listOf(completedPlan),
+            pinnedPlanItem = null,
+            takeoverPromptItem = null,
+        )
+
+        assertEquals(ConversationTimelineEmptyStatePresentation.Welcome, presentation)
+    }
+
+    @Test
     fun `timeline layout keeps streaming system plan in timeline during plan mode`() {
         val streamingPlan = planItem(
             id = "plan-streaming",
