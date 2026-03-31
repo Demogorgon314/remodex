@@ -1884,6 +1884,48 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `checking out an elsewhere branch matches trailing slash normalized worktree paths`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Feature thread",
+                        projectPath = "/tmp/remodex/.codex/worktrees/feature/test/",
+                    ),
+                    threadSummary(
+                        id = "thread-2",
+                        title = "Current thread",
+                        projectPath = "/tmp/remodex/",
+                    ),
+                ),
+                selectedThreadId = "thread-2",
+            )
+            gitStateResult = RemodexGitState(
+                branches = RemodexGitBranches(
+                    branches = listOf("main", "feature/test"),
+                    branchesCheckedOutElsewhere = setOf("feature/test"),
+                    worktreePathByBranch = mapOf(
+                        "feature/test" to "/tmp/remodex/.codex/worktrees/feature/test",
+                    ),
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.checkoutGitBranch("feature/test")
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.selectedThreadRequests)
+        assertTrue(repository.checkoutGitBranchRequests.isEmpty())
+    }
+
+    @Test
     fun `discard runtime changes requires confirmation before calling repository`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(

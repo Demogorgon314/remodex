@@ -83,6 +83,21 @@ class SidebarThreadGroupingTest {
     }
 
     @Test
+    fun `pseudo project buckets stay grouped as cloud instead of local paths`() {
+        val groups = SidebarThreadGrouping.makeGroups(
+            threads = listOf(
+                thread(id = "1", title = "Pseudo", projectPath = "_default"),
+                thread(id = "2", title = "Cloud", projectPath = ""),
+            ),
+            query = "",
+        )
+
+        assertEquals(1, groups.size)
+        assertEquals("Cloud", groups.single().label)
+        assertEquals("project:__no_project__", groups.single().id)
+    }
+
+    @Test
     fun `project expansion state initially keeps persisted collapsed groups closed`() {
         val groups = listOf(
             projectGroup(id = "project:/tmp/app"),

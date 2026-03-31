@@ -47,6 +47,7 @@ import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
+import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -3837,14 +3838,11 @@ class AppViewModel(
     }
 
     private fun normalizeRepoRoot(path: String?): String? {
-        return path?.trim()?.ifEmpty { null }
+        return normalizeRemodexFilesystemProjectPath(path)
     }
 
     private fun normalizeComparableProjectPath(path: String?): String? {
-        return path
-            ?.trim()
-            ?.removeSuffix("/")
-            ?.ifEmpty { null }
+        return normalizeRemodexFilesystemProjectPath(path)
     }
 
     private fun createPullRequestValidationMessage(gitState: RemodexGitState): String? {

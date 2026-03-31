@@ -2,6 +2,9 @@ package com.emanueledipietro.remodex.feature.threads
 
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
+import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
+import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
+import com.emanueledipietro.remodex.model.remodexProjectDisplayLabel
 import java.util.Locale
 
 enum class SidebarThreadGroupKind {
@@ -27,6 +30,8 @@ data class SidebarProjectExpansionSnapshot(
 )
 
 object SidebarThreadGrouping {
+    private const val CloudProjectGroupKey = "__no_project__"
+
     fun makeGroups(
         threads: List<RemodexThreadSummary>,
         query: String,
@@ -57,14 +62,14 @@ object SidebarThreadGrouping {
 
         val projectGroups = liveThreads
             .groupBy { thread ->
-                thread.projectPath.trim().ifBlank { "cloud" }
+                normalizeRemodexFilesystemProjectPath(thread.projectPath) ?: CloudProjectGroupKey
             }
             .map { (projectKey, projectThreads) ->
                 SidebarThreadGroup(
                     id = "project:$projectKey",
-                    label = projectLabel(projectThreads.firstOrNull()?.projectPath.orEmpty()),
+                    label = projectLabel(projectKey),
                     kind = SidebarThreadGroupKind.PROJECT,
-                    projectPath = projectThreads.firstOrNull()?.projectPath,
+                    projectPath = projectKey.takeUnless { it == CloudProjectGroupKey },
                     threads = projectThreads.sortedBy { thread -> orderByThreadId[thread.id] ?: Int.MAX_VALUE },
                 )
             }
@@ -135,30 +140,14 @@ object SidebarProjectExpansionState {
 }
 
 private fun projectLabel(projectPath: String): String {
-    val trimmed = projectPath.trim()
-    if (trimmed.isBlank()) {
-        return "Cloud"
-    }
-    return trimmed
-        .substringAfterLast('/')
-        .ifBlank { trimmed }
+    return remodexProjectDisplayLabel(projectPath)
 }
 
 private fun projectIconSystemName(projectPath: String?): String {
-    val normalizedProjectPath = projectPath?.trim()?.takeIf { it.isNotEmpty() } ?: return "cloud"
+    val normalizedProjectPath = normalizeRemodexFilesystemProjectPath(projectPath) ?: return "cloud"
     return if (isCodexManagedWorktreeProject(normalizedProjectPath)) {
         "arrow.triangle.branch"
     } else {
         "laptopcomputer"
     }
-}
-
-internal fun isCodexManagedWorktreeProject(projectPath: String): Boolean {
-    val normalized = projectPath.trim().trimEnd('/')
-    if (normalized.isEmpty()) {
-        return false
-    }
-    val components = normalized.split('/').filter { it.isNotBlank() }
-    val worktreesIndex = components.indexOf("worktrees")
-    return worktreesIndex > 0 && components.getOrNull(worktreesIndex - 1) == ".codex"
 }

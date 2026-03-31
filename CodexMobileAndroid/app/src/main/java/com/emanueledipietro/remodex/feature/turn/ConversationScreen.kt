@@ -278,7 +278,7 @@ private val ComposerMentionSkillTint = Color(0xFF4F46E5)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
 private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
-    com.emanueledipietro.remodex.feature.threads.isCodexManagedWorktreeProject(projectPath)
+    com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject(projectPath)
 
 @Composable
 private fun remodexConversationChrome(): RemodexConversationChrome =
