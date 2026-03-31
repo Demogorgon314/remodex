@@ -104,6 +104,7 @@ fun SettingsScreen(
     onLogoutGptAccount: () -> Unit,
     onOpenScanner: () -> Unit,
     onDisconnect: () -> Unit,
+    onRetryConnection: () -> Unit,
     onForgetTrustedMac: () -> Unit,
     onActivateBridgeProfile: (String) -> Unit,
     onRemoveBridgeProfile: (String) -> Unit,
@@ -115,8 +116,10 @@ fun SettingsScreen(
     val uriHandler = LocalUriHandler.current
     var isShowingGptInfo by rememberSaveable { mutableStateOf(false) }
     var isShowingGptLogoutConfirm by rememberSaveable { mutableStateOf(false) }
+    var isShowingForgetPairConfirm by rememberSaveable { mutableStateOf(false) }
     var isShowingMacNameDialog by rememberSaveable { mutableStateOf(false) }
     var pendingBridgeSwitchProfileId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingBridgeDeleteProfileId by rememberSaveable { mutableStateOf<String?>(null) }
     val archivedThreads = remember(uiState.threads) {
         uiState.threads.filter { thread -> thread.syncState.name == "ARCHIVED_LOCAL" }
     }
@@ -148,6 +151,11 @@ fun SettingsScreen(
     }
     val trustedMac = uiState.trustedMac
     val bridgeProfiles = uiState.bridgeProfiles
+    val pendingBridgeDeleteProfile = remember(pendingBridgeDeleteProfileId, bridgeProfiles) {
+        pendingBridgeDeleteProfileId?.let { profileId ->
+            bridgeProfiles.firstOrNull { profile -> profile.profileId == profileId }
+        }
+    }
     val hasRunningTurn = remember(uiState.threads) {
         uiState.threads.any { thread -> thread.isRunning }
     }
@@ -172,6 +180,19 @@ fun SettingsScreen(
         )
     }
 
+    if (isShowingForgetPairConfirm && trustedMac != null) {
+        SettingsConnectionConfirmDialog(
+            title = "Forget Pair?",
+            message = "You'll need to scan a QR code again to reconnect.",
+            confirmLabel = "Forget Pair",
+            onDismiss = { isShowingForgetPairConfirm = false },
+            onConfirm = {
+                isShowingForgetPairConfirm = false
+                onForgetTrustedMac()
+            },
+        )
+    }
+
     if (isShowingMacNameDialog && trustedMac?.deviceId != null) {
         SettingsMacNameDialog(
             currentNickname = trustedMac.currentNickname,
@@ -185,6 +206,31 @@ fun SettingsScreen(
             onSave = { nickname ->
                 onSetMacNickname(trustedMac.deviceId, nickname)
                 isShowingMacNameDialog = false
+            },
+        )
+    }
+
+    pendingBridgeDeleteProfile?.let { pendingProfile ->
+        SettingsConnectionConfirmDialog(
+            title = if (pendingProfile.isActive) {
+                "Delete current bridge?"
+            } else {
+                "Delete \"${pendingProfile.name}\"?"
+            },
+            message = if (pendingProfile.isActive) {
+                "This also forgets the current pairing."
+            } else {
+                "This removes the saved bridge from this phone."
+            },
+            confirmLabel = if (pendingProfile.isActive) "Delete Current" else "Delete",
+            onDismiss = { pendingBridgeDeleteProfileId = null },
+            onConfirm = {
+                pendingBridgeDeleteProfileId = null
+                if (pendingProfile.isActive) {
+                    onForgetTrustedMac()
+                } else {
+                    onRemoveBridgeProfile(pendingProfile.profileId)
+                }
             },
         )
     }
@@ -498,13 +544,17 @@ fun SettingsScreen(
 
                 trustedMac != null -> {
                     SettingsButton(
+                        title = "Reconnect",
+                        onClick = onRetryConnection,
+                    )
+                    SettingsButton(
                         title = "Add Bridge",
                         onClick = onOpenScanner,
                     )
                     SettingsButton(
                         title = "Forget Pair",
                         role = SettingsButtonRole.DESTRUCTIVE,
-                        onClick = onForgetTrustedMac,
+                        onClick = { isShowingForgetPairConfirm = true },
                     )
                 }
 
@@ -530,11 +580,7 @@ fun SettingsScreen(
                         pendingBridgeSwitchProfileId = profile.profileId
                     },
                     onRemove = { profile ->
-                        if (profile.isActive) {
-                            onForgetTrustedMac()
-                        } else {
-                            onRemoveBridgeProfile(profile.profileId)
-                        }
+                        pendingBridgeDeleteProfileId = profile.profileId
                     },
                 )
             }
@@ -1463,6 +1509,42 @@ private fun SettingsGptLogoutConfirmDialog(
                 Text(
                     text = "Voice transcription will not work again until you sign in on your Mac.",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun SettingsConnectionConfirmDialog(
+    title: String,
+    message: String? = null,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = confirmLabel,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        title = { Text(title) },
+        text = message?.let { resolvedMessage ->
+            @Composable {
+                Text(
+                    text = resolvedMessage,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

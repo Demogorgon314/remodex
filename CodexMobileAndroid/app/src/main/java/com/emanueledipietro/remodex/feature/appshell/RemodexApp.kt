@@ -1045,6 +1045,7 @@ private fun MainPane(
                         onLogoutGptAccount = viewModel::logoutGptAccount,
                         onOpenScanner = onOpenScanner,
                         onDisconnect = viewModel::disconnect,
+                        onRetryConnection = viewModel::retryConnection,
                         onForgetTrustedMac = viewModel::forgetTrustedMac,
                         onActivateBridgeProfile = viewModel::activateBridgeProfile,
                         onRemoveBridgeProfile = viewModel::removeBridgeProfile,
