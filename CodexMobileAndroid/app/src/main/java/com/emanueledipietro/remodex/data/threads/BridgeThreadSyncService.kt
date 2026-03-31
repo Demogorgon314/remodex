@@ -793,6 +793,35 @@ class BridgeThreadSyncService(
         hydrateThread(threadId)
     }
 
+    override suspend fun compactThread(threadId: String) {
+        if (!isConnected()) {
+            return
+        }
+
+        val hadRunningState = threadHasKnownRunningState(threadId)
+        try {
+            retryAfterThreadMaterialization {
+                secureConnectionCoordinator.sendRequest(
+                    method = "thread/compact/start",
+                    params = buildJsonObject {
+                        put("threadId", JsonPrimitive(threadId))
+                    },
+                )
+            }
+            if (!hadRunningState) {
+                markThreadAsRunningFallback(threadId)
+            }
+            refreshThreads()
+            hydrateThread(threadId)
+        } catch (error: Throwable) {
+            if (!hadRunningState) {
+                clearThreadRunningState(threadId)
+                touchThread(threadId = threadId, isRunning = false)
+            }
+            throw error
+        }
+    }
+
     override suspend fun respondToStructuredUserInput(
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,
@@ -4189,6 +4218,7 @@ class BridgeThreadSyncService(
             ConversationItemKind.MCP_TOOL_CALL,
             ConversationItemKind.WEB_SEARCH,
             ConversationItemKind.COMMAND_EXECUTION,
+            ConversationItemKind.CONTEXT_COMPACTION,
             ConversationItemKind.IMAGE_VIEW,
             ConversationItemKind.IMAGE_GENERATION,
             ConversationItemKind.SUBAGENT_ACTION -> {
@@ -4290,6 +4320,7 @@ class BridgeThreadSyncService(
             ConversationItemKind.MCP_TOOL_CALL -> "mcptoolcall"
             ConversationItemKind.WEB_SEARCH -> "websearch"
             ConversationItemKind.COMMAND_EXECUTION -> "commandexecution"
+            ConversationItemKind.CONTEXT_COMPACTION -> "contextcompaction"
             ConversationItemKind.IMAGE_VIEW -> "imageview"
             ConversationItemKind.IMAGE_GENERATION -> "imagegeneration"
             ConversationItemKind.FILE_CHANGE -> "filechange"
@@ -4883,8 +4914,13 @@ class BridgeThreadSyncService(
             }
 
             itemType == "commandexecution" || itemType == "enteredreviewmode" || itemType == "contextcompaction" -> {
+                val resolvedKind = if (itemType == "contextcompaction") {
+                    ConversationItemKind.CONTEXT_COMPACTION
+                } else {
+                    ConversationItemKind.COMMAND_EXECUTION
+                }
                 StructuredTimelinePresentation(
-                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    kind = resolvedKind,
                     body = when (itemType) {
                         "enteredreviewmode" -> decodeEnteredReviewModeText(itemObject)
                         "contextcompaction" -> if (isCompleted) "Context compacted" else "Compacting context..."
@@ -4894,7 +4930,7 @@ class BridgeThreadSyncService(
                         )
                     },
                     systemTurnOrderingHint = explicitSystemTurnOrderingHint(
-                        ConversationItemKind.COMMAND_EXECUTION,
+                        resolvedKind,
                     ),
                 )
             }

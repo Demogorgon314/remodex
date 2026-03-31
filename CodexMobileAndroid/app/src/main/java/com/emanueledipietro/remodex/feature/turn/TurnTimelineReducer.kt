@@ -19,6 +19,7 @@ object TurnTimelineReducer {
         MCP_TOOL_CALL(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         WEB_SEARCH(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         COMMAND_EXECUTION(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        CONTEXT_COMPACTION(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         IMAGE_VIEW(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         IMAGE_GENERATION(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         SUBAGENT_ACTION(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
@@ -37,6 +38,7 @@ object TurnTimelineReducer {
             ConversationItemKind.MCP_TOOL_CALL -> SystemTurnOrderingPolicy.MCP_TOOL_CALL
             ConversationItemKind.WEB_SEARCH -> SystemTurnOrderingPolicy.WEB_SEARCH
             ConversationItemKind.COMMAND_EXECUTION -> SystemTurnOrderingPolicy.COMMAND_EXECUTION
+            ConversationItemKind.CONTEXT_COMPACTION -> SystemTurnOrderingPolicy.CONTEXT_COMPACTION
             ConversationItemKind.IMAGE_VIEW -> SystemTurnOrderingPolicy.IMAGE_VIEW
             ConversationItemKind.IMAGE_GENERATION -> SystemTurnOrderingPolicy.IMAGE_GENERATION
             ConversationItemKind.SUBAGENT_ACTION -> SystemTurnOrderingPolicy.SUBAGENT_ACTION
@@ -1057,6 +1059,7 @@ object TurnTimelineReducer {
                 ConversationItemKind.MCP_TOOL_CALL -> "mcptoolcall"
                 ConversationItemKind.WEB_SEARCH -> "websearch"
                 ConversationItemKind.COMMAND_EXECUTION -> "commandexecution"
+                ConversationItemKind.CONTEXT_COMPACTION -> "contextcompaction"
                 ConversationItemKind.IMAGE_VIEW -> "imageview"
                 ConversationItemKind.IMAGE_GENERATION -> "imagegeneration"
                 ConversationItemKind.FILE_CHANGE -> "filechange"

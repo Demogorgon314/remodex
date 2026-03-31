@@ -97,6 +97,11 @@ enum class RemodexSlashCommand(
         subtitle = "Show context usage and rate limits",
         token = "/status",
     ),
+    COMPACT(
+        title = "Compact",
+        subtitle = "Compress the current thread context window",
+        token = "/compact",
+    ),
     SUBAGENTS(
         title = "Subagents",
         subtitle = "Insert a canned prompt that asks Codex to delegate work",
@@ -110,6 +115,7 @@ enum class RemodexSlashCommand(
             CODE_REVIEW -> "ladybug"
             FORK -> "arrow.triangle.branch"
             STATUS -> "speedometer"
+            COMPACT -> "arrow.down.left.and.arrow.up.right"
             SUBAGENTS -> "person.crop.circle"
         }
 
@@ -118,6 +124,7 @@ enum class RemodexSlashCommand(
             CODE_REVIEW,
             FORK,
             STATUS,
+            COMPACT,
             SUBAGENTS,
         )
 

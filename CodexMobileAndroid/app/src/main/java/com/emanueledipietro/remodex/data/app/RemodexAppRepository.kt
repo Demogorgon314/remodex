@@ -75,6 +75,8 @@ interface RemodexAppRepository {
         planningModeOverride: RemodexPlanningMode? = null,
     )
 
+    suspend fun compactThread(threadId: String)
+
     suspend fun respondToStructuredUserInput(
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,

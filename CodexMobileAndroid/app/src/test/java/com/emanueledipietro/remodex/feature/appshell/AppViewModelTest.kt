@@ -1136,6 +1136,7 @@ class AppViewModelTest {
                 RemodexSlashCommand.CODE_REVIEW,
                 RemodexSlashCommand.FORK,
                 RemodexSlashCommand.STATUS,
+                RemodexSlashCommand.COMPACT,
                 RemodexSlashCommand.SUBAGENTS,
             ),
             viewModel.uiState.value.composer.autocomplete.slashCommands,
@@ -1148,6 +1149,78 @@ class AppViewModelTest {
 
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
+    @Test
+    fun `compact slash command inserts the real command token into the draft`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Compact thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/com")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.COMPACT)
+        advanceUntilIdle()
+
+        assertEquals("/compact ", viewModel.uiState.value.composer.draftText)
+        assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
+    @Test
+    fun `send prompt routes standalone compact command through compact thread api`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Compact thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/compact")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.compactThreadRequests)
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+    }
+
+    @Test
+    fun `send prompt blocks standalone compact command while thread is running`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Compact thread",
+                        isRunning = true,
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/compact")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertTrue(repository.compactThreadRequests.isEmpty())
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals("/compact", viewModel.uiState.value.composer.draftText)
+        assertEquals(
+            "Wait for the current response to finish first.",
+            viewModel.uiState.value.composer.composerMessage,
+        )
     }
 
     @Test
@@ -2271,6 +2344,7 @@ class AppViewModelTest {
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
+        val compactThreadRequests = mutableListOf<String>()
         val sentPromptPlanningModeOverrides = mutableListOf<RemodexPlanningMode?>()
         val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
         val codeReviewRequests = mutableListOf<Triple<String, RemodexComposerReviewTarget, String?>>()
@@ -2302,6 +2376,7 @@ class AppViewModelTest {
         var createThreadDelayMs = 0L
         var createThreadError: Throwable? = null
         var sendPromptError: Throwable? = null
+        var compactThreadError: Throwable? = null
         var continueOnMacError: Throwable? = null
         var declinePendingApprovalRequests = 0
         var cancelPendingApprovalRequests = 0
@@ -2443,6 +2518,11 @@ class AppViewModelTest {
             sendPromptError?.let { throw it }
             sentPrompts += Triple(threadId, prompt, attachments)
             sentPromptPlanningModeOverrides += planningModeOverride
+        }
+
+        override suspend fun compactThread(threadId: String) {
+            compactThreadError?.let { throw it }
+            compactThreadRequests += threadId
         }
 
         override suspend fun respondToStructuredUserInput(

@@ -93,6 +93,8 @@ interface ThreadCommandService {
         attachments: List<RemodexComposerAttachment>,
     )
 
+    suspend fun compactThread(threadId: String)
+
     suspend fun respondToStructuredUserInput(
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,

@@ -4688,7 +4688,9 @@ private fun isCommandEnabled(
 ): Boolean {
     return when (command) {
         RemodexSlashCommand.CODE_REVIEW -> !autocomplete.hasComposerContentConflictingWithReview
-        RemodexSlashCommand.FORK -> !autocomplete.isThreadRunning
+        RemodexSlashCommand.FORK,
+        RemodexSlashCommand.COMPACT,
+        -> !autocomplete.isThreadRunning
         RemodexSlashCommand.STATUS,
         RemodexSlashCommand.SUBAGENTS,
         -> true
@@ -4700,7 +4702,10 @@ private fun commandSubtitle(
     autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
     enabled: Boolean,
 ): String {
-    if (command == RemodexSlashCommand.FORK && autocomplete.isThreadRunning) {
+    if (
+        (command == RemodexSlashCommand.FORK || command == RemodexSlashCommand.COMPACT) &&
+        autocomplete.isThreadRunning
+    ) {
         return "Wait for the current response to finish first"
     }
     if (!enabled) {
@@ -4748,6 +4753,7 @@ private fun slashCommandIcon(command: RemodexSlashCommand): ImageVector {
         RemodexSlashCommand.CODE_REVIEW -> Icons.Outlined.BugReport
         RemodexSlashCommand.FORK -> Icons.AutoMirrored.Outlined.CallSplit
         RemodexSlashCommand.STATUS -> Icons.Outlined.Speed
+        RemodexSlashCommand.COMPACT -> Icons.Outlined.Bolt
         RemodexSlashCommand.SUBAGENTS -> Icons.Outlined.AccountCircle
     }
 }
@@ -6387,6 +6393,9 @@ private fun SystemConversationRow(
                 accessoryState = accessoryState,
                 onOpenDetails = onOpenFileChangeDetails,
             )
+            ConversationItemKind.CONTEXT_COMPACTION -> ContextCompactionConversationRow(
+                item = item,
+            )
             ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
                 item = item,
                 accessoryState = accessoryState,
@@ -7388,6 +7397,63 @@ private fun CommandExecutionConversationRow(
 }
 
 @Composable
+private fun ContextCompactionConversationRow(
+    item: RemodexConversationItem,
+) {
+    val chrome = remodexConversationChrome()
+    val lineColor = remember(item.isStreaming, chrome.subtleBorder) {
+        if (item.isStreaming) {
+            chrome.subtleBorder.copy(alpha = 0.95f)
+        } else {
+            chrome.subtleBorder.copy(alpha = 0.72f)
+        }
+    }
+    val textColor = remember(item.isStreaming, chrome.secondaryText, chrome.tertiaryText) {
+        if (item.isStreaming) chrome.secondaryText else chrome.tertiaryText
+    }
+    ConversationMessageActionContainer(
+        text = item.text,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = false,
+        allowsSelectText = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) { _ ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            HorizontalDivider(
+                modifier = Modifier.weight(1f),
+                color = lineColor,
+                thickness = 1.dp,
+            )
+            Text(
+                text = item.text,
+                style = MaterialTheme.typography.labelSmall,
+                color = textColor,
+                maxLines = 1,
+                modifier = Modifier.remodexLabelShimmer(
+                    enabled = item.isStreaming,
+                    durationMillis = 2800,
+                    highlightAlpha = 0.5f,
+                    bandCoverage = 0.36f,
+                    startPhase = -0.45f,
+                    endPhase = 2.2f,
+                ),
+            )
+            HorizontalDivider(
+                modifier = Modifier.weight(1f),
+                color = lineColor,
+                thickness = 1.dp,
+            )
+        }
+    }
+}
+
+@Composable
 private fun SubagentActionRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
@@ -7980,6 +8046,11 @@ private fun buildConversationBlockAccessories(
         while (blockStart > 0 && items[blockStart - 1].speaker != ConversationSpeaker.USER) {
             blockStart -= 1
         }
+        val accessoryAnchorIndex = resolveConversationBlockAccessoryAnchorIndex(
+            items = items,
+            blockStart = blockStart,
+            blockEnd = blockEnd,
+        )
 
         val blockTurnId = items.subList(blockStart, blockEnd + 1)
             .asReversed()
@@ -8027,7 +8098,7 @@ private fun buildConversationBlockAccessories(
         }
 
         if (showsRunningIndicator || showsCopyButton) {
-            accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
+            accessories[items[accessoryAnchorIndex].id] = ConversationBlockAccessoryState(
                 showsRunningIndicator = showsRunningIndicator,
                 copyText = if (showsCopyButton) blockText else null,
                 blockDiffText = blockDiffText,
@@ -8035,7 +8106,7 @@ private fun buildConversationBlockAccessories(
                 blockRevertPresentation = blockRevertPresentation,
             )
         } else if (blockDiffEntries != null || blockRevertPresentation != null) {
-            accessories[items[blockEnd].id] = ConversationBlockAccessoryState(
+            accessories[items[accessoryAnchorIndex].id] = ConversationBlockAccessoryState(
                 showsRunningIndicator = false,
                 copyText = null,
                 blockDiffText = blockDiffText,
@@ -8048,6 +8119,19 @@ private fun buildConversationBlockAccessories(
     }
 
     return accessories
+}
+
+internal fun resolveConversationBlockAccessoryAnchorIndex(
+    items: List<RemodexConversationItem>,
+    blockStart: Int,
+    blockEnd: Int,
+): Int {
+    for (index in blockEnd downTo blockStart) {
+        if (items[index].kind != ConversationItemKind.CONTEXT_COMPACTION) {
+            return index
+        }
+    }
+    return blockEnd
 }
 
 internal fun parseCommandExecutionStatus(text: String): CommandExecutionStatusPresentation? {

@@ -250,12 +250,13 @@ internal object ThreadHistoryReconciler {
                 ConversationItemKind.WEB_SEARCH,
                 ConversationItemKind.IMAGE_VIEW,
                 ConversationItemKind.IMAGE_GENERATION,
+                ConversationItemKind.CONTEXT_COMPACTION,
                 ConversationItemKind.COMMAND_EXECUTION -> {
                     val incomingItemId = normalizedIdentifier(historyItem.itemId)
                     if (incomingItemId != null) {
                         merged.indexOfLast { candidate ->
                             candidate.speaker == ConversationSpeaker.SYSTEM &&
-                                candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                                candidate.kind == historyItem.kind &&
                                 normalizedIdentifier(candidate.itemId) == incomingItemId
                         }.takeIf { it >= 0 }?.let { return it }
                     }
@@ -267,7 +268,7 @@ internal object ThreadHistoryReconciler {
                     ) {
                         merged.indexOfLast { candidate ->
                             candidate.speaker == ConversationSpeaker.SYSTEM &&
-                                candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                                candidate.kind == historyItem.kind &&
                                 candidate.turnId == turnId &&
                                 normalizedCommandExecutionPreviewKey(candidate.text) == incomingCommandKey
                         }.takeIf { it >= 0 }?.let { return it }
@@ -275,7 +276,7 @@ internal object ThreadHistoryReconciler {
                     if (turnId != null) {
                         merged.indexOfLast { candidate ->
                             candidate.speaker == ConversationSpeaker.SYSTEM &&
-                                candidate.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                                candidate.kind == historyItem.kind &&
                                 candidate.turnId == turnId
                         }.takeIf { it >= 0 }?.let { return it }
                     }

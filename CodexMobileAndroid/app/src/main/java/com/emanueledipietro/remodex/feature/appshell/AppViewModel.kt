@@ -1052,6 +1052,41 @@ class AppViewModel(
                 return@launch
             }
 
+            val isCompactCommandRequest =
+                composer.attachments.isEmpty() &&
+                    composer.mentionedFiles.isEmpty() &&
+                    composer.mentionedSkills.isEmpty() &&
+                    !composer.isSubagentsSelectionArmed &&
+                    RemodexComposerCommandLogic.isStandaloneSlashCommand(
+                        text = composer.draftText,
+                        commandToken = RemodexSlashCommand.COMPACT.token,
+                    )
+            if (isCompactCommandRequest) {
+                if (selectedThread.isRunning) {
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = "Wait for the current response to finish first.",
+                    )
+                    return@launch
+                }
+                bumpComposerSendDismissSignal(threadId)
+                bumpComposerSendAnchorSignal(threadId)
+                clearComposer(threadId)
+                try {
+                    repository.compactThread(threadId)
+                } catch (error: Throwable) {
+                    if (error is CancellationException) {
+                        throw error
+                    }
+                    restoreComposer(threadId, pendingComposerState)
+                    setComposerMessage(
+                        threadId = threadId,
+                        message = error.message ?: "Could not compact this thread.",
+                    )
+                }
+                return@launch
+            }
+
             val payload = buildPromptPayload(
                 draftText = composer.draftText,
                 mentionedFiles = composer.mentionedFiles,
@@ -1413,6 +1448,20 @@ class AppViewModel(
                 composerSubagentsSelections.update { selectionsByThread ->
                     selectionsByThread.toMutableMap().apply {
                         this[threadId] = true
+                    }
+                }
+                clearReviewSelectionIfConfirmed(threadId)
+                clearComposerAutocomplete()
+            }
+
+            RemodexSlashCommand.COMPACT -> {
+                composerDrafts.update { draftsByThread ->
+                    val currentDraft = draftsByThread[threadId].orEmpty()
+                    draftsByThread.toMutableMap().apply {
+                        this[threadId] = RemodexComposerCommandLogic.replaceTrailingSlashCommandToken(
+                            text = currentDraft,
+                            commandToken = RemodexSlashCommand.COMPACT.token,
+                        ) ?: RemodexSlashCommand.COMPACT.token
                     }
                 }
                 clearReviewSelectionIfConfirmed(threadId)

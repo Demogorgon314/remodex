@@ -320,6 +320,33 @@ class FakeThreadSyncService(
         }
     }
 
+    override suspend fun compactThread(threadId: String) {
+        val now = System.currentTimeMillis()
+        backingThreads.update { threads ->
+            threads.map { snapshot ->
+                if (snapshot.id != threadId) {
+                    snapshot
+                } else {
+                    snapshot.copy(
+                        preview = "Context compacted",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = now,
+                        isRunning = false,
+                        timelineMutations = snapshot.timelineMutations + TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "context-compaction-${UUID.randomUUID()}",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                text = "Context compacted",
+                                kind = ConversationItemKind.CONTEXT_COMPACTION,
+                                orderIndex = nextOrderIndex(snapshot),
+                            ),
+                        ),
+                    )
+                }
+            }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
+    }
+
     override suspend fun respondToStructuredUserInput(
         requestId: JsonElement,
         answersByQuestionId: Map<String, List<String>>,

@@ -4948,7 +4948,7 @@ class BridgeThreadSyncServiceTest {
         val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
         val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
         val compactionItem = projected.single {
-            it.kind == ConversationItemKind.COMMAND_EXECUTION && it.id == "compaction-item"
+            it.kind == ConversationItemKind.CONTEXT_COMPACTION && it.id == "compaction-item"
         }
 
         assertEquals(2, assistantItems.size)

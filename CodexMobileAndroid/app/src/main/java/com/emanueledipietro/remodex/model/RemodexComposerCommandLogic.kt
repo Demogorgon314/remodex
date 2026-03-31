@@ -99,6 +99,30 @@ object RemodexComposerCommandLogic {
         return text.replaceRange(token.startIndex, text.length, "").trim()
     }
 
+    fun replaceTrailingSlashCommandToken(
+        text: String,
+        commandToken: String,
+    ): String? {
+        val normalizedCommandToken = commandToken.trim()
+        val token = trailingSlashCommandToken(text) ?: return null
+        if (normalizedCommandToken.isEmpty()) {
+            return null
+        }
+        return text.replaceRange(token.startIndex, text.length, "$normalizedCommandToken ")
+    }
+
+    fun isStandaloneSlashCommand(
+        text: String,
+        commandToken: String,
+    ): Boolean {
+        val normalizedText = text.trim()
+        val normalizedCommandToken = commandToken.trim()
+        if (normalizedText.isEmpty() || normalizedCommandToken.isEmpty()) {
+            return false
+        }
+        return normalizedText == normalizedCommandToken
+    }
+
     fun hasClosedConfirmedFileMentionPrefix(
         text: String,
         confirmedMentions: List<RemodexComposerMentionedFile>,

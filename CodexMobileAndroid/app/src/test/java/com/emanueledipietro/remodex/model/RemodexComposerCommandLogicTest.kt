@@ -29,4 +29,22 @@ class RemodexComposerCommandLogicTest {
         assertNull(RemodexComposerCommandLogic.trailingSlashCommandToken("/ "))
         assertNull(RemodexComposerCommandLogic.trailingSlashCommandToken("hello / status"))
     }
+
+    @Test
+    fun replaceTrailingSlashCommandToken_replacesTheActiveToken() {
+        assertEquals(
+            "/compact ",
+            RemodexComposerCommandLogic.replaceTrailingSlashCommandToken(
+                text = "/com",
+                commandToken = "/compact",
+            ),
+        )
+        assertEquals(
+            "please run /compact ",
+            RemodexComposerCommandLogic.replaceTrailingSlashCommandToken(
+                text = "please run /com",
+                commandToken = "/compact",
+            ),
+        )
+    }
 }
