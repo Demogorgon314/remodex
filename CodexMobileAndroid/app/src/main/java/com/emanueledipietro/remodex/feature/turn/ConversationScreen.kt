@@ -6395,6 +6395,7 @@ private fun SystemConversationRow(
             )
             ConversationItemKind.CONTEXT_COMPACTION -> ContextCompactionConversationRow(
                 item = item,
+                accessoryState = accessoryState,
             )
             ConversationItemKind.COMMAND_EXECUTION -> CommandExecutionConversationRow(
                 item = item,
@@ -7399,6 +7400,7 @@ private fun CommandExecutionConversationRow(
 @Composable
 private fun ContextCompactionConversationRow(
     item: RemodexConversationItem,
+    accessoryState: ConversationBlockAccessoryState?,
 ) {
     val chrome = remodexConversationChrome()
     val lineColor = remember(item.isStreaming, chrome.subtleBorder) {
@@ -7420,35 +7422,43 @@ private fun ContextCompactionConversationRow(
             .fillMaxWidth()
             .padding(vertical = 4.dp),
     ) { _ ->
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            HorizontalDivider(
-                modifier = Modifier.weight(1f),
-                color = lineColor,
-                thickness = 1.dp,
-            )
-            Text(
-                text = item.text,
-                style = MaterialTheme.typography.labelSmall,
-                color = textColor,
-                maxLines = 1,
-                modifier = Modifier.remodexLabelShimmer(
-                    enabled = item.isStreaming,
-                    durationMillis = 2800,
-                    highlightAlpha = 0.5f,
-                    bandCoverage = 0.36f,
-                    startPhase = -0.45f,
-                    endPhase = 2.2f,
-                ),
-            )
-            HorizontalDivider(
-                modifier = Modifier.weight(1f),
-                color = lineColor,
-                thickness = 1.dp,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = lineColor,
+                    thickness = 1.dp,
+                )
+                Text(
+                    text = item.text,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = textColor,
+                    maxLines = 1,
+                    modifier = Modifier.remodexLabelShimmer(
+                        enabled = item.isStreaming,
+                        durationMillis = 2800,
+                        highlightAlpha = 0.5f,
+                        bandCoverage = 0.36f,
+                        startPhase = -0.45f,
+                        endPhase = 2.2f,
+                    ),
+                )
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = lineColor,
+                    thickness = 1.dp,
+                )
+            }
+            if (accessoryState?.showsRunningIndicator == true) {
+                TerminalRunningIndicator()
+            }
         }
     }
 }
@@ -8051,6 +8061,11 @@ private fun buildConversationBlockAccessories(
             blockStart = blockStart,
             blockEnd = blockEnd,
         )
+        val runningIndicatorIndex = resolveConversationBlockRunningIndicatorIndex(
+            items = items,
+            accessoryAnchorIndex = accessoryAnchorIndex,
+            blockEnd = blockEnd,
+        )
 
         val blockTurnId = items.subList(blockStart, blockEnd + 1)
             .asReversed()
@@ -8097,21 +8112,36 @@ private fun buildConversationBlockAccessories(
             else -> blockEnd != latestBlockEnd
         }
 
-        if (showsRunningIndicator || showsCopyButton) {
-            accessories[items[accessoryAnchorIndex].id] = ConversationBlockAccessoryState(
-                showsRunningIndicator = showsRunningIndicator,
-                copyText = if (showsCopyButton) blockText else null,
-                blockDiffText = blockDiffText,
-                blockDiffEntries = blockDiffEntries,
-                blockRevertPresentation = blockRevertPresentation,
+        if (showsCopyButton) {
+            accessories[items[accessoryAnchorIndex].id] = mergeConversationBlockAccessoryState(
+                existing = accessories[items[accessoryAnchorIndex].id],
+                incoming = ConversationBlockAccessoryState(
+                    showsRunningIndicator = false,
+                    copyText = blockText,
+                    blockDiffText = blockDiffText,
+                    blockDiffEntries = blockDiffEntries,
+                    blockRevertPresentation = blockRevertPresentation,
+                ),
             )
         } else if (blockDiffEntries != null || blockRevertPresentation != null) {
-            accessories[items[accessoryAnchorIndex].id] = ConversationBlockAccessoryState(
-                showsRunningIndicator = false,
-                copyText = null,
-                blockDiffText = blockDiffText,
-                blockDiffEntries = blockDiffEntries,
-                blockRevertPresentation = blockRevertPresentation,
+            accessories[items[accessoryAnchorIndex].id] = mergeConversationBlockAccessoryState(
+                existing = accessories[items[accessoryAnchorIndex].id],
+                incoming = ConversationBlockAccessoryState(
+                    showsRunningIndicator = false,
+                    copyText = null,
+                    blockDiffText = blockDiffText,
+                    blockDiffEntries = blockDiffEntries,
+                    blockRevertPresentation = blockRevertPresentation,
+                ),
+            )
+        }
+
+        if (showsRunningIndicator) {
+            accessories[items[runningIndicatorIndex].id] = mergeConversationBlockAccessoryState(
+                existing = accessories[items[runningIndicatorIndex].id],
+                incoming = ConversationBlockAccessoryState(
+                    showsRunningIndicator = true,
+                ),
             )
         }
 
@@ -8132,6 +8162,31 @@ internal fun resolveConversationBlockAccessoryAnchorIndex(
         }
     }
     return blockEnd
+}
+
+internal fun resolveConversationBlockRunningIndicatorIndex(
+    items: List<RemodexConversationItem>,
+    accessoryAnchorIndex: Int,
+    blockEnd: Int,
+): Int {
+    return if (items[blockEnd].kind == ConversationItemKind.CONTEXT_COMPACTION) {
+        blockEnd
+    } else {
+        accessoryAnchorIndex
+    }
+}
+
+private fun mergeConversationBlockAccessoryState(
+    existing: ConversationBlockAccessoryState?,
+    incoming: ConversationBlockAccessoryState,
+): ConversationBlockAccessoryState {
+    return ConversationBlockAccessoryState(
+        showsRunningIndicator = existing?.showsRunningIndicator == true || incoming.showsRunningIndicator,
+        copyText = incoming.copyText ?: existing?.copyText,
+        blockDiffText = incoming.blockDiffText ?: existing?.blockDiffText,
+        blockDiffEntries = incoming.blockDiffEntries ?: existing?.blockDiffEntries,
+        blockRevertPresentation = incoming.blockRevertPresentation ?: existing?.blockRevertPresentation,
+    )
 }
 
 internal fun parseCommandExecutionStatus(text: String): CommandExecutionStatusPresentation? {

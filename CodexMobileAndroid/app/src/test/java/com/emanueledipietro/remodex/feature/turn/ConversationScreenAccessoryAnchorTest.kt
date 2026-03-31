@@ -46,6 +46,41 @@ class ConversationScreenAccessoryAnchorTest {
         assertEquals(0, anchorIndex)
     }
 
+    @Test
+    fun `running indicator anchor follows trailing context compaction separator`() {
+        val items = listOf(
+            assistantItem(id = "assistant"),
+            systemItem(
+                id = "compact",
+                kind = ConversationItemKind.CONTEXT_COMPACTION,
+                text = "Compacting context...",
+            ),
+        )
+
+        val runningIndicatorIndex = resolveConversationBlockRunningIndicatorIndex(
+            items = items,
+            accessoryAnchorIndex = 0,
+            blockEnd = items.lastIndex,
+        )
+
+        assertEquals(1, runningIndicatorIndex)
+    }
+
+    @Test
+    fun `running indicator anchor stays with content when block has no compaction separator`() {
+        val items = listOf(
+            assistantItem(id = "assistant"),
+        )
+
+        val runningIndicatorIndex = resolveConversationBlockRunningIndicatorIndex(
+            items = items,
+            accessoryAnchorIndex = 0,
+            blockEnd = 0,
+        )
+
+        assertEquals(0, runningIndicatorIndex)
+    }
+
     private fun assistantItem(
         id: String,
         text: String = "Done.",

@@ -33,6 +33,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewSelection
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -756,7 +757,9 @@ class AppViewModel(
                 }
                 lastHydrationConnected = isConnected
                 detectThreadCompletionBanner(snapshot)
+                detectContextCompactionCompletion(snapshot)
                 handleAutoReconnectSnapshot(snapshot)
+                previousThreadsById = snapshot.threads.associateBy(RemodexThreadSummary::id)
             }
         }
     }
@@ -2346,18 +2349,7 @@ class AppViewModel(
     }
 
     fun refreshUsageStatus() {
-        val selectedThreadId = uiState.value.selectedThread?.id
-        if (isRefreshingUsageState.value) {
-            return
-        }
-        viewModelScope.launch {
-            isRefreshingUsageState.value = true
-            try {
-                repository.refreshUsageStatus(selectedThreadId)
-            } finally {
-                isRefreshingUsageState.value = false
-            }
-        }
+        refreshUsageStatus(threadId = uiState.value.selectedThread?.id)
     }
 
     fun logoutGptAccount() {
@@ -2778,7 +2770,49 @@ class AppViewModel(
                 title = completedThread.displayTitle,
             )
         }
-        previousThreadsById = snapshot.threads.associateBy(RemodexThreadSummary::id)
+    }
+
+    private fun detectContextCompactionCompletion(
+        snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
+    ) {
+        val currentThread = snapshot.selectedThread ?: return
+        val previousThread = previousThreadsById[currentThread.id] ?: return
+        if (!didCompleteContextCompaction(previousThread, currentThread)) {
+            return
+        }
+        refreshUsageStatus(threadId = currentThread.id)
+    }
+
+    private fun didCompleteContextCompaction(
+        previousThread: RemodexThreadSummary,
+        currentThread: RemodexThreadSummary,
+    ): Boolean {
+        val previousCompaction = previousThread.messages.lastOrNull { message ->
+            message.kind == ConversationItemKind.CONTEXT_COMPACTION
+        }
+        val currentCompaction = currentThread.messages.lastOrNull { message ->
+            message.kind == ConversationItemKind.CONTEXT_COMPACTION
+        } ?: return false
+
+        return if (previousCompaction?.id == currentCompaction.id) {
+            previousCompaction.isStreaming && !currentCompaction.isStreaming
+        } else {
+            !currentCompaction.isStreaming
+        }
+    }
+
+    private fun refreshUsageStatus(threadId: String?) {
+        if (isRefreshingUsageState.value) {
+            return
+        }
+        viewModelScope.launch {
+            isRefreshingUsageState.value = true
+            try {
+                repository.refreshUsageStatus(threadId)
+            } finally {
+                isRefreshingUsageState.value = false
+            }
+        }
     }
 
     private fun connectionCopy(secureConnection: SecureConnectionSnapshot): Pair<String, String> {

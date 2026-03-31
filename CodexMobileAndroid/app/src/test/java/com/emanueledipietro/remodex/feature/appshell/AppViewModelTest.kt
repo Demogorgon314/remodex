@@ -43,6 +43,7 @@ import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
@@ -1224,6 +1225,50 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `completed context compaction refreshes usage for selected thread`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val streamingThread = threadSummary(
+            id = "thread-1",
+            title = "Compact thread",
+            messages = listOf(
+                contextCompactionMessage(
+                    id = "compaction-1",
+                    threadId = "thread-1",
+                    isStreaming = true,
+                    text = "Compacting context...",
+                ),
+            ),
+        )
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(streamingThread),
+            selectedThreadId = "thread-1",
+        )
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        repository.refreshUsageStatusRequests.clear()
+
+        repository.snapshot.value = repository.snapshot.value.copy(
+            threads = listOf(
+                streamingThread.copy(
+                    isRunning = false,
+                    messages = listOf(
+                        contextCompactionMessage(
+                            id = "compaction-1",
+                            threadId = "thread-1",
+                            isStreaming = false,
+                            text = "Context compacted",
+                        ),
+                    ),
+                ),
+            ),
+            selectedThreadId = "thread-1",
+        )
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.refreshUsageStatusRequests)
+    }
+
+    @Test
     fun `slash code review selection matches ios behavior`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -2341,6 +2386,7 @@ class AppViewModelTest {
         val usageStatusFlow = MutableStateFlow(RemodexUsageStatus())
         val hydrateRequests = mutableListOf<String>()
         val selectedThreadRequests = mutableListOf<String>()
+        val refreshUsageStatusRequests = mutableListOf<String?>()
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
@@ -2624,7 +2670,9 @@ class AppViewModelTest {
 
         override suspend fun logoutGptAccount() = Unit
 
-        override suspend fun refreshUsageStatus(threadId: String?) = Unit
+        override suspend fun refreshUsageStatus(threadId: String?) {
+            refreshUsageStatusRequests += threadId
+        }
 
         override suspend fun fuzzyFileSearch(
             threadId: String,
@@ -2863,6 +2911,23 @@ class AppViewModelTest {
                     ),
                 ),
             ),
+        )
+    }
+
+    private fun contextCompactionMessage(
+        id: String,
+        threadId: String,
+        isStreaming: Boolean,
+        text: String,
+    ): RemodexConversationItem {
+        return RemodexConversationItem(
+            id = id,
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.CONTEXT_COMPACTION,
+            text = text,
+            turnId = "turn-$threadId",
+            isStreaming = isStreaming,
+            orderIndex = 0,
         )
     }
 }
