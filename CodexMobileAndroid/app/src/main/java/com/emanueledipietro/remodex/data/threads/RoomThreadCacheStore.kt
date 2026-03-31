@@ -19,6 +19,7 @@ import com.emanueledipietro.remodex.data.connection.SecureStore
 import com.emanueledipietro.remodex.data.connection.SecureStoreKeys
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -74,6 +75,7 @@ data class CachedTimelineItemEntity(
     val subagentActionJson: String?,
     val structuredUserInputRequestJson: String?,
     val assistantChangeSetJson: String?,
+    val systemTurnOrderingHint: String,
     val orderIndex: Long,
 )
 
@@ -107,7 +109,7 @@ interface ThreadCacheDao {
 
 @Database(
     entities = [CachedThreadEntity::class, CachedTimelineItemEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 abstract class RemodexThreadCacheDatabase : RoomDatabase() {
@@ -336,6 +338,7 @@ private fun RemodexConversationItem.toEntity(threadId: String): CachedTimelineIt
         subagentActionJson = subagentAction?.let(threadCacheJson::encodeToString),
         structuredUserInputRequestJson = structuredUserInputRequest?.let(threadCacheJson::encodeToString),
         assistantChangeSetJson = assistantChangeSet?.let(threadCacheJson::encodeToString),
+        systemTurnOrderingHint = systemTurnOrderingHint.name,
         orderIndex = orderIndex,
     )
 }
@@ -358,5 +361,6 @@ private fun CachedTimelineItemEntity.toModel(): RemodexConversationItem {
         structuredUserInputRequest = structuredUserInputRequestJson?.let(threadCacheJson::decodeFromString),
         orderIndex = orderIndex,
         assistantChangeSet = assistantChangeSetJson?.let(threadCacheJson::decodeFromString),
+        systemTurnOrderingHint = ConversationSystemTurnOrderingHint.valueOf(systemTurnOrderingHint),
     )
 }

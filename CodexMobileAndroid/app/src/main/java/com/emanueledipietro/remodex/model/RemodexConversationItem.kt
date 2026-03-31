@@ -26,6 +26,12 @@ enum class ConversationItemKind {
 }
 
 @Serializable
+enum class ConversationSystemTurnOrderingHint {
+    AUTO,
+    PRESERVE_CHRONOLOGY_WHEN_LATE,
+}
+
+@Serializable
 data class RemodexConversationItem(
     val id: String,
     val speaker: ConversationSpeaker,
@@ -43,4 +49,5 @@ data class RemodexConversationItem(
     val structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
     val orderIndex: Long = 0L,
     val assistantChangeSet: RemodexAssistantChangeSet? = null,
+    val systemTurnOrderingHint: ConversationSystemTurnOrderingHint = ConversationSystemTurnOrderingHint.AUTO,
 )

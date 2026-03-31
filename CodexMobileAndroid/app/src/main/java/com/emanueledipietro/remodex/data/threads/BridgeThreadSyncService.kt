@@ -21,6 +21,7 @@ import com.emanueledipietro.remodex.data.connection.stringOrNull
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
@@ -2878,7 +2879,9 @@ class BridgeThreadSyncService(
                     itemId = itemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = ConversationItemKind.TOOL_ACTIVITY,
+                    systemTurnOrderingHint = ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
                 ),
+                systemTurnOrderingHint = ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
             ),
             isRunning = true,
         )
@@ -2932,6 +2935,12 @@ class BridgeThreadSyncService(
                     itemId = context.itemId ?: existingItem?.itemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = ConversationItemKind.MCP_TOOL_CALL,
+                    systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                        ConversationItemKind.MCP_TOOL_CALL,
+                    ),
+                ),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.MCP_TOOL_CALL,
                 ),
             ),
             isRunning = true,
@@ -3551,8 +3560,16 @@ class BridgeThreadSyncService(
                     itemId = itemId ?: existingItem?.itemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = kind,
+                    systemTurnOrderingHint = presentation.systemTurnOrderingHint,
                 ),
                 assistantChangeSet = existingItem?.assistantChangeSet,
+                systemTurnOrderingHint = if (
+                    presentation.systemTurnOrderingHint == ConversationSystemTurnOrderingHint.AUTO
+                ) {
+                    existingItem?.systemTurnOrderingHint ?: ConversationSystemTurnOrderingHint.AUTO
+                } else {
+                    presentation.systemTurnOrderingHint
+                },
             ),
             isRunning = !isCompleted || activeTurnIdByThread[threadId] != null,
         )
@@ -3836,6 +3853,12 @@ class BridgeThreadSyncService(
                     itemId = context.itemId ?: existingItem?.itemId,
                     speaker = ConversationSpeaker.SYSTEM,
                     kind = ConversationItemKind.COMMAND_EXECUTION,
+                    systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                        ConversationItemKind.COMMAND_EXECUTION,
+                    ),
+                ),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.COMMAND_EXECUTION,
                 ),
             ),
             isRunning = !isCompleted,
@@ -4089,6 +4112,8 @@ class BridgeThreadSyncService(
         itemId: String?,
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
+        systemTurnOrderingHint: ConversationSystemTurnOrderingHint =
+            ConversationSystemTurnOrderingHint.AUTO,
     ): Long {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return 0L
         val existingItem = projectedTimelineItem(
@@ -4107,6 +4132,7 @@ class BridgeThreadSyncService(
                 turnId = turnId,
                 speaker = speaker,
                 kind = kind,
+                systemTurnOrderingHint = systemTurnOrderingHint,
             ) -> nextOrderIndex(snapshot)
 
             else -> existingItem.orderIndex
@@ -4119,6 +4145,7 @@ class BridgeThreadSyncService(
         turnId: String?,
         speaker: ConversationSpeaker,
         kind: ConversationItemKind,
+        systemTurnOrderingHint: ConversationSystemTurnOrderingHint,
     ): Boolean {
         val resolvedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty)
             ?: existingItem.turnId?.trim()?.takeIf(String::isNotEmpty)
@@ -4126,7 +4153,18 @@ class BridgeThreadSyncService(
         if (speaker != ConversationSpeaker.SYSTEM) {
             return false
         }
-        if (!isInterleavableSystemActivityKind(kind)) {
+        if (
+            !TurnTimelineReducer.shouldPreserveLateSystemActivityChronology(
+                kind = kind,
+                hint = if (
+                    systemTurnOrderingHint == ConversationSystemTurnOrderingHint.AUTO
+                ) {
+                    existingItem.systemTurnOrderingHint
+                } else {
+                    systemTurnOrderingHint
+                },
+            )
+        ) {
             return false
         }
 
@@ -4140,22 +4178,28 @@ class BridgeThreadSyncService(
     private fun isInterleavableSystemActivityKind(
         kind: ConversationItemKind,
     ): Boolean {
+        return TurnTimelineReducer.isInterleavableSystemActivityKind(kind)
+    }
+
+    private fun explicitSystemTurnOrderingHint(
+        kind: ConversationItemKind,
+    ): ConversationSystemTurnOrderingHint {
         return when (kind) {
-            ConversationItemKind.REASONING,
             ConversationItemKind.TOOL_ACTIVITY,
             ConversationItemKind.MCP_TOOL_CALL,
             ConversationItemKind.WEB_SEARCH,
             ConversationItemKind.COMMAND_EXECUTION,
-            -> true
-
-            ConversationItemKind.CHAT,
             ConversationItemKind.IMAGE_VIEW,
             ConversationItemKind.IMAGE_GENERATION,
+            ConversationItemKind.SUBAGENT_ACTION -> {
+                ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE
+            }
+
+            ConversationItemKind.CHAT,
+            ConversationItemKind.REASONING,
             ConversationItemKind.FILE_CHANGE,
-            ConversationItemKind.SUBAGENT_ACTION,
             ConversationItemKind.PLAN,
-            ConversationItemKind.USER_INPUT_PROMPT,
-            -> false
+            ConversationItemKind.USER_INPUT_PROMPT -> ConversationSystemTurnOrderingHint.AUTO
         }
     }
 
@@ -4831,6 +4875,9 @@ class BridgeThreadSyncService(
                             itemObject = itemObject,
                             isCompleted = isCompleted,
                         ),
+                        systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                            ConversationItemKind.TOOL_ACTIVITY,
+                        ),
                     )
                 }
             }
@@ -4846,6 +4893,9 @@ class BridgeThreadSyncService(
                             isCompleted = isCompleted,
                         )
                     },
+                    systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                        ConversationItemKind.COMMAND_EXECUTION,
+                    ),
                 )
             }
 
@@ -4867,12 +4917,18 @@ class BridgeThreadSyncService(
                 kind = ConversationItemKind.MCP_TOOL_CALL,
                 body = decodeMcpToolCallBody(itemObject = itemObject, isCompleted = isCompleted),
                 supportingText = decodeMcpToolCallSupportingText(itemObject),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.MCP_TOOL_CALL,
+                ),
             )
 
             itemType == "websearch" -> StructuredTimelinePresentation(
                 kind = ConversationItemKind.WEB_SEARCH,
                 body = decodeWebSearchBody(isCompleted = isCompleted),
                 supportingText = decodeWebSearchSupportingText(itemObject),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.WEB_SEARCH,
+                ),
             )
 
             itemType == "imageview" -> StructuredTimelinePresentation(
@@ -4880,6 +4936,9 @@ class BridgeThreadSyncService(
                 body = "Viewed Image",
                 supportingText = decodeImageViewSupportingText(itemObject),
                 attachments = decodeImageViewAttachments(itemObject),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.IMAGE_VIEW,
+                ),
             )
 
             itemType == "imagegeneration" -> StructuredTimelinePresentation(
@@ -4887,12 +4946,18 @@ class BridgeThreadSyncService(
                 body = "Generated Image",
                 supportingText = decodeImageGenerationSupportingText(itemObject),
                 attachments = decodeImageGenerationAttachments(itemObject),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.IMAGE_GENERATION,
+                ),
             )
 
             isSubagentHistoryItemType(itemType) -> StructuredTimelinePresentation(
                 kind = ConversationItemKind.SUBAGENT_ACTION,
                 body = "",
                 subagentAction = decodeSubagentAction(itemObject),
+                systemTurnOrderingHint = explicitSystemTurnOrderingHint(
+                    ConversationItemKind.SUBAGENT_ACTION,
+                ),
             )
 
             else -> StructuredTimelinePresentation(
@@ -6155,6 +6220,8 @@ class BridgeThreadSyncService(
         val planState: RemodexPlanState? = null,
         val subagentAction: RemodexSubagentAction? = null,
         val structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
+        val systemTurnOrderingHint: ConversationSystemTurnOrderingHint =
+            ConversationSystemTurnOrderingHint.AUTO,
     )
 
     private data class TurnReadState(
@@ -6416,6 +6483,7 @@ class BridgeThreadSyncService(
                             } else {
                                 null
                             },
+                            systemTurnOrderingHint = presentation.systemTurnOrderingHint,
                         ),
                     )
                 }

@@ -3,10 +3,71 @@ package com.emanueledipietro.remodex.feature.turn
 import com.emanueledipietro.remodex.data.threads.TimelineMutation
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 
 object TurnTimelineReducer {
     private const val ManualPushResetMarkerItemId = "git.push.reset.marker"
+
+    internal enum class SystemTurnOrderingPolicy(
+        val leadingPriority: Int,
+        val interleavable: Boolean,
+        val preserveChronologyWhenLateAfterAssistant: Boolean,
+    ) {
+        REASONING(leadingPriority = 1, interleavable = true, preserveChronologyWhenLateAfterAssistant = false),
+        TOOL_ACTIVITY(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = false),
+        MCP_TOOL_CALL(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        WEB_SEARCH(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        COMMAND_EXECUTION(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        IMAGE_VIEW(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        IMAGE_GENERATION(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        SUBAGENT_ACTION(leadingPriority = 3, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
+        CHAT(leadingPriority = 4, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
+        PLAN(leadingPriority = 4, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
+        FILE_CHANGE(leadingPriority = 5, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
+        USER_INPUT_PROMPT(leadingPriority = 6, interleavable = false, preserveChronologyWhenLateAfterAssistant = false),
+    }
+
+    internal fun systemTurnOrderingPolicy(
+        kind: ConversationItemKind,
+    ): SystemTurnOrderingPolicy {
+        return when (kind) {
+            ConversationItemKind.REASONING -> SystemTurnOrderingPolicy.REASONING
+            ConversationItemKind.TOOL_ACTIVITY -> SystemTurnOrderingPolicy.TOOL_ACTIVITY
+            ConversationItemKind.MCP_TOOL_CALL -> SystemTurnOrderingPolicy.MCP_TOOL_CALL
+            ConversationItemKind.WEB_SEARCH -> SystemTurnOrderingPolicy.WEB_SEARCH
+            ConversationItemKind.COMMAND_EXECUTION -> SystemTurnOrderingPolicy.COMMAND_EXECUTION
+            ConversationItemKind.IMAGE_VIEW -> SystemTurnOrderingPolicy.IMAGE_VIEW
+            ConversationItemKind.IMAGE_GENERATION -> SystemTurnOrderingPolicy.IMAGE_GENERATION
+            ConversationItemKind.SUBAGENT_ACTION -> SystemTurnOrderingPolicy.SUBAGENT_ACTION
+            ConversationItemKind.CHAT -> SystemTurnOrderingPolicy.CHAT
+            ConversationItemKind.PLAN -> SystemTurnOrderingPolicy.PLAN
+            ConversationItemKind.FILE_CHANGE -> SystemTurnOrderingPolicy.FILE_CHANGE
+            ConversationItemKind.USER_INPUT_PROMPT -> SystemTurnOrderingPolicy.USER_INPUT_PROMPT
+        }
+    }
+
+    internal fun isInterleavableSystemActivityKind(
+        kind: ConversationItemKind,
+    ): Boolean = systemTurnOrderingPolicy(kind).interleavable
+
+    internal fun shouldPreserveLateSystemActivityChronology(
+        kind: ConversationItemKind,
+        hint: ConversationSystemTurnOrderingHint = ConversationSystemTurnOrderingHint.AUTO,
+    ): Boolean {
+        return when (hint) {
+            ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE -> true
+            ConversationSystemTurnOrderingHint.AUTO ->
+                systemTurnOrderingPolicy(kind).preserveChronologyWhenLateAfterAssistant
+        }
+    }
+
+    internal fun shouldPreserveLateSystemActivityChronology(
+        item: RemodexConversationItem,
+    ): Boolean = shouldPreserveLateSystemActivityChronology(
+        kind = item.kind,
+        hint = item.systemTurnOrderingHint,
+    )
 
     fun activeTurnAnchorIndex(
         items: List<RemodexConversationItem>,
@@ -135,6 +196,7 @@ object TurnTimelineReducer {
                 itemId = mutation.itemId,
                 line = mutation.line,
                 orderIndex = mutation.orderIndex,
+                systemTurnOrderingHint = mutation.systemTurnOrderingHint,
             )
 
             is TimelineMutation.SystemTextDelta -> mergeTextDelta(
@@ -329,6 +391,7 @@ object TurnTimelineReducer {
         itemId: String?,
         line: String,
         orderIndex: Long,
+        systemTurnOrderingHint: ConversationSystemTurnOrderingHint,
     ): List<RemodexConversationItem> {
         val trimmedLine = line.trim()
         val existingIndex = items.indexOfFirst { item ->
@@ -351,6 +414,7 @@ object TurnTimelineReducer {
                 itemId = itemId,
                 isStreaming = true,
                 orderIndex = orderIndex,
+                systemTurnOrderingHint = systemTurnOrderingHint,
             )
         } else {
             val existing = items[existingIndex]
@@ -360,6 +424,13 @@ object TurnTimelineReducer {
                 itemId = itemId ?: existing.itemId,
                 isStreaming = true,
                 orderIndex = maxOf(existing.orderIndex, orderIndex),
+                systemTurnOrderingHint = if (
+                    systemTurnOrderingHint == ConversationSystemTurnOrderingHint.AUTO
+                ) {
+                    existing.systemTurnOrderingHint
+                } else {
+                    systemTurnOrderingHint
+                },
             )
         }
 
@@ -577,7 +648,7 @@ object TurnTimelineReducer {
         }
 
         val ordered = turnItems.sortedBy(RemodexConversationItem::orderIndex)
-        if (hasLateCommandForDifferentAssistantItem(ordered)) {
+        if (hasLateAnchoredSystemActivityForDifferentAssistantItem(ordered)) {
             return true
         }
         var hasActivityBeforeAssistant = false
@@ -592,21 +663,23 @@ object TurnTimelineReducer {
         return false
     }
 
-    private fun hasLateCommandForDifferentAssistantItem(
+    private fun hasLateAnchoredSystemActivityForDifferentAssistantItem(
         ordered: List<RemodexConversationItem>,
     ): Boolean {
+        var seenAssistant = false
         var latestAssistantItemId: String? = null
         ordered.forEach { item ->
             when {
                 item.speaker == ConversationSpeaker.ASSISTANT -> {
+                    seenAssistant = true
                     latestAssistantItemId = normalizedIdentifier(item.itemId)
                 }
 
-                latestAssistantItemId != null &&
+                seenAssistant &&
                     item.speaker == ConversationSpeaker.SYSTEM &&
-                    item.kind == ConversationItemKind.COMMAND_EXECUTION -> {
-                    val activityItemId = normalizedIdentifier(item.itemId) ?: return@forEach
-                    if (activityItemId != latestAssistantItemId) {
+                    shouldAnchorSystemActivityAfterAssistant(item) -> {
+                    val activityItemId = normalizedIdentifier(item.itemId)
+                    if (latestAssistantItemId == null || activityItemId == null || activityItemId != latestAssistantItemId) {
                         return true
                     }
                 }
@@ -615,50 +688,25 @@ object TurnTimelineReducer {
         return false
     }
 
+    private fun shouldAnchorSystemActivityAfterAssistant(
+        item: RemodexConversationItem,
+    ): Boolean {
+        return shouldPreserveLateSystemActivityChronology(item)
+    }
+
     private fun isInterleavableSystemActivity(
         item: RemodexConversationItem,
     ): Boolean {
         if (item.speaker != ConversationSpeaker.SYSTEM) {
             return false
         }
-        return when (item.kind) {
-            ConversationItemKind.REASONING,
-            ConversationItemKind.TOOL_ACTIVITY,
-            ConversationItemKind.MCP_TOOL_CALL,
-            ConversationItemKind.WEB_SEARCH,
-            ConversationItemKind.COMMAND_EXECUTION,
-            -> true
-
-            ConversationItemKind.CHAT,
-            ConversationItemKind.IMAGE_VIEW,
-            ConversationItemKind.IMAGE_GENERATION,
-            ConversationItemKind.FILE_CHANGE,
-            ConversationItemKind.SUBAGENT_ACTION,
-            ConversationItemKind.PLAN,
-            ConversationItemKind.USER_INPUT_PROMPT,
-            -> false
-        }
+        return isInterleavableSystemActivityKind(item.kind)
     }
 
     private fun intraTurnPriority(item: RemodexConversationItem): Int {
         return when (item.speaker) {
             ConversationSpeaker.USER -> 0
-            ConversationSpeaker.SYSTEM -> when (item.kind) {
-                ConversationItemKind.REASONING -> 1
-                ConversationItemKind.TOOL_ACTIVITY -> 2
-                ConversationItemKind.MCP_TOOL_CALL -> 2
-                ConversationItemKind.WEB_SEARCH -> 2
-                ConversationItemKind.COMMAND_EXECUTION -> 2
-                ConversationItemKind.IMAGE_VIEW -> 3
-                ConversationItemKind.IMAGE_GENERATION -> 3
-                ConversationItemKind.SUBAGENT_ACTION -> 3
-                ConversationItemKind.CHAT,
-                ConversationItemKind.PLAN,
-                -> 4
-
-                ConversationItemKind.FILE_CHANGE -> 5
-                ConversationItemKind.USER_INPUT_PROMPT -> 6
-            }
+            ConversationSpeaker.SYSTEM -> systemTurnOrderingPolicy(item.kind).leadingPriority
 
             ConversationSpeaker.ASSISTANT -> 4
         }

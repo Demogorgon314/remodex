@@ -7,6 +7,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -485,6 +486,7 @@ class TurnTimelineReducerTest {
                     itemId = "tool-activity-item",
                     line = "Running ./gradlew :app:testDebugUnitTest",
                     orderIndex = 2,
+                    systemTurnOrderingHint = ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
                 ),
                 TimelineMutation.ReasoningTextDelta(
                     messageId = "reasoning-1",
@@ -505,6 +507,10 @@ class TurnTimelineReducerTest {
         assertEquals("tool-activity-item", toolActivity.itemId)
         assertTrue(toolActivity.text.contains("Running ./gradlew"))
         assertTrue(toolActivity.isStreaming)
+        assertEquals(
+            ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
+            toolActivity.systemTurnOrderingHint,
+        )
     }
 
     @Test
@@ -797,6 +803,172 @@ class TurnTimelineReducerTest {
 
         assertEquals(
             listOf("assistant-1", "command-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves web search after assistant when a new activity item starts later in the turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response chunk",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "search-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.WEB_SEARCH,
+                    text = "Searching the web",
+                    turnId = "turn-1",
+                    itemId = "search-item-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-1", "search-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves explicit tool activity after assistant when a new item starts later in the turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response chunk",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "tool-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.TOOL_ACTIVITY,
+                    text = "Searching app/src",
+                    turnId = "turn-1",
+                    itemId = "tool-item-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                    systemTurnOrderingHint = ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-1", "tool-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves mcp tool call after assistant when a new activity item starts later in the turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response chunk",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "mcp-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.MCP_TOOL_CALL,
+                    text = "Calling browser/open_page",
+                    turnId = "turn-1",
+                    itemId = "mcp-item-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-1", "mcp-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves image generation after assistant when a new activity item starts later in the turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response chunk",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "image-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.IMAGE_GENERATION,
+                    text = "Generated Image",
+                    turnId = "turn-1",
+                    itemId = "image-item-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-1", "image-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves subagent action after assistant when a new activity item starts later in the turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "First response chunk",
+                    turnId = "turn-1",
+                    itemId = "assistant-item-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "subagent-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.SUBAGENT_ACTION,
+                    text = "Spawned 1 helper agent",
+                    turnId = "turn-1",
+                    itemId = "subagent-item-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("assistant-1", "subagent-1"),
             projected.map(RemodexConversationItem::id),
         )
     }

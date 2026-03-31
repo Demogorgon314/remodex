@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
@@ -262,6 +263,8 @@ sealed interface TimelineMutation {
         val itemId: String? = null,
         val line: String,
         val orderIndex: Long,
+        val systemTurnOrderingHint: ConversationSystemTurnOrderingHint =
+            ConversationSystemTurnOrderingHint.AUTO,
     ) : TimelineMutation
 
     data class SystemTextDelta(
@@ -295,6 +298,8 @@ fun timelineItem(
     structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
     orderIndex: Long,
     assistantChangeSet: RemodexAssistantChangeSet? = null,
+    systemTurnOrderingHint: ConversationSystemTurnOrderingHint =
+        ConversationSystemTurnOrderingHint.AUTO,
 ): RemodexConversationItem {
     return RemodexConversationItem(
         id = id,
@@ -313,6 +318,7 @@ fun timelineItem(
         structuredUserInputRequest = structuredUserInputRequest,
         orderIndex = orderIndex,
         assistantChangeSet = assistantChangeSet,
+        systemTurnOrderingHint = systemTurnOrderingHint,
     )
 }
 

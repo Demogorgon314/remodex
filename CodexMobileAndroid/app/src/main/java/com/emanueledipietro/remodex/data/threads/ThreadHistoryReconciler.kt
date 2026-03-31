@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.threads
 
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
@@ -386,6 +387,13 @@ internal object ThreadHistoryReconciler {
         val nextSubagentAction = serverItem.subagentAction ?: value.subagentAction
         val nextStructuredRequest = serverItem.structuredUserInputRequest ?: value.structuredUserInputRequest
         val nextAssistantChangeSet = serverItem.assistantChangeSet ?: value.assistantChangeSet
+        val nextSystemTurnOrderingHint = if (
+            serverItem.systemTurnOrderingHint != ConversationSystemTurnOrderingHint.AUTO
+        ) {
+            serverItem.systemTurnOrderingHint
+        } else {
+            value.systemTurnOrderingHint
+        }
         val nextStreaming = if (value.speaker == ConversationSpeaker.ASSISTANT || value.speaker == ConversationSpeaker.SYSTEM) {
             if (preservesRunningPresentation) {
                 localItem.isStreaming || serverItem.isStreaming
@@ -404,6 +412,7 @@ internal object ThreadHistoryReconciler {
             assistantChangeSet = nextAssistantChangeSet,
             createdAtEpochMs = value.createdAtEpochMs ?: serverItem.createdAtEpochMs,
             isStreaming = nextStreaming,
+            systemTurnOrderingHint = nextSystemTurnOrderingHint,
         )
     }
 

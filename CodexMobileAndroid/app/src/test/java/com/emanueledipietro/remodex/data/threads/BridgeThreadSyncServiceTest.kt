@@ -20,6 +20,7 @@ import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -6319,6 +6320,218 @@ class BridgeThreadSyncServiceTest {
             projected.map(RemodexConversationItem::id),
         )
         assertEquals("Searched the web", projected.last().text)
+    }
+
+    @Test
+    fun `web search that starts after the first assistant block stays after it in an empty turn`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-web-search-first-turn",
+                    title = "First turn web search thread",
+                    preview = "",
+                    projectPath = "/tmp/project-web-search-first-turn",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-web-search-first-turn"))
+                put("turnId", JsonPrimitive("turn-web-search-first-turn"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-web-search-first-turn"))
+                put("turnId", JsonPrimitive("turn-web-search-first-turn"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("search-item-first-turn"))
+                        put("type", JsonPrimitive("webSearch"))
+                        put("query", JsonPrimitive("compose lazycolumn"))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-web-search-first-turn" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(
+            listOf("assistant-turn-web-search-first-turn", "search-item-first-turn"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals("First streamed answer block", projected.first().text)
+        assertEquals("Searched the web", projected.last().text)
+    }
+
+    @Test
+    fun `tool call lifecycle item that starts after the first assistant block stays after it in an empty turn`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-toolcall-first-turn",
+                    title = "First turn tool call thread",
+                    preview = "",
+                    projectPath = "/tmp/project-toolcall-first-turn",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-toolcall-first-turn"))
+                put("turnId", JsonPrimitive("turn-toolcall-first-turn"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-toolcall-first-turn"))
+                put("turnId", JsonPrimitive("turn-toolcall-first-turn"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("toolcall-item-first-turn"))
+                        put("type", JsonPrimitive("toolCall"))
+                        put(
+                            "output",
+                            buildJsonArray {
+                                add(JsonPrimitive("searched app/src/main"))
+                            },
+                        )
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-toolcall-first-turn" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val toolItem = projected.last()
+
+        assertEquals(
+            listOf("assistant-turn-toolcall-first-turn", "toolcall-item-first-turn"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals(ConversationItemKind.TOOL_ACTIVITY, toolItem.kind)
+        assertEquals(
+            ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
+            toolItem.systemTurnOrderingHint,
+        )
+        assertTrue(toolItem.text.contains("searched app/src/main"))
+    }
+
+    @Test
+    fun `tool activity delta that starts after the first assistant block stays after it in an empty turn`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-tool-activity-first-turn",
+                    title = "First turn tool activity thread",
+                    preview = "",
+                    projectPath = "/tmp/project-tool-activity-first-turn",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-tool-activity-first-turn"))
+                put("turnId", JsonPrimitive("turn-tool-activity-first-turn"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendToolCallDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-tool-activity-first-turn"))
+                put("turnId", JsonPrimitive("turn-tool-activity-first-turn"))
+                put("itemId", JsonPrimitive("tool-activity-item-first-turn"))
+                put("delta", JsonPrimitive("searched app/src/main"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-tool-activity-first-turn" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val toolItem = projected.last()
+
+        assertEquals(
+            listOf("assistant-turn-tool-activity-first-turn", "tool-activity-item-first-turn"),
+            projected.map(RemodexConversationItem::id),
+        )
+        assertEquals(ConversationItemKind.TOOL_ACTIVITY, toolItem.kind)
+        assertEquals(
+            ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
+            toolItem.systemTurnOrderingHint,
+        )
+        assertTrue(toolItem.text.contains("searched app/src/main"))
     }
 
     @Test
