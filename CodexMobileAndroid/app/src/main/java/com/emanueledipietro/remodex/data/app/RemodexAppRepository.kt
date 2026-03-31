@@ -20,6 +20,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
@@ -30,6 +31,7 @@ import java.io.File
 interface RemodexAppRepository {
     val session: StateFlow<RemodexSessionSnapshot>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
+    val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>>
     val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot>
     val gptAccountErrorMessage: StateFlow<String?>
     val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus>

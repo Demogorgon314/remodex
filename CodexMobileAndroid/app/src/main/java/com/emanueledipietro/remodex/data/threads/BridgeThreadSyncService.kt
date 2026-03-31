@@ -24,6 +24,7 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
@@ -229,12 +230,27 @@ class BridgeThreadSyncService(
         val turnCompletedObserved: Boolean = false,
     )
 
+    private data class AssistantResponseTrace(
+        val requestStartedAtMs: Long,
+        val turnId: String? = null,
+        val itemId: String? = null,
+        val messageId: String? = null,
+        val firstOutputAtMs: Long? = null,
+        val lastOutputAtMs: Long? = null,
+        val outputTokens: Int? = null,
+        val baselineTotalOutputTokens: Int? = null,
+        val outputObservationCount: Int = 0,
+        val turnCompleted: Boolean = false,
+    )
+
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
         MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+    private val backingAssistantResponseMetricsByThreadId =
+        MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
@@ -243,6 +259,8 @@ class BridgeThreadSyncService(
     private val reviewDebugTurnIds = mutableSetOf<String>()
     private val reviewDebugThreadIds = mutableSetOf<String>()
     private val streamingTraceByThread = mutableMapOf<String, AssistantStreamingTrace>()
+    private val assistantResponseTraceByThread = mutableMapOf<String, AssistantResponseTrace>()
+    private val latestAssistantTotalOutputTokensByThread = mutableMapOf<String, Int>()
     private val runningThreadFallbackIds = mutableSetOf<String>()
     private val assistantCompletionFingerprintByThread = mutableMapOf<String, AssistantCompletionFingerprint>()
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
@@ -260,6 +278,8 @@ class BridgeThreadSyncService(
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
         backingCommandExecutionDetails
+    override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> =
+        backingAssistantResponseMetricsByThreadId
     override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
@@ -300,6 +320,8 @@ class BridgeThreadSyncService(
                     lifecycleCatchupJobByThread.clear()
                     activeTurnIdByThread.clear()
                     threadIdByTurnId.clear()
+                    assistantResponseTraceByThread.clear()
+                    latestAssistantTotalOutputTokensByThread.clear()
                     runningThreadFallbackIds.clear()
                     assistantCompletionFingerprintByThread.clear()
                     latestTurnTerminalStateByThread.clear()
@@ -307,6 +329,7 @@ class BridgeThreadSyncService(
                     resumedThreadIds.clear()
                     backingThreads.value = emptyList()
                     backingCommandExecutionDetails.value = emptyMap()
+                    backingAssistantResponseMetricsByThreadId.value = emptyMap()
                     backingPendingApprovalRequest.value = null
                 }
             }
@@ -2097,7 +2120,11 @@ class BridgeThreadSyncService(
             "turn/completed" -> paramsObject?.let(::handleTurnCompletedNotification)
             "turn/plan/updated" -> paramsObject?.let(::handleTurnPlanUpdatedNotification)
             "thread/status/changed" -> paramsObject?.let(::handleThreadStatusChangedNotification)
+            "thread/tokenUsage/updated" -> paramsObject?.let(::handleThreadTokenUsageUpdatedNotification)
             "serverRequest/resolved" -> paramsObject?.let(::handleServerRequestResolvedNotification)
+            "codex/event" -> if (paramsObject != null && handleLegacyCodexEnvelopeEvent(paramsObject)) return
+            "codex/event/token_count" -> if (paramsObject != null && handleLegacyCodexNamedEvent(method = method, paramsObject = paramsObject)) return
+            "token_count" -> if (paramsObject != null && handleLegacyTokenCountEvent(payload = paramsObject, paramsObject = paramsObject)) return
 
             "item/agentMessage/delta",
             "codex/event/agent_message_content_delta",
@@ -2142,8 +2169,82 @@ class BridgeThreadSyncService(
                 if (handleDiffNotificationFallback(method, paramsObject)) {
                     return
                 }
+                if (handleLegacyCodexNamedEvent(method = method, paramsObject = paramsObject)) {
+                    return
+                }
             }
         }
+    }
+
+    private fun handleLegacyCodexEnvelopeEvent(paramsObject: JsonObject): Boolean {
+        val payload = paramsObject.firstObject("msg") ?: return false
+        val eventType = payload.firstString("type")
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf(String::isNotBlank)
+            ?: return false
+        return handleLegacyCodexEventType(
+            eventType = eventType,
+            payload = payload,
+            paramsObject = paramsObject,
+        )
+    }
+
+    private fun handleLegacyCodexNamedEvent(
+        method: String,
+        paramsObject: JsonObject,
+    ): Boolean {
+        if (!method.startsWith("codex/event/")) {
+            return false
+        }
+        val eventType = method
+            .removePrefix("codex/event/")
+            .trim()
+            .lowercase(Locale.ROOT)
+            .takeIf(String::isNotBlank)
+            ?: return false
+        val payload = paramsObject.firstObject("msg")
+            ?: paramsObject.firstObject("event")
+            ?: paramsObject
+        return handleLegacyCodexEventType(
+            eventType = eventType,
+            payload = payload,
+            paramsObject = paramsObject,
+        )
+    }
+
+    private fun handleLegacyCodexEventType(
+        eventType: String,
+        payload: JsonObject,
+        paramsObject: JsonObject,
+    ): Boolean {
+        return when (eventType) {
+            "token_count" -> handleLegacyTokenCountEvent(
+                payload = payload,
+                paramsObject = paramsObject,
+            )
+            else -> false
+        }
+    }
+
+    private fun handleLegacyTokenCountEvent(
+        payload: JsonObject,
+        paramsObject: JsonObject,
+    ): Boolean {
+        val outputTokenUsage = extractLegacyCodexOutputTokens(payload) ?: return false
+        val turnId = payload.firstString("turnId", "turn_id", "id")
+            ?: extractAssistantTurnId(paramsObject = paramsObject, eventObject = payload)
+            ?: extractTurnId(paramsObject)
+        val threadId = payload.firstString("threadId", "thread_id", "conversationId", "conversation_id")
+            ?: resolveThreadId(paramsObject, turnIdHint = turnId)
+            ?: return false
+        recordAssistantOutputTokens(
+            threadId = threadId,
+            turnId = turnId,
+            totalOutputTokens = outputTokenUsage.totalOutputTokens,
+            lastOutputTokens = outputTokenUsage.lastOutputTokens,
+        )
+        return true
     }
 
     private suspend fun handleRequest(message: RpcMessage) {
@@ -2242,6 +2343,7 @@ class BridgeThreadSyncService(
     private fun handleTurnCompletedNotification(paramsObject: JsonObject) {
         val turnId = extractTurnIdForTurnLifecycleEvent(paramsObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        markAssistantTurnCompleted(threadId = threadId, turnId = turnId)
         logAssistantStreamingTraceTerminal(
             threadId = threadId,
             event = "turnCompleted",
@@ -2273,6 +2375,18 @@ class BridgeThreadSyncService(
                 postTurnCompletionCatchup(threadId = threadId, turnId = turnId)
             }
         }
+    }
+
+    private fun handleThreadTokenUsageUpdatedNotification(paramsObject: JsonObject) {
+        val threadId = resolveThreadId(paramsObject) ?: return
+        val turnId = extractTurnId(paramsObject)
+        val outputTokenUsage = extractThreadTokenUsageUpdatedOutputTokens(paramsObject) ?: return
+        recordAssistantOutputTokens(
+            threadId = threadId,
+            turnId = turnId,
+            totalOutputTokens = outputTokenUsage.totalOutputTokens,
+            lastOutputTokens = outputTokenUsage.lastOutputTokens,
+        )
     }
 
     private fun handleThreadStatusChangedNotification(paramsObject: JsonObject) {
@@ -2447,7 +2561,13 @@ class BridgeThreadSyncService(
                 itemId = effectiveItemId,
                 speaker = ConversationSpeaker.ASSISTANT,
                 kind = ConversationItemKind.CHAT,
-            ),
+                ),
+        )
+        recordAssistantOutputObserved(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            itemId = effectiveItemId,
+            messageId = effectiveMessageId,
         )
         upsertAssistantTimelineItem(
             threadId = threadId,
@@ -2972,6 +3092,12 @@ class BridgeThreadSyncService(
                 assistantChangeSet = existingItem?.assistantChangeSet,
             ),
         )
+        recordAssistantOutputObserved(
+            threadId = threadId,
+            turnId = effectiveTurnId,
+            itemId = effectiveItemId,
+            messageId = messageId,
+        )
         recordAssistantCompletionFingerprint(threadId = threadId, text = text)
     }
 
@@ -3073,6 +3199,12 @@ class BridgeThreadSyncService(
                     ),
                     assistantChangeSet = completionItem?.assistantChangeSet ?: existingItem?.assistantChangeSet,
                 ),
+            )
+            recordAssistantOutputObserved(
+                threadId = threadId,
+                turnId = effectiveTurnId,
+                itemId = effectiveItemId,
+                messageId = completionMessageId,
             )
             recordAssistantCompletionFingerprint(threadId = threadId, text = body)
         } else {
@@ -4235,6 +4367,12 @@ class BridgeThreadSyncService(
         )
         val resolvedMessageId = existingItem?.id ?: preferredMessageId
         val resolvedItemId = itemId ?: existingItem?.itemId
+        trackAssistantMessageReference(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = resolvedItemId,
+            messageId = resolvedMessageId,
+        )
         upsertAssistantTimelineItem(
             threadId = threadId,
             item = timelineItem(
@@ -6441,6 +6579,9 @@ class BridgeThreadSyncService(
         turnId: String?,
     ) {
         latestTurnTerminalStateByThread[threadId] = state
+        if (state != RemodexTurnTerminalState.COMPLETED) {
+            assistantResponseTraceByThread.remove(threadId)
+        }
         if (state == RemodexTurnTerminalState.STOPPED && !turnId.isNullOrBlank()) {
             stoppedTurnIdsByThread[threadId] = stoppedTurnIdsByThread[threadId].orEmpty() + turnId
         }
@@ -6454,6 +6595,16 @@ class BridgeThreadSyncService(
         activeTurnIdByThread[threadId] = turnId
         threadIdByTurnId[turnId] = threadId
         streamingTraceByThread[threadId] = AssistantStreamingTrace(lastTurnId = turnId)
+        val existingTrace = assistantResponseTraceByThread[threadId]
+        assistantResponseTraceByThread[threadId] = if (existingTrace?.turnId == turnId) {
+            existingTrace
+        } else {
+            AssistantResponseTrace(
+                requestStartedAtMs = nowEpochMs(),
+                turnId = turnId,
+                baselineTotalOutputTokens = latestAssistantTotalOutputTokensByThread[threadId],
+            )
+        }
         runningThreadFallbackIds.remove(threadId)
         latestTurnTerminalStateByThread.remove(threadId)
         stoppedTurnIdsByThread[threadId] = stoppedTurnIdsByThread[threadId].orEmpty() - turnId
@@ -6471,6 +6622,156 @@ class BridgeThreadSyncService(
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.remove(threadId)
         syncThreadLifecycleState(threadId = threadId, isRunning = false)
+    }
+
+    private fun trackAssistantMessageReference(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        messageId: String,
+    ) {
+        val now = nowEpochMs()
+        val previous = assistantResponseTraceByThread[threadId]
+        val nextTrace = if (previous != null && (turnId == null || previous.turnId == null || previous.turnId == turnId)) {
+            previous.copy(
+                turnId = turnId ?: previous.turnId,
+                itemId = itemId ?: previous.itemId,
+                messageId = messageId,
+            )
+        } else {
+            AssistantResponseTrace(
+                requestStartedAtMs = now,
+                turnId = turnId,
+                itemId = itemId,
+                messageId = messageId,
+                baselineTotalOutputTokens = latestAssistantTotalOutputTokensByThread[threadId],
+            )
+        }
+        assistantResponseTraceByThread[threadId] = nextTrace
+    }
+
+    private fun recordAssistantOutputObserved(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        messageId: String,
+    ) {
+        val now = nowEpochMs()
+        val previous = assistantResponseTraceByThread[threadId]
+        val nextTrace = if (previous != null && (turnId == null || previous.turnId == null || previous.turnId == turnId)) {
+            previous.copy(
+                turnId = turnId ?: previous.turnId,
+                itemId = itemId ?: previous.itemId,
+                messageId = messageId,
+                firstOutputAtMs = previous.firstOutputAtMs ?: now,
+                lastOutputAtMs = now,
+                outputObservationCount = previous.outputObservationCount + 1,
+            )
+        } else {
+            AssistantResponseTrace(
+                requestStartedAtMs = now,
+                turnId = turnId,
+                itemId = itemId,
+                messageId = messageId,
+                firstOutputAtMs = now,
+                lastOutputAtMs = now,
+                baselineTotalOutputTokens = latestAssistantTotalOutputTokensByThread[threadId],
+                outputObservationCount = 1,
+            )
+        }
+        assistantResponseTraceByThread[threadId] = nextTrace
+        maybePublishAssistantResponseMetrics(threadId)
+    }
+
+    private fun recordAssistantOutputTokens(
+        threadId: String,
+        turnId: String?,
+        totalOutputTokens: Int?,
+        lastOutputTokens: Int?,
+    ) {
+        if ((totalOutputTokens == null || totalOutputTokens < 0) && (lastOutputTokens == null || lastOutputTokens < 0)) {
+            return
+        }
+        val now = nowEpochMs()
+        val previous = assistantResponseTraceByThread[threadId]
+        val normalizedTotalOutputTokens = totalOutputTokens?.takeIf { it >= 0 }
+        val normalizedLastOutputTokens = lastOutputTokens?.takeIf { it >= 0 }
+        val rememberedTotalOutputTokens = latestAssistantTotalOutputTokensByThread[threadId]
+        val baselineTotalOutputTokens = previous?.baselineTotalOutputTokens
+            ?: rememberedTotalOutputTokens
+            ?: if (normalizedTotalOutputTokens != null && normalizedLastOutputTokens != null) {
+                (normalizedTotalOutputTokens - normalizedLastOutputTokens).coerceAtLeast(0)
+            } else {
+                null
+            }
+        normalizedTotalOutputTokens?.let { total ->
+            latestAssistantTotalOutputTokensByThread[threadId] = maxOf(total, rememberedTotalOutputTokens ?: total)
+        }
+        val derivedOutputTokens = when {
+            normalizedTotalOutputTokens != null && baselineTotalOutputTokens != null -> {
+                (normalizedTotalOutputTokens - baselineTotalOutputTokens).coerceAtLeast(0)
+            }
+
+            previous?.outputTokens != null && normalizedLastOutputTokens != null -> {
+                previous.outputTokens!! + normalizedLastOutputTokens
+            }
+
+            normalizedLastOutputTokens != null -> normalizedLastOutputTokens
+            else -> previous?.outputTokens
+        }
+        val nextTrace = if (previous != null && (turnId == null || previous.turnId == null || previous.turnId == turnId)) {
+            previous.copy(
+                turnId = turnId ?: previous.turnId,
+                baselineTotalOutputTokens = previous.baselineTotalOutputTokens ?: baselineTotalOutputTokens,
+                outputTokens = derivedOutputTokens?.let { maxOf(it, previous.outputTokens ?: 0) } ?: previous.outputTokens,
+            )
+        } else {
+            AssistantResponseTrace(
+                requestStartedAtMs = now,
+                turnId = turnId,
+                outputTokens = derivedOutputTokens,
+                baselineTotalOutputTokens = baselineTotalOutputTokens,
+            )
+        }
+        assistantResponseTraceByThread[threadId] = nextTrace
+        maybePublishAssistantResponseMetrics(threadId)
+    }
+
+    private fun markAssistantTurnCompleted(
+        threadId: String,
+        turnId: String?,
+    ) {
+        val previous = assistantResponseTraceByThread[threadId] ?: return
+        if (turnId != null && previous.turnId != null && previous.turnId != turnId) {
+            return
+        }
+        assistantResponseTraceByThread[threadId] = previous.copy(
+            turnId = turnId ?: previous.turnId,
+            turnCompleted = true,
+        )
+        maybePublishAssistantResponseMetrics(threadId)
+    }
+
+    private fun maybePublishAssistantResponseMetrics(threadId: String) {
+        val trace = assistantResponseTraceByThread[threadId] ?: return
+        if (!trace.turnCompleted) {
+            return
+        }
+        val messageId = trace.messageId ?: return
+        val outputTokens = trace.outputTokens ?: return
+        val firstOutputAtMs = trace.firstOutputAtMs ?: return
+        val lastOutputAtMs = trace.lastOutputAtMs ?: return
+        val metrics = buildAssistantResponseMetrics(
+            messageId = messageId,
+            turnId = trace.turnId,
+            outputTokens = outputTokens,
+            requestStartedAtMs = trace.requestStartedAtMs,
+            firstOutputAtMs = firstOutputAtMs,
+            lastOutputAtMs = lastOutputAtMs,
+            outputObservationCount = trace.outputObservationCount,
+        ) ?: return
+        backingAssistantResponseMetricsByThreadId.value =
+            backingAssistantResponseMetricsByThreadId.value + (threadId to metrics)
     }
 
     private fun scheduleLifecycleCatchup(

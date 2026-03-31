@@ -24,6 +24,7 @@ import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
@@ -170,6 +171,8 @@ class DefaultRemodexAppRepository(
     override val session: StateFlow<RemodexSessionSnapshot> = sessionState
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
         threadSyncService.commandExecutionDetails
+    override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> =
+        threadSyncService.assistantResponseMetricsByThreadId
     override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotState
     override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageState
     override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusState

@@ -11,6 +11,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
@@ -2260,6 +2261,7 @@ class AppViewModelTest {
     private class TestRemodexAppRepository : RemodexAppRepository {
         val snapshot = MutableStateFlow(RemodexSessionSnapshot())
         val commandDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
+        val assistantResponseMetricsState = MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
         val gptAccountSnapshotFlow = MutableStateFlow(RemodexGptAccountSnapshot())
         val gptAccountErrorMessageFlow = MutableStateFlow<String?>(null)
         val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
@@ -2341,6 +2343,7 @@ class AppViewModelTest {
 
         override val session: StateFlow<RemodexSessionSnapshot> = snapshot
         override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = commandDetails
+        override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> = assistantResponseMetricsState
         override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotFlow
         override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageFlow
         override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusFlow

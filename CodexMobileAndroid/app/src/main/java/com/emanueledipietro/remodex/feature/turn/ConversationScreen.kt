@@ -201,6 +201,7 @@ import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.feature.appshell.PlanComposerSessionUiState
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertSheetState
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
@@ -1193,6 +1194,9 @@ fun ConversationScreen(
                                             item = message,
                                             accessoryState = blockAccessories[message.id],
                                             assistantRevertPresentation = uiState.assistantRevertStatesByMessageId[message.id],
+                                            contextMenuFooterText = uiState.assistantResponseMetrics
+                                                ?.takeIf { metrics -> metrics.messageId == message.id }
+                                                ?.let(::formatAssistantResponseMetricsLabel),
                                             onTapAssistantRevert = onStartAssistantRevertPreview,
                                             onOpenFileChangeDetails = { presentation ->
                                                 fileChangeSheetPresentation = presentation
@@ -5241,6 +5245,7 @@ private fun ConversationMessageActionContainer(
     messageRole: ConversationSpeaker,
     usesMarkdownSelection: Boolean,
     allowsSelectText: Boolean,
+    footerText: String? = null,
     modifier: Modifier = Modifier,
     alignMenuToEnd: Boolean = false,
     onClick: (() -> Unit)? = null,
@@ -5311,6 +5316,7 @@ private fun ConversationMessageActionContainer(
             alignToTrailing = alignMenuToEnd,
             pressOffset = menuPressOffset,
             showsSelectTextAction = allowsSelectText && hasActionableText,
+            footerText = footerText,
             onSelectText = {
                 selectableTextSheetState = SelectableMessageTextSheetState(
                     role = messageRole,
@@ -5345,6 +5351,7 @@ private fun ConversationMessageContextMenu(
     alignToTrailing: Boolean,
     pressOffset: IntOffset,
     showsSelectTextAction: Boolean,
+    footerText: String?,
     onSelectText: () -> Unit,
     onCopy: () -> Unit,
     onDismissRequest: () -> Unit,
@@ -5430,6 +5437,18 @@ private fun ConversationMessageContextMenu(
                             )
                         },
                     )
+                    footerText?.takeIf(String::isNotBlank)?.let { resolvedFooterText ->
+                        HorizontalDivider(
+                            modifier = Modifier.padding(top = 2.dp),
+                            color = chrome.subtleBorder,
+                        )
+                        Text(
+                            text = resolvedFooterText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = chrome.secondaryText,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        )
+                    }
                 }
             }
         }
@@ -6210,6 +6229,7 @@ private fun AssistantConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
     assistantRevertPresentation: RemodexAssistantRevertPresentation?,
+    contextMenuFooterText: String? = null,
     onTapAssistantRevert: (String) -> Unit,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
@@ -6251,6 +6271,7 @@ private fun AssistantConversationRow(
         messageRole = ConversationSpeaker.ASSISTANT,
         usesMarkdownSelection = true,
         allowsSelectText = true,
+        footerText = contextMenuFooterText,
         modifier = Modifier.fillMaxWidth(0.94f),
     ) { showContextMenuAt ->
         Column(
@@ -7581,6 +7602,15 @@ private fun formatCommandExecutionDuration(durationMs: Int): String {
     val minutes = wholeSeconds / 60
     val remainingSeconds = wholeSeconds % 60
     return "${minutes}m ${remainingSeconds}s"
+}
+
+internal fun formatAssistantResponseMetricsLabel(metrics: RemodexAssistantResponseMetrics): String {
+    return String.format(
+        Locale.US,
+        "%.1f token/s \u00b7 TTFT %.2fs",
+        metrics.tokensPerSecond,
+        metrics.ttftMs / 1000.0,
+    )
 }
 
 @Composable

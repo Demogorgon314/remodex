@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
@@ -58,6 +59,7 @@ interface ThreadSyncService {
     val threads: StateFlow<List<ThreadSyncSnapshot>>
     val availableModels: StateFlow<List<RemodexModelOption>>
     val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>>
+    val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>>
     val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?>
     val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?>
     val supportsThreadFork: StateFlow<Boolean>

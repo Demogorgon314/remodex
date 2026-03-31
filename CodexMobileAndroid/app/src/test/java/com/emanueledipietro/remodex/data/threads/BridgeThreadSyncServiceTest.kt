@@ -310,6 +310,131 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `legacy token count publishes assistant response metrics after completion`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(service, "setActiveTurnId", "thread-metrics", "turn-metrics")
+        Thread.sleep(5)
+        invokePrivateMethod(
+            service,
+            "trackAssistantMessageReference",
+            "thread-metrics",
+            "turn-metrics",
+            "item-metrics",
+            "assistant-message",
+        )
+        invokePrivateMethod(
+            service,
+            "recordAssistantOutputObserved",
+            "thread-metrics",
+            "turn-metrics",
+            "item-metrics",
+            "assistant-message",
+        )
+        invokePrivateMethod(
+            service,
+            "handleLegacyTokenCountEvent",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-metrics"))
+                put("turnId", JsonPrimitive("turn-metrics"))
+                put(
+                    "info",
+                    buildJsonObject {
+                        put(
+                            "last_token_usage",
+                            buildJsonObject {
+                                put("output_tokens", JsonPrimitive(64))
+                            },
+                        )
+                    },
+                )
+            },
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-metrics"))
+                put("turnId", JsonPrimitive("turn-metrics"))
+            },
+        )
+        invokePrivateMethod(service, "markAssistantTurnCompleted", "thread-metrics", "turn-metrics")
+
+        val metrics = service.assistantResponseMetricsByThreadId.value["thread-metrics"]
+
+        assertNotNull(metrics)
+        assertEquals("assistant-message", metrics?.messageId)
+        assertEquals("turn-metrics", metrics?.turnId)
+        assertEquals(64, metrics?.outputTokens)
+        assertTrue((metrics?.tokensPerSecond ?: 0.0) > 0.0)
+        assertTrue((metrics?.ttftMs ?: -1L) >= 0L)
+    }
+
+    @Test
+    fun `thread token usage updated publishes assistant response metrics after completion`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(service, "setActiveTurnId", "thread-v2-metrics", "turn-v2-metrics")
+        Thread.sleep(5)
+        invokePrivateMethod(
+            service,
+            "trackAssistantMessageReference",
+            "thread-v2-metrics",
+            "turn-v2-metrics",
+            "item-v2-metrics",
+            "assistant-message-v2",
+        )
+        invokePrivateMethod(
+            service,
+            "recordAssistantOutputObserved",
+            "thread-v2-metrics",
+            "turn-v2-metrics",
+            "item-v2-metrics",
+            "assistant-message-v2",
+        )
+        invokePrivateMethod(
+            service,
+            "handleThreadTokenUsageUpdatedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-v2-metrics"))
+                put("turnId", JsonPrimitive("turn-v2-metrics"))
+                put(
+                    "tokenUsage",
+                    buildJsonObject {
+                        put(
+                            "last",
+                            buildJsonObject {
+                                put("outputTokens", JsonPrimitive(9))
+                            },
+                        )
+                    },
+                )
+            },
+        )
+        invokePrivateMethod(service, "markAssistantTurnCompleted", "thread-v2-metrics", "turn-v2-metrics")
+
+        val metrics = service.assistantResponseMetricsByThreadId.value["thread-v2-metrics"]
+
+        assertNotNull(metrics)
+        assertEquals("assistant-message-v2", metrics?.messageId)
+        assertEquals("turn-v2-metrics", metrics?.turnId)
+        assertEquals(9, metrics?.outputTokens)
+        assertTrue((metrics?.tokensPerSecond ?: 0.0) > 0.0)
+    }
+
+    @Test
     fun `assistant completion reuses same turn duplicate text like ios`() {
         val existing = RemodexConversationItem(
             id = "assistant-turn-1",

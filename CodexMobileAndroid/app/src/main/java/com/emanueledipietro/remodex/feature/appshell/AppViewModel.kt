@@ -10,6 +10,7 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.platform.media.AndroidVoiceRecorder
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
+import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertPresentation
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
@@ -155,6 +156,7 @@ data class AppUiState(
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
     val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
+    val assistantResponseMetrics: RemodexAssistantResponseMetrics? = null,
 ) {
     val isConnected: Boolean
         get() = connectionStatus.phase == RemodexConnectionPhase.CONNECTED
@@ -257,6 +259,7 @@ private data class ComposerRenderStateB(
 private data class SessionRenderState(
     val snapshot: com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot,
     val commandExecutionDetails: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
+    val assistantResponseMetricsByThreadId: Map<String, RemodexAssistantResponseMetrics> = emptyMap(),
 )
 
 private data class SettingsRenderState(
@@ -430,10 +433,12 @@ class AppViewModel(
         combine(
             repository.session,
             repository.commandExecutionDetails,
-        ) { snapshot, commandExecutionDetails ->
+            repository.assistantResponseMetricsByThreadId,
+        ) { snapshot, commandExecutionDetails, assistantResponseMetricsByThreadId ->
             SessionRenderState(
                 snapshot = snapshot,
                 commandExecutionDetails = commandExecutionDetails,
+                assistantResponseMetricsByThreadId = assistantResponseMetricsByThreadId,
             )
         }
 
@@ -600,6 +605,9 @@ class AppViewModel(
                 composerSendAnchorSignal = selectedThreadSendSignals.anchorSignal,
                 assistantRevertSheet = overlayState.gitUiState.assistantRevertSheet,
                 commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
+                assistantResponseMetrics = selectedThread?.id?.let(
+                    sessionRenderState.assistantResponseMetricsByThreadId::get,
+                ),
             )
         }
 
