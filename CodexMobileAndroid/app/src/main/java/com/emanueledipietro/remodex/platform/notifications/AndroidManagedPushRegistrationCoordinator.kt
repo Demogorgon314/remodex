@@ -145,7 +145,7 @@ class AndroidManagedPushRegistrationCoordinator(
             secureStore.writeString(SecureStoreKeys.PUSH_FCM_TOKEN, resolvedToken)
         }
 
-        if (secureConnectionCoordinator.state.value.secureState != SecureConnectionState.ENCRYPTED) {
+        if (!secureConnectionCoordinator.isEncryptedSessionReady()) {
             stateFlow.value = buildState(
                 authorizationStatus = authorizationStatus,
                 cachedToken = resolvedToken,

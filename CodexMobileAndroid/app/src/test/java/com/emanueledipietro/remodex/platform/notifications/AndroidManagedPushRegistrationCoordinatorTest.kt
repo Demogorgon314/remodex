@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -136,6 +137,60 @@ class AndroidManagedPushRegistrationCoordinatorTest {
         )
     }
 
+    @Test
+    fun `managed push coordinator skips registration when encrypted snapshot outlives secure transport`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-fcm-stale",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "notifications/push/register" to { buildJsonObject { } },
+            ),
+        )
+        val secureConnectionCoordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val registrationCoordinator = AndroidManagedPushRegistrationCoordinator(
+            secureConnectionCoordinator = secureConnectionCoordinator,
+            secureStore = store,
+            statusProvider = TestManagedPushStatusProvider(
+                authorizationStatus = RemodexNotificationAuthorizationStatus.AUTHORIZED,
+                alertsEnabled = true,
+            ),
+            tokenProvider = TestManagedPushTokenProvider(
+                supported = true,
+                token = "fcm-token-android-stale",
+            ),
+            scope = backgroundScope,
+            appEnvironment = "development",
+        )
+
+        try {
+            secureConnectionCoordinator.rememberRelayPairing(payload)
+            secureConnectionCoordinator.retryConnection()
+            awaitSecureState(secureConnectionCoordinator, SecureConnectionState.ENCRYPTED)
+            relayFactory.receivedRequests.clear()
+            clearSecureTransportSession(secureConnectionCoordinator)
+
+            registrationCoordinator.refresh(force = true)
+            advanceUntilIdle()
+
+            assertTrue(relayFactory.receivedRequests.none { it.method == "notifications/push/register" })
+            assertNull(registrationCoordinator.state.value.lastErrorMessage)
+        } finally {
+            secureConnectionCoordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
     private suspend fun TestScope.awaitSecureState(
         coordinator: SecureConnectionCoordinator,
         expectedState: SecureConnectionState,
@@ -162,6 +217,14 @@ class AndroidManagedPushRegistrationCoordinatorTest {
             Thread.sleep(10)
         }
         fail("Expected a secure bridge request for $method.")
+    }
+
+    private fun clearSecureTransportSession(
+        coordinator: SecureConnectionCoordinator,
+    ) {
+        val field = coordinator.javaClass.getDeclaredField("secureSession")
+        field.isAccessible = true
+        field.set(coordinator, null)
     }
 }
 

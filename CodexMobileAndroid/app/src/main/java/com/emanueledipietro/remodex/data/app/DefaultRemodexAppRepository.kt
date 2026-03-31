@@ -425,7 +425,7 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun performReconnectCatchupPass(threadId: String): Boolean {
-        if (secureConnectionCoordinator.state.value.secureState != SecureConnectionState.ENCRYPTED) {
+        if (!hasActiveSecureTransport()) {
             return true
         }
 
@@ -498,6 +498,10 @@ class DefaultRemodexAppRepository(
         return threadSyncService as? ThreadResumeService
     }
 
+    private fun hasActiveSecureTransport(): Boolean {
+        return secureConnectionCoordinator.isEncryptedSessionReady()
+    }
+
     private suspend fun inheritRuntimeOverride(
         sourceThreadId: String,
         destinationThreadId: String,
@@ -566,7 +570,7 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun refreshThreads() {
-        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+        if (!hasActiveSecureTransport()) {
             return
         }
         runHydrationSafely {
@@ -602,7 +606,7 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun recoverPendingApprovalPromptIfNeeded(threadId: String) {
-        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+        if (!hasActiveSecureTransport()) {
             return
         }
         if (threadSyncService.pendingApprovalRequest.value != null) {
@@ -1117,7 +1121,7 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun refreshGptAccountState() {
-        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+        if (!hasActiveSecureTransport()) {
             gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
             gptAccountErrorMessageState.value = null
             bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
@@ -1151,7 +1155,7 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun logoutGptAccount() {
-        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+        if (!hasActiveSecureTransport()) {
             gptAccountSnapshotState.value = loggedOutGptAccountSnapshot(gptAccountSnapshotState.value)
             gptAccountErrorMessageState.value = null
             return
@@ -1181,7 +1185,7 @@ class DefaultRemodexAppRepository(
     }
 
     override suspend fun refreshUsageStatus(threadId: String?) {
-        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+        if (!hasActiveSecureTransport()) {
             usageStatusState.value = usageStatusState.value.copy(
                 rateLimitBuckets = emptyList(),
                 rateLimitsErrorMessage = "Connect to a Mac bridge to load usage.",
@@ -1659,7 +1663,7 @@ class DefaultRemodexAppRepository(
     private suspend fun resumeThreadBeforeSend(
         thread: RemodexThreadSummary,
     ): RemodexThreadSummary {
-        if (sessionState.value.connectionStatus.phase != RemodexConnectionPhase.CONNECTED) {
+        if (!hasActiveSecureTransport()) {
             return thread
         }
         val resumeService = resumeService() ?: return thread

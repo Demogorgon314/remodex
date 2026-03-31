@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.data.voice
 
+import com.emanueledipietro.remodex.data.connection.RpcError
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.connection.firstString
 import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
@@ -153,7 +154,9 @@ class DefaultRemodexVoiceTranscriptionService(
         val token = try {
             resolveVoiceAuthToken()
         } catch (error: Throwable) {
-            onAuthStateInvalidated()
+            if (shouldInvalidateVoiceAuth(error)) {
+                onAuthStateInvalidated()
+            }
             throw error
         }
 
@@ -179,5 +182,9 @@ class DefaultRemodexVoiceTranscriptionService(
             )
         }
         return token
+    }
+
+    private fun shouldInvalidateVoiceAuth(error: Throwable): Boolean {
+        return error is RpcError || error is RemodexVoiceTranscriptionException.AuthExpired
     }
 }

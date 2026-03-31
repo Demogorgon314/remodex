@@ -350,10 +350,10 @@ class BridgeThreadSyncService(
             return
         }
 
-        val activeThreads = listThreads(archived = false)
-        val archivedThreads = listThreads(archived = true)
+        val serverThreads = runBackgroundSyncOperation("refreshThreads") {
+            listThreads(archived = false) + listThreads(archived = true)
+        } ?: return
         val existingById = backingThreads.value.associateBy(ThreadSyncSnapshot::id)
-        val serverThreads = activeThreads + archivedThreads
         val serverThreadIds = serverThreads.map(ThreadSyncSnapshot::id).toSet()
         val merged = serverThreads
             .map { incoming ->
@@ -7644,8 +7644,23 @@ class BridgeThreadSyncService(
             .lowercase(Locale.ROOT)
     }
 
+    private suspend fun <T> runBackgroundSyncOperation(
+        operation: String,
+        block: suspend () -> T,
+    ): T? {
+        return try {
+            block()
+        } catch (error: Throwable) {
+            if (error is CancellationException || error is SecureTransportException) {
+                Log.d(logTag, "$operation skipped: ${error.message.orEmpty()}")
+                return null
+            }
+            throw error
+        }
+    }
+
     private fun isConnected(): Boolean {
-        return secureConnectionCoordinator.state.value.secureState == SecureConnectionState.ENCRYPTED
+        return secureConnectionCoordinator.isEncryptedSessionReady()
     }
 
     private fun shouldLogReviewDebug(

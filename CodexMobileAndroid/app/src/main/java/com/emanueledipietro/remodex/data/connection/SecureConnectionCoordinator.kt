@@ -50,6 +50,7 @@ class SecureConnectionCoordinator(
     private var trustedMacRegistry = SecureCrypto.trustedMacRegistryFromStore(store)
     private var relayProfileRegistry = SecureCrypto.relayProfileRegistryFromStore(store)
     private var pairingState = SecureCrypto.relayPairingStateFromStore(store)
+    @Volatile
     private var secureSession: SecureSession? = null
     private var pendingHandshake: SecurePendingHandshake? = null
     private var socket: RelayWebSocket? = null
@@ -138,6 +139,12 @@ class SecureConnectionCoordinator(
                 data = data,
             ),
         )
+    }
+
+    fun isEncryptedSessionReady(): Boolean {
+        return state.value.secureState == SecureConnectionState.ENCRYPTED &&
+            secureSession != null &&
+            socket != null
     }
 
     fun rememberRelayPairing(payload: PairingQrPayload) {
@@ -788,7 +795,7 @@ class SecureConnectionCoordinator(
     }
 
     private fun requireEncryptedSession() {
-        if (state.value.secureState != SecureConnectionState.ENCRYPTED || secureSession == null) {
+        if (!isEncryptedSessionReady()) {
             throw SecureTransportException("The secure Android session is not connected yet.")
         }
     }

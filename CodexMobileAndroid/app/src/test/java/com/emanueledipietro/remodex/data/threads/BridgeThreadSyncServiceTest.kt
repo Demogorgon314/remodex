@@ -131,6 +131,23 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `refresh threads skips when encrypted snapshot outlives secure transport session`() = runTest {
+        val connected = createConnectedBridgeService()
+
+        try {
+            clearSecureTransportSession(connected.coordinator)
+
+            connected.service.refreshThreads()
+            advanceUntilIdle()
+
+            assertTrue(connected.service.threads.value.isEmpty())
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `decode requested permissions parses network and filesystem access`() {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
@@ -6634,6 +6651,14 @@ class BridgeThreadSyncServiceTest {
         field.isAccessible = true
         val state = field.get(coordinator) as kotlinx.coroutines.flow.MutableStateFlow<SecureConnectionSnapshot>
         state.value = snapshot
+    }
+
+    private fun clearSecureTransportSession(
+        coordinator: SecureConnectionCoordinator,
+    ) {
+        val field = coordinator.javaClass.getDeclaredField("secureSession")
+        field.isAccessible = true
+        field.set(coordinator, null)
     }
 
     private suspend fun TestScope.createConnectedBridgeService(): ConnectedBridgeService {
