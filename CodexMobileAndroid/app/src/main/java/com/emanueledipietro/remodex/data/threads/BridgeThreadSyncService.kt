@@ -4507,6 +4507,8 @@ class BridgeThreadSyncService(
     ): Boolean {
         return itemType == "toolcall" ||
             itemType == "commandexecution" ||
+            itemType == "enteredreviewmode" ||
+            itemType == "contextcompaction" ||
             itemType == "filechange" ||
             itemType == "diff" ||
             itemType == "mcptoolcall" ||

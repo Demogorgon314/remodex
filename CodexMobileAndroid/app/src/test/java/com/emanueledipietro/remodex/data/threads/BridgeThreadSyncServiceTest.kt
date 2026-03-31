@@ -4770,6 +4770,187 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `entered review mode finalizes the current assistant segment before later assistant deltas`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-review-segments",
+                    title = "Review segments",
+                    preview = "",
+                    projectPath = "/tmp/project-review-segments",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-segments"))
+                put("turnId", JsonPrimitive("turn-review-segments"))
+                put("delta", JsonPrimitive("First review preface"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-segments"))
+                put("turnId", JsonPrimitive("turn-review-segments"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("review-mode-item"))
+                        put("type", JsonPrimitive("enteredReviewMode"))
+                        put("review", JsonPrimitive("current changes"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-segments"))
+                put("turnId", JsonPrimitive("turn-review-segments"))
+                put("delta", JsonPrimitive("Second review finding"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-review-segments" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+        val reviewModeItem = projected.single {
+            it.kind == ConversationItemKind.COMMAND_EXECUTION && it.id == "review-mode-item"
+        }
+
+        assertEquals(2, assistantItems.size)
+        assertEquals("assistant-turn-review-segments", assistantItems[0].id)
+        assertFalse(assistantItems[0].isStreaming)
+        assertEquals("First review preface", assistantItems[0].text)
+        assertEquals("assistant-turn-review-segments-seg-1", assistantItems[1].id)
+        assertTrue(assistantItems[1].isStreaming)
+        assertEquals("Second review finding", assistantItems[1].text)
+        assertEquals(
+            listOf(
+                assistantItems[0].id,
+                reviewModeItem.id,
+                assistantItems[1].id,
+            ),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `context compaction finalizes the current assistant segment before later assistant deltas`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-compaction-segments",
+                    title = "Compaction segments",
+                    preview = "",
+                    projectPath = "/tmp/project-compaction-segments",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-compaction-segments"))
+                put("turnId", JsonPrimitive("turn-compaction-segments"))
+                put("delta", JsonPrimitive("First compaction note"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-compaction-segments"))
+                put("turnId", JsonPrimitive("turn-compaction-segments"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("compaction-item"))
+                        put("type", JsonPrimitive("contextCompaction"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-compaction-segments"))
+                put("turnId", JsonPrimitive("turn-compaction-segments"))
+                put("delta", JsonPrimitive("Second compaction note"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-compaction-segments" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+        val compactionItem = projected.single {
+            it.kind == ConversationItemKind.COMMAND_EXECUTION && it.id == "compaction-item"
+        }
+
+        assertEquals(2, assistantItems.size)
+        assertEquals("assistant-turn-compaction-segments", assistantItems[0].id)
+        assertFalse(assistantItems[0].isStreaming)
+        assertEquals("First compaction note", assistantItems[0].text)
+        assertEquals("assistant-turn-compaction-segments-seg-1", assistantItems[1].id)
+        assertTrue(assistantItems[1].isStreaming)
+        assertEquals("Second compaction note", assistantItems[1].text)
+        assertEquals(
+            listOf(
+                assistantItems[0].id,
+                compactionItem.id,
+                assistantItems[1].id,
+            ),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `hydrate thread clears stale active turn when history shows the turn completed`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
