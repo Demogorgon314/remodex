@@ -11,4 +11,11 @@ class RemodexApplication : Application() {
         super.onCreate()
         container = RemodexAppContainer(this)
     }
+
+    override fun onTerminate() {
+        if (::container.isInitialized) {
+            container.close()
+        }
+        super.onTerminate()
+    }
 }

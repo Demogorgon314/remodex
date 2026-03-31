@@ -22,12 +22,16 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -165,63 +169,135 @@ class RoomThreadCacheStore(
             database.threadCacheDao().upsertTimelineItems(timelineEntities)
         }
     }
+
+    override fun close() {
+        database.close()
+    }
 }
 
-@OptIn(ExperimentalCoroutinesApi::class)
-class ProfileAwareThreadCacheStore(
-    private val context: Context,
-    private val secureStore: SecureStore,
+class ProfileAwareThreadCacheStore internal constructor(
+    private val databaseNameResolver: (String) -> String,
+    private val storeFactory: (String) -> ThreadCacheStore,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : ThreadCacheStore {
-    private val activeProfileId = MutableStateFlow<String?>(null)
-    private val storesByDatabaseName = linkedMapOf<String, RoomThreadCacheStore>()
+    constructor(
+        context: Context,
+        secureStore: SecureStore,
+    ) : this(
+        databaseNameResolver = { profileId ->
+            databaseNameForProfile(
+                profileId = profileId,
+                legacyProfileId = secureStore.readString(SecureStoreKeys.LEGACY_THREAD_CACHE_PROFILE_ID),
+            )
+        },
+        storeFactory = { databaseName ->
+            createRoomThreadCacheStore(
+                context = context.applicationContext,
+                databaseName = databaseName,
+            )
+        },
+    )
 
-    override val threads: Flow<List<CachedThreadRecord>> =
-        activeProfileId.flatMapLatest { profileId ->
-            val normalizedProfileId = profileId?.trim()?.takeIf(String::isNotBlank)
-            if (normalizedProfileId == null) {
-                flowOf(emptyList())
-            } else {
-                storeForProfile(normalizedProfileId).threads
-            }
-        }
+    private val storeLock = Any()
+    private val backingThreads = MutableStateFlow<List<CachedThreadRecord>>(emptyList())
+    private var activeStore: ThreadCacheStore? = null
+    private var activeDatabaseName: String? = null
+    private var activeThreadsJob: Job? = null
+    private var isClosed = false
+
+    override val threads: Flow<List<CachedThreadRecord>> = backingThreads
 
     override fun setActiveProfileId(profileId: String?) {
-        activeProfileId.value = profileId?.trim()?.takeIf(String::isNotBlank)
+        val normalizedProfileId = profileId?.trim()?.takeIf(String::isNotBlank)
+        val nextDatabaseName = normalizedProfileId?.let(databaseNameResolver)
+        val nextStore: ThreadCacheStore?
+        val previousStore: ThreadCacheStore?
+        val previousThreadsJob: Job?
+        synchronized(storeLock) {
+            if (isClosed || nextDatabaseName == activeDatabaseName) {
+                return
+            }
+            previousStore = activeStore
+            previousThreadsJob = activeThreadsJob
+            activeThreadsJob = null
+            activeDatabaseName = nextDatabaseName
+            nextStore = nextDatabaseName?.let(storeFactory)
+            activeStore = nextStore
+        }
+        previousThreadsJob?.cancel()
+        previousStore?.close()
+        if (nextStore == null) {
+            backingThreads.value = emptyList()
+            return
+        }
+        val nextThreadsJob = scope.launch {
+            nextStore.threads.collectLatest { threads ->
+                backingThreads.value = threads
+            }
+        }
+        synchronized(storeLock) {
+            if (isClosed || activeStore !== nextStore) {
+                nextThreadsJob.cancel()
+                return
+            }
+            activeThreadsJob = nextThreadsJob
+        }
     }
 
     override suspend fun replaceThreads(threads: List<CachedThreadRecord>) {
-        val profileId = activeProfileId.value?.trim()?.takeIf(String::isNotBlank) ?: return
-        storeForProfile(profileId).replaceThreads(threads)
+        val store = synchronized(storeLock) { activeStore } ?: return
+        store.replaceThreads(threads)
     }
 
-    private fun storeForProfile(profileId: String): RoomThreadCacheStore {
-        val databaseName = databaseNameForProfile(profileId)
-        return storesByDatabaseName.getOrPut(databaseName) {
-            val database = Room.databaseBuilder(
-                context.applicationContext,
-                RemodexThreadCacheDatabase::class.java,
-                databaseName,
-            ).fallbackToDestructiveMigration(dropAllTables = true).build()
-            RoomThreadCacheStore(database)
-        }
-    }
-
-    private fun databaseNameForProfile(profileId: String): String {
-        val legacyProfileId = secureStore.readString(SecureStoreKeys.LEGACY_THREAD_CACHE_PROFILE_ID)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-        if (profileId == legacyProfileId) {
-            return LegacyThreadCacheDatabaseName
-        }
-        val normalizedSuffix = profileId.map { char ->
-            if (char.isLetterOrDigit()) {
-                char
-            } else {
-                '_'
+    override fun close() {
+        val storeToClose: ThreadCacheStore?
+        val threadsJobToCancel: Job?
+        synchronized(storeLock) {
+            if (isClosed) {
+                return
             }
-        }.joinToString(separator = "")
-        return "remodex_thread_cache_$normalizedSuffix.db"
+            isClosed = true
+            storeToClose = activeStore
+            activeStore = null
+            activeDatabaseName = null
+            threadsJobToCancel = activeThreadsJob
+            activeThreadsJob = null
+        }
+        threadsJobToCancel?.cancel()
+        storeToClose?.close()
+        backingThreads.value = emptyList()
+        scope.cancel()
     }
+}
+
+private fun createRoomThreadCacheStore(
+    context: Context,
+    databaseName: String,
+): RoomThreadCacheStore {
+    val database = Room.databaseBuilder(
+        context,
+        RemodexThreadCacheDatabase::class.java,
+        databaseName,
+    ).fallbackToDestructiveMigration(dropAllTables = true).build()
+    return RoomThreadCacheStore(database)
+}
+
+internal fun databaseNameForProfile(
+    profileId: String,
+    legacyProfileId: String?,
+): String {
+    val normalizedLegacyProfileId = legacyProfileId?.trim()?.takeIf(String::isNotBlank)
+    if (profileId == normalizedLegacyProfileId) {
+        return LegacyThreadCacheDatabaseName
+    }
+    val normalizedSuffix = profileId.map { char ->
+        if (char.isLetterOrDigit()) {
+            char
+        } else {
+            '_'
+        }
+    }.joinToString(separator = "")
+    return "remodex_thread_cache_$normalizedSuffix.db"
 }
 
 private fun CachedThreadRecord.toEntity(): CachedThreadEntity {

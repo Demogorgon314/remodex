@@ -16,6 +16,7 @@ import com.emanueledipietro.remodex.platform.notifications.AndroidRemodexNotific
 import com.emanueledipietro.remodex.platform.notifications.AndroidManagedPushRegistrationCoordinator
 import com.emanueledipietro.remodex.platform.notifications.FirebaseManagedPushTokenProvider
 import com.emanueledipietro.remodex.platform.media.DefaultAndroidVoiceRecorder
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,7 +25,7 @@ import java.util.concurrent.TimeUnit
 
 class RemodexAppContainer(
     context: Context,
-) {
+) : AutoCloseable {
     // App-level sync and notification flows can process large thread snapshots.
     // Keep that work off the UI thread so turn completion does not ANR MainActivity.
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -88,5 +89,13 @@ class RemodexAppContainer(
             sessionSnapshots = appRepository.session,
         )
         managedPushRegistrationCoordinator.refresh(force = false)
+    }
+
+    override fun close() {
+        appScope.cancel()
+        threadCacheStore.close()
+        okHttpClient.dispatcher.cancelAll()
+        okHttpClient.connectionPool.evictAll()
+        okHttpClient.cache?.close()
     }
 }
