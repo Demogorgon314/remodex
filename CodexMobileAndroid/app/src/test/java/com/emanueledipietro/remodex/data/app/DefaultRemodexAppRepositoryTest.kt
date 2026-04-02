@@ -780,7 +780,7 @@ class DefaultRemodexAppRepositoryTest {
         repository.syncActiveThread("thread-notifications")
         advanceUntilIdle()
 
-        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(0, syncService.hydrateCalls)
         assertEquals(1, syncService.resumeCalls)
     }
 
@@ -814,14 +814,14 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.setAppForeground(true)
         runCurrent()
-        val initialHydrateCount = syncService.hydrateThreadIds.size
-        assertTrue(initialHydrateCount >= 1)
-        assertTrue(syncService.hydrateThreadIds.all { threadId -> threadId == "thread-active-sync" })
+        val initialResumeCount = syncService.resumeThreadIds.size
+        assertTrue(initialResumeCount >= 1)
+        assertTrue(syncService.resumeThreadIds.all { threadId -> threadId == "thread-active-sync" })
 
         advanceTimeBy(50L)
         runCurrent()
 
-        assertTrue(syncService.hydrateThreadIds.size > initialHydrateCount)
+        assertTrue(syncService.resumeThreadIds.size > initialResumeCount)
     }
 
     @Test
@@ -857,14 +857,14 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.setAppForeground(true)
         runCurrent()
-        assertEquals("thread-active-sync-1", syncService.hydrateThreadIds.lastOrNull())
+        assertEquals("thread-active-sync-1", syncService.resumeThreadIds.lastOrNull())
 
         syncService.clearRecordedCalls()
         repository.selectThread("thread-active-sync-2")
         advanceUntilIdle()
 
-        assertTrue(syncService.hydrateThreadIds.contains("thread-active-sync-2"))
-        assertEquals("thread-active-sync-2", syncService.hydrateThreadIds.lastOrNull())
+        assertTrue(syncService.resumeThreadIds.contains("thread-active-sync-2"))
+        assertEquals("thread-active-sync-2", syncService.resumeThreadIds.lastOrNull())
     }
 
     @Test
@@ -896,8 +896,8 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.setAppForeground(true)
         runCurrent()
-        assertTrue(syncService.hydrateThreadIds.isNotEmpty())
-        assertTrue(syncService.hydrateThreadIds.all { threadId -> threadId == "thread-active-sync" })
+        assertTrue(syncService.resumeThreadIds.isNotEmpty())
+        assertTrue(syncService.resumeThreadIds.all { threadId -> threadId == "thread-active-sync" })
 
         repository.setAppForeground(false)
         advanceUntilIdle()
@@ -906,7 +906,7 @@ class DefaultRemodexAppRepositoryTest {
         advanceTimeBy(500L)
         runCurrent()
 
-        assertTrue(syncService.hydrateThreadIds.isEmpty())
+        assertTrue(syncService.resumeThreadIds.isEmpty())
     }
 
     @Test

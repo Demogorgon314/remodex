@@ -262,6 +262,7 @@ class BridgeThreadSyncService(
     private val assistantCompletionFingerprintByThread = mutableMapOf<String, AssistantCompletionFingerprint>()
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
     private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
+    private val pendingThreadReadRunningClearConfirmation = mutableSetOf<String>()
     private val resumedThreadIds = mutableSetOf<String>()
     private val lifecycleCatchupJobByThread = mutableMapOf<String, Job>()
     @Volatile
@@ -329,6 +330,7 @@ class BridgeThreadSyncService(
                     assistantCompletionFingerprintByThread.clear()
                     latestTurnTerminalStateByThread.clear()
                     stoppedTurnIdsByThread.clear()
+                    pendingThreadReadRunningClearConfirmation.clear()
                     resumedThreadIds.clear()
                     backingThreads.value = emptyList()
                     backingCommandExecutionDetails.value = emptyMap()
@@ -6451,6 +6453,8 @@ class BridgeThreadSyncService(
     private data class TurnReadState(
         val interruptibleTurnId: String?,
         val hasInterruptibleTurnWithoutId: Boolean,
+        val terminalTurnIds: Set<String>,
+        val hasTerminalTurnWithoutId: Boolean,
     )
 
     private data class ThreadActivityState(
@@ -7262,26 +7266,89 @@ class BridgeThreadSyncService(
 
     private fun resolveTurnReadState(threadObject: JsonObject): TurnReadState {
         val turns = threadObject.firstArray("turns").orEmpty()
+        var interruptibleTurnId: String? = null
         var hasInterruptibleTurnWithoutId = false
-        val interruptibleTurnId = turns.reversed().firstNotNullOfOrNull { element ->
-            val turnObject = element.jsonObjectOrNull ?: return@firstNotNullOfOrNull null
+        val terminalTurnIds = linkedSetOf<String>()
+        var hasTerminalTurnWithoutId = false
+        turns.reversed().forEach { element ->
+            val turnObject = element.jsonObjectOrNull ?: return@forEach
             val normalizedStatus = normalizeStatus(
                 turnObject.firstString("status", "turnStatus", "turn_status").orEmpty(),
             )
-            if (!isInterruptibleTurnStatus(normalizedStatus)) {
-                null
-            } else {
-                turnObject.firstString("id", "turnId", "turn_id")
-                    ?: run {
+            val turnId = turnObject.firstString("id", "turnId", "turn_id")
+            if (isInterruptibleTurnStatus(normalizedStatus)) {
+                if (interruptibleTurnId == null) {
+                    if (turnId != null) {
+                        interruptibleTurnId = turnId
+                    } else {
                         hasInterruptibleTurnWithoutId = true
-                        null
                     }
+                }
+            } else {
+                if (turnId != null) {
+                    terminalTurnIds += turnId
+                } else {
+                    hasTerminalTurnWithoutId = true
+                }
             }
         }
         return TurnReadState(
             interruptibleTurnId = interruptibleTurnId,
             hasInterruptibleTurnWithoutId = hasInterruptibleTurnWithoutId,
+            terminalTurnIds = terminalTurnIds,
+            hasTerminalTurnWithoutId = hasTerminalTurnWithoutId,
         )
+    }
+
+    private fun shouldDeferThreadReadRunningClear(
+        threadId: String,
+        turnReadState: TurnReadState,
+    ): Boolean {
+        if (!threadHasKnownRunningState(threadId)) {
+            return false
+        }
+        val activeTurnId = activeTurnIdByThread[threadId]
+        if (activeTurnId != null && activeTurnId in turnReadState.terminalTurnIds) {
+            return false
+        }
+        return pendingThreadReadRunningClearConfirmation.add(threadId)
+    }
+
+    private fun resetPendingThreadReadRunningClear(threadId: String) {
+        pendingThreadReadRunningClearConfirmation.remove(threadId)
+    }
+
+    private fun applyTurnReadState(
+        threadId: String,
+        turnReadState: TurnReadState,
+        preserveLocalStreamingState: Boolean = false,
+    ) {
+        when {
+            turnReadState.interruptibleTurnId != null -> {
+                resetPendingThreadReadRunningClear(threadId)
+                setActiveTurnId(threadId = threadId, turnId = turnReadState.interruptibleTurnId)
+            }
+
+            turnReadState.hasInterruptibleTurnWithoutId -> {
+                resetPendingThreadReadRunningClear(threadId)
+                markThreadAsRunningFallback(threadId)
+            }
+
+            // thread/read can momentarily miss the active turn while local streaming deltas
+            // are still arriving; keep the local running state until completion is confirmed.
+            preserveLocalStreamingState && hasStreamingMessage(threadId) -> {
+                resetPendingThreadReadRunningClear(threadId)
+            }
+
+            // When thread/read only gives us an ambiguous terminal snapshot, keep the visible
+            // running UI for one confirmation pass so Stop/thinking do not flicker away mid-run.
+            shouldDeferThreadReadRunningClear(threadId, turnReadState) -> Unit
+
+            else -> {
+                resetPendingThreadReadRunningClear(threadId)
+                clearThreadRunningState(threadId)
+            }
+        }
     }
 
     private fun isInterruptibleTurnStatus(normalizedStatus: String): Boolean {
@@ -7312,30 +7379,6 @@ class BridgeThreadSyncService(
         }
 
         return true
-    }
-
-    private fun applyTurnReadState(
-        threadId: String,
-        turnReadState: TurnReadState,
-        preserveLocalStreamingState: Boolean = false,
-    ) {
-        when {
-            turnReadState.interruptibleTurnId != null -> {
-                setActiveTurnId(threadId = threadId, turnId = turnReadState.interruptibleTurnId)
-            }
-
-            turnReadState.hasInterruptibleTurnWithoutId -> {
-                markThreadAsRunningFallback(threadId)
-            }
-
-            // thread/read can momentarily miss the active turn while local streaming deltas
-            // are still arriving; keep the local running state until completion is confirmed.
-            preserveLocalStreamingState && hasStreamingMessage(threadId) -> Unit
-
-            else -> {
-                clearThreadRunningState(threadId)
-            }
-        }
     }
 
     private fun threadHasKnownRunningState(threadId: String): Boolean {
@@ -7423,6 +7466,7 @@ class BridgeThreadSyncService(
         threadId: String,
         turnId: String,
     ) {
+        resetPendingThreadReadRunningClear(threadId)
         activeTurnIdByThread[threadId] = turnId
         threadIdByTurnId[turnId] = threadId
         val existingTrace = assistantResponseTraceByThread[threadId]
@@ -7442,6 +7486,7 @@ class BridgeThreadSyncService(
     }
 
     private fun markThreadAsRunningFallback(threadId: String) {
+        resetPendingThreadReadRunningClear(threadId)
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.add(threadId)
         latestTurnTerminalStateByThread.remove(threadId)
@@ -7449,6 +7494,7 @@ class BridgeThreadSyncService(
     }
 
     private fun clearThreadRunningState(threadId: String) {
+        resetPendingThreadReadRunningClear(threadId)
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.remove(threadId)
         syncThreadLifecycleState(threadId = threadId, isRunning = false)

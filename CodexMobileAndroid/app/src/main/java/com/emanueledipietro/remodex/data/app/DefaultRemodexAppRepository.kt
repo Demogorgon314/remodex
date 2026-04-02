@@ -1001,6 +1001,17 @@ class DefaultRemodexAppRepository(
 
         val threadBeforeSync = resolveRecoveredThreadContext(normalizedThreadId)
         val hadStreamingTimeline = threadHasStreamingTimeline(normalizedThreadId)
+        if (threadBeforeSync?.requiresLiveResume == true || hadStreamingTimeline) {
+            // Running/streaming threads are better refreshed through thread/resume so we do
+            // not let repeated full thread/read hydrations flap the visible running UI.
+            threadBeforeSync?.let { recoveredThread ->
+                resumeRecoveredThreadIfNeeded(
+                    recoveredThread = recoveredThread,
+                    force = true,
+                )
+                return
+            }
+        }
         runHydrationSafely {
             hydrationService()?.hydrateThread(normalizedThreadId)
         }

@@ -2361,7 +2361,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `hydrate thread clears stale running state when latest thread read is idle`() = runTest {
+    fun `hydrate thread requires repeated ambiguous terminal thread read before clearing running fallback`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         val payload = createTestPairingPayload(
@@ -2463,6 +2463,10 @@ class BridgeThreadSyncServiceTest {
             service.refreshThreads()
             advanceUntilIdle()
             awaitThreads(service, expectedCount = 1)
+
+            service.hydrateThread("thread-running-clear")
+            advanceUntilIdle()
+            assertTrue(service.threads.value.first { it.id == "thread-running-clear" }.isRunning)
 
             service.hydrateThread("thread-running-clear")
             advanceUntilIdle()
