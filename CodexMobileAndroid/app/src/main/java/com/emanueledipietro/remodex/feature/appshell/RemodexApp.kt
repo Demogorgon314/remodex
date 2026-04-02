@@ -976,7 +976,6 @@ private fun MainPane(
                         ConversationScreen(
                             uiState = uiState,
                             onRetryConnection = viewModel::retryConnection,
-                            onOpenSettings = onOpenSettings,
                             onComposerInputChanged = viewModel::updateComposerInput,
                             onSendPrompt = viewModel::sendPrompt,
                             onSubmitStructuredUserInput = viewModel::respondToStructuredUserInput,

@@ -40,7 +40,6 @@ import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
-import com.emanueledipietro.remodex.model.RemodexGptVoiceStatus
 import com.emanueledipietro.remodex.model.RemodexGitCommit
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -60,7 +59,6 @@ import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
-import com.emanueledipietro.remodex.model.remodexGptVoiceStatus
 import com.emanueledipietro.remodex.model.remodexApprovalRequestSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -92,8 +90,6 @@ data class ComposerUiState(
     val attachments: List<RemodexComposerAttachment> = emptyList(),
     val attachmentLimitMessage: String? = null,
     val composerMessage: String? = null,
-    val voiceRecoveryReason: ComposerVoiceRecoveryReason? = null,
-    val voiceRecovery: ComposerVoiceRecoveryUiState? = null,
     val maxAttachments: Int = 4,
     val runtimeConfig: RemodexRuntimeConfig = RemodexRuntimeConfig(),
     val autocomplete: RemodexComposerAutocompleteState = RemodexComposerAutocompleteState(),
@@ -117,27 +113,6 @@ data class ComposerVoiceUiState(
     val isRecording: Boolean
         get() = buttonMode == ComposerVoiceButtonMode.RECORDING
 }
-
-enum class ComposerVoiceRecoveryAction {
-    RETRY_CONNECTION,
-    OPEN_SETTINGS,
-    RETRY_VOICE,
-}
-
-enum class ComposerVoiceRecoveryTone {
-    WARNING,
-    ERROR,
-    PROGRESS,
-}
-
-data class ComposerVoiceRecoveryUiState(
-    val title: String,
-    val summary: String,
-    val detail: String? = null,
-    val actionLabel: String? = null,
-    val action: ComposerVoiceRecoveryAction? = null,
-    val tone: ComposerVoiceRecoveryTone = ComposerVoiceRecoveryTone.WARNING,
-)
 
 data class PlanComposerSessionUiState(
     val anchorMessageId: String? = null,
@@ -277,18 +252,10 @@ private data class ComposerRenderStateA(
     val reviewSelectionsByThread: Map<String, RemodexComposerReviewSelection?> = emptyMap(),
 )
 
-private data class ComposerRenderStateBLeft(
-    val subagentsSelectionsByThread: Map<String, Boolean> = emptyMap(),
-    val attachmentMessagesByThread: Map<String, String?> = emptyMap(),
-    val composerMessagesByThread: Map<String, String?> = emptyMap(),
-    val voiceRecoveryReasonsByThread: Map<String, ComposerVoiceRecoveryReason?> = emptyMap(),
-)
-
 private data class ComposerRenderStateB(
     val subagentsSelectionsByThread: Map<String, Boolean> = emptyMap(),
     val attachmentMessagesByThread: Map<String, String?> = emptyMap(),
     val composerMessagesByThread: Map<String, String?> = emptyMap(),
-    val voiceRecoveryReasonsByThread: Map<String, ComposerVoiceRecoveryReason?> = emptyMap(),
     val gitStatesByThread: Map<String, RemodexGitState> = emptyMap(),
     val baseBranchesByThread: Map<String, String> = emptyMap(),
     val autocomplete: RemodexComposerAutocompleteState = RemodexComposerAutocompleteState(),
@@ -346,24 +313,6 @@ private data class ThreadLoadingState(
     val isRefreshingUsage: Boolean = false,
 )
 
-sealed interface ComposerVoiceRecoveryReason {
-    data object ReconnectRequired : ComposerVoiceRecoveryReason
-
-    data object LoginRequired : ComposerVoiceRecoveryReason
-
-    data object ReauthenticationRequired : ComposerVoiceRecoveryReason
-
-    data object VoiceSyncInProgress : ComposerVoiceRecoveryReason
-
-    data class MicrophonePermissionRequired(
-        val requiresSettings: Boolean,
-    ) : ComposerVoiceRecoveryReason
-
-    data class Generic(
-        val message: String,
-    ) : ComposerVoiceRecoveryReason
-}
-
 private object NoopVoiceRecorder : AndroidVoiceRecorder {
     override val meteringState = MutableStateFlow(com.emanueledipietro.remodex.platform.media.AndroidVoiceMeteringSnapshot())
 
@@ -390,7 +339,6 @@ class AppViewModel(
     private val composerSubagentsSelections = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val attachmentMessages = MutableStateFlow<Map<String, String?>>(emptyMap())
     private val composerMessages = MutableStateFlow<Map<String, String?>>(emptyMap())
-    private val composerVoiceRecoveryReasons = MutableStateFlow<Map<String, ComposerVoiceRecoveryReason?>>(emptyMap())
     private val gitStates = MutableStateFlow<Map<String, RemodexGitState>>(emptyMap())
     private val selectedGitBaseBranchByThread = MutableStateFlow<Map<String, String>>(emptyMap())
     private val autocompleteState = MutableStateFlow(RemodexComposerAutocompleteState())
@@ -446,25 +394,6 @@ class AppViewModel(
             )
         }
 
-    private val composerRenderStateBLeft =
-        combine(
-            composerSubagentsSelections,
-            attachmentMessages,
-            composerMessages,
-            composerVoiceRecoveryReasons,
-        ) { subagentsSelectionsByThread,
-            attachmentMessagesByThread,
-            composerMessagesByThread,
-            voiceRecoveryReasonsByThread,
-            ->
-            ComposerRenderStateBLeft(
-                subagentsSelectionsByThread = subagentsSelectionsByThread,
-                attachmentMessagesByThread = attachmentMessagesByThread,
-                composerMessagesByThread = composerMessagesByThread,
-                voiceRecoveryReasonsByThread = voiceRecoveryReasonsByThread,
-            )
-        }
-
     private val composerRenderStateBRight =
         combine(
             gitStates,
@@ -480,14 +409,15 @@ class AppViewModel(
 
     private val composerRenderStateB =
         combine(
-            composerRenderStateBLeft,
+            composerSubagentsSelections,
+            attachmentMessages,
+            composerMessages,
             composerRenderStateBRight,
-        ) { left, right ->
+        ) { subagentsSelectionsByThread, attachmentMessagesByThread, composerMessagesByThread, right ->
             ComposerRenderStateB(
-                subagentsSelectionsByThread = left.subagentsSelectionsByThread,
-                attachmentMessagesByThread = left.attachmentMessagesByThread,
-                composerMessagesByThread = left.composerMessagesByThread,
-                voiceRecoveryReasonsByThread = left.voiceRecoveryReasonsByThread,
+                subagentsSelectionsByThread = subagentsSelectionsByThread,
+                attachmentMessagesByThread = attachmentMessagesByThread,
+                composerMessagesByThread = composerMessagesByThread,
                 gitStatesByThread = right.first,
                 baseBranchesByThread = right.second,
                 autocomplete = right.third,
@@ -592,7 +522,6 @@ class AppViewModel(
             val isSubagentsSelectionArmed = selectedThread?.id?.let(renderStateB.subagentsSelectionsByThread::get) == true
             val attachmentMessage = selectedThread?.id?.let(renderStateB.attachmentMessagesByThread::get)
             val composerMessage = selectedThread?.id?.let(renderStateB.composerMessagesByThread::get)
-            val voiceRecoveryReason = selectedThread?.id?.let(renderStateB.voiceRecoveryReasonsByThread::get)
             val gitState = selectedThread?.id?.let(renderStateB.gitStatesByThread::get) ?: RemodexGitState()
             val selectedGitBaseBranch = selectedThread?.id?.let(renderStateB.baseBranchesByThread::get)
                 ?: gitState.branches.defaultBranch.orEmpty()
@@ -632,8 +561,6 @@ class AppViewModel(
                     isSubagentsSelectionArmed = isSubagentsSelectionArmed,
                     attachmentLimitMessage = attachmentMessage,
                     composerMessage = composerMessage,
-                    voiceRecoveryReason = voiceRecoveryReason,
-                    gptAccountSnapshot = RemodexGptAccountSnapshot(),
                     autocomplete = renderStateB.autocomplete.enriched(
                         selectedThread = selectedThread,
                         gitState = gitState,
@@ -751,13 +678,6 @@ class AppViewModel(
                 gptAccountErrorMessage = settingsState.gptAccountErrorMessage,
                 bridgeVersionStatus = settingsState.bridgeVersionStatus,
                 usageStatus = settingsState.usageStatus,
-                composer = baseState.composer.copy(
-                    voiceRecovery = resolveComposerVoiceRecoveryUiState(
-                        reason = baseState.composer.voiceRecoveryReason,
-                        isConnected = baseState.isConnected,
-                        gptAccountSnapshot = settingsState.gptAccountSnapshot,
-                    ),
-                ),
             )
         }
 
@@ -812,12 +732,6 @@ class AppViewModel(
                 }
                 if (!isConnected && voiceButtonModeState.value != ComposerVoiceButtonMode.IDLE) {
                     invalidateVoiceCapture()
-                }
-                if (selectedThreadId != null && isConnected && !lastHydrationConnected) {
-                    val currentRecovery = composerVoiceRecoveryReasons.value[selectedThreadId]
-                    if (currentRecovery == ComposerVoiceRecoveryReason.ReconnectRequired) {
-                        clearComposerVoiceRecovery(selectedThreadId)
-                    }
                 }
                 if (selectedThreadId != null && selectedThreadId != lastObservedThreadId) {
                     lastObservedThreadId = selectedThreadId
@@ -1829,22 +1743,12 @@ class AppViewModel(
             return
         }
         if (!uiState.value.isConnected) {
-            setComposerVoiceRecovery(threadId, ComposerVoiceRecoveryReason.ReconnectRequired)
-            clearComposerMessage(threadId)
-            return
-        }
-        resolveAuthSensitiveVoiceRecoveryReason(
-            isConnected = true,
-            gptAccountSnapshot = uiState.value.gptAccountSnapshot,
-        )?.let { reason ->
-            setComposerVoiceRecovery(threadId, reason)
-            clearComposerMessage(threadId)
+            setComposerMessage(threadId, "Connect to your Mac before using voice transcription.")
             return
         }
 
         clearComposerAutocomplete()
         clearComposerMessage(threadId)
-        clearComposerVoiceRecovery(threadId)
         val generation = nextVoiceOperationGeneration()
         voiceButtonModeState.value = ComposerVoiceButtonMode.PREFLIGHTING
         viewModelScope.launch {
@@ -1864,15 +1768,10 @@ class AppViewModel(
                 }
                 if (isVoiceOperationCurrent(generation)) {
                     voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
-                    setComposerVoiceRecovery(
+                    setComposerMessage(
                         threadId = threadId,
-                        reason = classifyComposerVoiceRecoveryReason(
-                            message = error.message,
-                            isConnected = uiState.value.isConnected,
-                            gptAccountSnapshot = uiState.value.gptAccountSnapshot,
-                        ),
+                        message = error.message ?: "Could not start voice transcription.",
                     )
-                    clearComposerMessage(threadId)
                 }
             }
         }
@@ -1896,15 +1795,10 @@ class AppViewModel(
                 if (isVoiceOperationCurrent(generation)) {
                     voiceButtonModeState.value = ComposerVoiceButtonMode.IDLE
                     didResetState = true
-                    setComposerVoiceRecovery(
+                    setComposerMessage(
                         threadId = threadId,
-                        reason = classifyComposerVoiceRecoveryReason(
-                            message = error.message ?: "Could not finish voice recording.",
-                            isConnected = uiState.value.isConnected,
-                            gptAccountSnapshot = uiState.value.gptAccountSnapshot,
-                        ),
+                        message = error.message ?: "Could not finish voice recording.",
                     )
-                    clearComposerMessage(threadId)
                 }
                 null
             }
@@ -1925,7 +1819,6 @@ class AppViewModel(
                     uiState.value.isConnected &&
                     uiState.value.selectedThread?.id == threadId
                 if (isStillCurrent) {
-                    clearComposerVoiceRecovery(threadId)
                     appendVoiceTranscript(threadId, transcript)
                 }
             } catch (error: Throwable) {
@@ -1933,15 +1826,10 @@ class AppViewModel(
                     throw error
                 }
                 if (isVoiceOperationCurrent(generation)) {
-                    setComposerVoiceRecovery(
+                    setComposerMessage(
                         threadId = threadId,
-                        reason = classifyComposerVoiceRecoveryReason(
-                            message = error.message ?: "Could not transcribe this voice note.",
-                            isConnected = uiState.value.isConnected,
-                            gptAccountSnapshot = uiState.value.gptAccountSnapshot,
-                        ),
+                        message = error.message ?: "Could not transcribe this voice note.",
                     )
-                    clearComposerMessage(threadId)
                 }
             } finally {
                 clip.file.delete()
@@ -1958,13 +1846,12 @@ class AppViewModel(
 
     fun handleVoicePermissionDenied(requiresSettings: Boolean) {
         val threadId = uiState.value.selectedThread?.id ?: return
-        setComposerVoiceRecovery(
-            threadId = threadId,
-            reason = ComposerVoiceRecoveryReason.MicrophonePermissionRequired(
-                requiresSettings = requiresSettings,
-            ),
-        )
-        clearComposerMessage(threadId)
+        val message = if (requiresSettings) {
+            "Microphone permission was denied. Enable microphone access in Android Settings to use voice transcription."
+        } else {
+            "Microphone permission was denied. Tap the mic again to allow voice transcription."
+        }
+        setComposerMessage(threadId, message)
     }
 
     fun selectPlanningMode(planningMode: RemodexPlanningMode) {
@@ -3370,9 +3257,6 @@ class AppViewModel(
         composerMessages.update { messagesByThread ->
             messagesByThread.toMutableMap().apply { remove(threadId) }
         }
-        composerVoiceRecoveryReasons.update { reasonsByThread ->
-            reasonsByThread.toMutableMap().apply { remove(threadId) }
-        }
         clearComposerAutocomplete()
     }
 
@@ -3447,9 +3331,6 @@ class AppViewModel(
         composerMessages.update { messagesByThread ->
             messagesByThread.toMutableMap().apply { remove(threadId) }
         }
-        composerVoiceRecoveryReasons.update { reasonsByThread ->
-            reasonsByThread.toMutableMap().apply { remove(threadId) }
-        }
         draft.planningMode?.let { planningMode ->
             repository.setPlanningMode(threadId, planningMode)
         }
@@ -3513,25 +3394,6 @@ class AppViewModel(
 
     private fun clearComposerMessage(threadId: String) {
         setComposerMessage(threadId, null)
-    }
-
-    private fun setComposerVoiceRecovery(
-        threadId: String,
-        reason: ComposerVoiceRecoveryReason?,
-    ) {
-        composerVoiceRecoveryReasons.update { reasonsByThread ->
-            reasonsByThread.toMutableMap().apply {
-                if (reason == null) {
-                    remove(threadId)
-                } else {
-                    this[threadId] = reason
-                }
-            }
-        }
-    }
-
-    private fun clearComposerVoiceRecovery(threadId: String) {
-        setComposerVoiceRecovery(threadId, null)
     }
 
     private fun appendVoiceTranscript(
@@ -4239,8 +4101,6 @@ class AppViewModel(
         isSubagentsSelectionArmed: Boolean,
         attachmentLimitMessage: String?,
         composerMessage: String?,
-        voiceRecoveryReason: ComposerVoiceRecoveryReason?,
-        gptAccountSnapshot: RemodexGptAccountSnapshot,
         autocomplete: RemodexComposerAutocompleteState,
         voiceUiState: ComposerVoiceUiState,
         isConnected: Boolean,
@@ -4278,12 +4138,6 @@ class AppViewModel(
             attachments = attachments,
             attachmentLimitMessage = attachmentLimitMessage,
             composerMessage = composerMessage,
-            voiceRecoveryReason = voiceRecoveryReason,
-            voiceRecovery = resolveComposerVoiceRecoveryUiState(
-                reason = voiceRecoveryReason,
-                isConnected = isConnected,
-                gptAccountSnapshot = gptAccountSnapshot,
-            ),
             maxAttachments = MaxComposerImages,
             runtimeConfig = thread.runtimeConfig,
             autocomplete = autocomplete,
@@ -4317,129 +4171,6 @@ internal fun appendVoiceTranscriptToDraft(
         currentDraft + normalizedTranscript
     } else {
         "$currentDraft $normalizedTranscript"
-    }
-}
-
-internal fun classifyComposerVoiceRecoveryReason(
-    message: String?,
-    isConnected: Boolean,
-    gptAccountSnapshot: RemodexGptAccountSnapshot,
-): ComposerVoiceRecoveryReason {
-    resolveAuthSensitiveVoiceRecoveryReason(
-        isConnected = isConnected,
-        gptAccountSnapshot = gptAccountSnapshot,
-    )?.let { return it }
-
-    val normalizedMessage = message?.trim().orEmpty()
-    return if (normalizedMessage.isEmpty()) {
-        ComposerVoiceRecoveryReason.Generic("Voice transcription failed.")
-    } else {
-        ComposerVoiceRecoveryReason.Generic(normalizedMessage)
-    }
-}
-
-internal fun resolveAuthSensitiveVoiceRecoveryReason(
-    isConnected: Boolean,
-    gptAccountSnapshot: RemodexGptAccountSnapshot,
-): ComposerVoiceRecoveryReason? {
-    return when (remodexGptVoiceStatus(snapshot = gptAccountSnapshot, isConnected = isConnected)) {
-        RemodexGptVoiceStatus.READY -> null
-        RemodexGptVoiceStatus.DISCONNECTED -> ComposerVoiceRecoveryReason.ReconnectRequired
-        RemodexGptVoiceStatus.LOGIN_REQUIRED,
-        RemodexGptVoiceStatus.LOGIN_PENDING,
-        -> ComposerVoiceRecoveryReason.LoginRequired
-        RemodexGptVoiceStatus.REAUTH_REQUIRED -> ComposerVoiceRecoveryReason.ReauthenticationRequired
-        RemodexGptVoiceStatus.VOICE_SYNC_IN_PROGRESS -> ComposerVoiceRecoveryReason.VoiceSyncInProgress
-    }
-}
-
-internal fun resolveComposerVoiceRecoveryUiState(
-    reason: ComposerVoiceRecoveryReason?,
-    isConnected: Boolean,
-    gptAccountSnapshot: RemodexGptAccountSnapshot,
-): ComposerVoiceRecoveryUiState? {
-    val resolvedReason = when (reason) {
-        null -> null
-        ComposerVoiceRecoveryReason.LoginRequired,
-        ComposerVoiceRecoveryReason.ReauthenticationRequired,
-        ComposerVoiceRecoveryReason.VoiceSyncInProgress,
-        -> resolveAuthSensitiveVoiceRecoveryReason(
-            isConnected = isConnected,
-            gptAccountSnapshot = gptAccountSnapshot,
-        )
-        else -> reason
-    } ?: return null
-
-    return when (resolvedReason) {
-        ComposerVoiceRecoveryReason.ReconnectRequired -> ComposerVoiceRecoveryUiState(
-            title = "Reconnect to your Mac",
-            summary = "Voice mode needs your paired Mac bridge.",
-            detail = "Reconnect to the bridge, then try voice transcription again.",
-            actionLabel = "Retry connection",
-            action = ComposerVoiceRecoveryAction.RETRY_CONNECTION,
-            tone = ComposerVoiceRecoveryTone.WARNING,
-        )
-
-        ComposerVoiceRecoveryReason.LoginRequired -> ComposerVoiceRecoveryUiState(
-            title = "Use ChatGPT on your Mac",
-            summary = "Voice mode reads the ChatGPT session from your paired Mac.",
-            detail = "Open Settings to check whether ChatGPT needs sign-in or is still finishing browser login.",
-            actionLabel = "Open Settings",
-            action = ComposerVoiceRecoveryAction.OPEN_SETTINGS,
-            tone = ComposerVoiceRecoveryTone.WARNING,
-        )
-
-        ComposerVoiceRecoveryReason.ReauthenticationRequired -> ComposerVoiceRecoveryUiState(
-            title = "Refresh ChatGPT sign-in",
-            summary = "This bridge needs a fresh ChatGPT sign-in on your Mac before voice can continue.",
-            detail = "Open Settings for the current voice status, then refresh the ChatGPT session on your paired Mac.",
-            actionLabel = "Open Settings",
-            action = ComposerVoiceRecoveryAction.OPEN_SETTINGS,
-            tone = ComposerVoiceRecoveryTone.WARNING,
-        )
-
-        ComposerVoiceRecoveryReason.VoiceSyncInProgress -> ComposerVoiceRecoveryUiState(
-            title = "Voice sync in progress",
-            summary = "Your ChatGPT account is signed in on the Mac, but voice access is still syncing.",
-            detail = "Wait a moment, then try voice mode again or open Settings to verify the latest status.",
-            actionLabel = "Open Settings",
-            action = ComposerVoiceRecoveryAction.OPEN_SETTINGS,
-            tone = ComposerVoiceRecoveryTone.PROGRESS,
-        )
-
-        is ComposerVoiceRecoveryReason.MicrophonePermissionRequired -> ComposerVoiceRecoveryUiState(
-            title = "Microphone access needed",
-            summary = if (resolvedReason.requiresSettings) {
-                "Enable microphone access in Android Settings before using voice transcription."
-            } else {
-                "Tap the mic again to allow microphone access for voice transcription."
-            },
-            detail = if (resolvedReason.requiresSettings) {
-                "Android blocked microphone access for this app."
-            } else {
-                "Grant access when Android asks for microphone permission."
-            },
-            actionLabel = if (resolvedReason.requiresSettings) {
-                null
-            } else {
-                "Try again"
-            },
-            action = if (resolvedReason.requiresSettings) {
-                null
-            } else {
-                ComposerVoiceRecoveryAction.RETRY_VOICE
-            },
-            tone = ComposerVoiceRecoveryTone.WARNING,
-        )
-
-        is ComposerVoiceRecoveryReason.Generic -> ComposerVoiceRecoveryUiState(
-            title = "Voice mode unavailable",
-            summary = resolvedReason.message,
-            detail = "Try again in a moment. If it keeps happening, reconnect to your Mac or check ChatGPT voice status in Settings.",
-            actionLabel = null,
-            action = null,
-            tone = ComposerVoiceRecoveryTone.ERROR,
-        )
     }
 }
 
