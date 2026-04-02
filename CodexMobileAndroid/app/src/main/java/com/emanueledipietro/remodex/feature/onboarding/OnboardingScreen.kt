@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.emanueledipietro.remodex.R
+import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import kotlinx.coroutines.launch
 
@@ -118,7 +119,7 @@ private val onboardingSteps = listOf(
         icon = Icons.Outlined.Link,
         title = "Install the Bridge",
         description = "A lightweight relay that securely connects your Mac to your Android phone.",
-        command = "npm install -g remodex@latest",
+        command = remodexBridgeUpdateCommand,
     ),
     OnboardingStep(
         stepNumber = 3,

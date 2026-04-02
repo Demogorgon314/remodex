@@ -17,7 +17,7 @@ class PairingQrValidatorTest {
 
         val prompt = (result as PairingQrValidationResult.BridgeUpdateRequired).prompt
         assertEquals("Update Remodex on your Mac before scanning", prompt.title)
-        assertEquals("npm install -g remodex@latest", prompt.command)
+        assertEquals("npm install -g @deepdream314/remodex@latest", prompt.command)
         assertTrue(prompt.message.contains("different Remodex npm version"))
     }
 
