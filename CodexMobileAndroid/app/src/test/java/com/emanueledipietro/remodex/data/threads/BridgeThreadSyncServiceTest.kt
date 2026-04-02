@@ -5882,6 +5882,69 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `thread status idle preserves fallback running state without forcing lifecycle catchup`() = runTest {
+        val connected = createConnectedBridgeService()
+
+        try {
+            seedThreads(
+                service = connected.service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-idle-fallback",
+                        title = "Idle fallback thread",
+                        preview = "Still thinking",
+                        projectPath = "/tmp/project-idle-fallback",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                connected.service,
+                "markThreadAsRunningFallback",
+                "thread-idle-fallback",
+            )
+            advanceUntilIdle()
+
+            val baselineThreadListRequests = connected.relayFactory.receivedRequests.count { request ->
+                request.method == "thread/list"
+            }
+            val baselineThreadReadRequests = connected.relayFactory.receivedRequests.count { request ->
+                request.method == "thread/read"
+            }
+
+            invokePrivateMethod(
+                connected.service,
+                "handleThreadStatusChangedNotification",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive("thread-idle-fallback"))
+                    put("status", JsonPrimitive("idle"))
+                },
+            )
+            advanceUntilIdle()
+
+            val thread = connected.service.threads.value.first { it.id == "thread-idle-fallback" }
+            assertTrue(thread.isRunning)
+            assertNull(thread.activeTurnId)
+            assertNull(thread.latestTurnTerminalState)
+            assertEquals(
+                baselineThreadListRequests,
+                connected.relayFactory.receivedRequests.count { request -> request.method == "thread/list" },
+            )
+            assertEquals(
+                baselineThreadReadRequests,
+                connected.relayFactory.receivedRequests.count { request -> request.method == "thread/read" },
+            )
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `stop turn keeps running state until follow-up sync confirms completion`() = runTest {
         val connected = createConnectedBridgeService()
 
@@ -7112,6 +7175,98 @@ class BridgeThreadSyncServiceTest {
             projected.map(RemodexConversationItem::id),
         )
         assertEquals("Searched the web", projected.last().text)
+    }
+
+    @Test
+    fun `completed command execution preserves fallback running thread state`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-command-fallback",
+                    title = "Command fallback thread",
+                    preview = "Still thinking",
+                    projectPath = "/tmp/project-command-fallback",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "markThreadAsRunningFallback",
+            "thread-command-fallback",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-command-fallback"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("command-item-fallback"))
+                        put("type", JsonPrimitive("commandExecution"))
+                        put(
+                            "command",
+                            buildJsonArray {
+                                add(JsonPrimitive("cat"))
+                                add(JsonPrimitive("README.md"))
+                            },
+                        )
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-command-fallback"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("command-item-fallback"))
+                        put("type", JsonPrimitive("commandExecution"))
+                        put(
+                            "command",
+                            buildJsonArray {
+                                add(JsonPrimitive("cat"))
+                                add(JsonPrimitive("README.md"))
+                            },
+                        )
+                        put("status", JsonPrimitive("completed"))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-command-fallback" }
+        val commandItem = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .single { item -> item.id == "command-item-fallback" }
+
+        assertEquals(ConversationItemKind.COMMAND_EXECUTION, commandItem.kind)
+        assertFalse(commandItem.isStreaming)
+        assertTrue(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertNull(thread.latestTurnTerminalState)
     }
 
     @Test
