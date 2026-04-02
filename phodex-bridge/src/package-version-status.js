@@ -5,12 +5,15 @@
 // Depends on: https, ../package.json
 
 const https = require("https");
-const { version: installedVersion = "" } = require("../package.json");
+const {
+  name: packageName = "",
+  version: installedVersion = "",
+} = require("../package.json");
 
 const DEFAULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_EMPTY_CACHE_RETRY_MS = 60 * 1000;
 const DEFAULT_INITIAL_FETCH_WAIT_MS = 250;
-const REMODEX_REGISTRY_URL = "https://registry.npmjs.org/remodex/latest";
+const REMODEX_REGISTRY_URL = `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`;
 
 function createBridgePackageVersionStatusReader({
   cacheTtlMs = DEFAULT_CACHE_TTL_MS,

@@ -213,6 +213,58 @@ test("desktop-origin idle watchers stream new rollout growth after the phone reo
   assert.equal(outbound[2].params.message, "Applying patch");
 });
 
+test("desktop-origin live growth preserves utf-8 agent text split across file chunks", async (t) => {
+  const { homeDir, rolloutPath } = createTemporaryRolloutHome({
+    threadId: "thread-utf8",
+    originator: "Codex Desktop",
+    source: "desktop",
+    lines: [
+      taskStarted("turn-utf8"),
+    ],
+  });
+  const previousCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = homeDir;
+  t.after(() => {
+    restoreCodexHome(previousCodexHome);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  const outbound = [];
+  const controller = createRolloutLiveMirrorController({
+    sendApplicationResponse(message) {
+      outbound.push(JSON.parse(message));
+    },
+    pollIntervalMs: 5,
+    idleTimeoutMs: 100,
+  });
+  t.after(() => controller.stopAll());
+
+  controller.observeInbound(JSON.stringify({
+    method: "thread/resume",
+    params: {
+      threadId: "thread-utf8",
+    },
+  }));
+  await wait(20);
+
+  const utf8Line = Buffer.from(`${agentMessage("几何规则", "final_answer")}\n`, "utf8");
+  const splitIndex = utf8Line.indexOf(Buffer.from("何", "utf8")) + 1;
+  fs.appendFileSync(rolloutPath, utf8Line.subarray(0, splitIndex));
+  await wait(15);
+  fs.appendFileSync(rolloutPath, utf8Line.subarray(splitIndex));
+  await wait(30);
+
+  assert.deepEqual(
+    outbound.map((message) => message.method),
+    [
+      "turn/started",
+      "item/reasoning/textDelta",
+      "codex/event/agent_message",
+    ]
+  );
+  assert.equal(outbound[2].params.message, "几何规则");
+});
+
 test("desktop-origin detection stays narrow", () => {
   assert.equal(isDesktopRolloutOrigin({ originator: "Codex Desktop", source: "vscode" }), true);
   assert.equal(isDesktopRolloutOrigin({ originator: "codex_vscode", source: "vscode" }), true);

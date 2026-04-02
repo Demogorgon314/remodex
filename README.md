@@ -4,7 +4,7 @@
 
 # Remodex
 
-[![npm version](https://img.shields.io/npm/v/remodex)](https://www.npmjs.com/package/remodex)
+[![npm version](https://img.shields.io/npm/v/%40deepdream314%2Fremodex)](https://www.npmjs.com/package/@deepdream314/remodex)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
 [Follow on X](https://x.com/emanueledpt)
 
@@ -136,13 +136,13 @@ This repo contains the local bridge, the Android app project, the iOS app target
 If you plan to use the macOS menu bar companion, `remodex` must be installed globally and available in your login-shell `PATH`.
 
 ```sh
-npm install -g remodex@latest
+npm install -g @deepdream314/remodex@latest
 ```
 
 To update an existing global install later:
 
 ```sh
-npm install -g remodex@latest
+npm install -g @deepdream314/remodex@latest
 ```
 
 If you only want to try Remodex, you can install it from npm and run it without cloning this repository.
@@ -227,7 +227,7 @@ If you point `REMODEX_RELAY` at your own self-hosted relay, managed push stays o
 
 Published npm packages can embed default private relay settings at pack time via the `prepack` script.
 
-The current package version is `1.3.4`.
+The current package version is `1.3.7`.
 
 To publish the bridge with `api.phodex.app` as the default relay:
 
@@ -235,7 +235,7 @@ To publish the bridge with `api.phodex.app` as the default relay:
 cd phodex-bridge
 npm login
 REMODEX_PACKAGE_DEFAULT_RELAY_URL="wss://api.phodex.app/relay" \
-npm publish
+npm publish --access public
 ```
 
 After publish, users can still override the packaged default at runtime with `REMODEX_RELAY`.

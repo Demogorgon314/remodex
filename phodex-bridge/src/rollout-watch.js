@@ -7,6 +7,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createUtf8ChunkDecoder } = require("./utf8-chunk-decoder");
 const { readLastActiveThread } = require("./session-state");
 
 const DEFAULT_WATCH_INTERVAL_MS = 1_000;
@@ -50,6 +51,7 @@ function createThreadRolloutActivityWatcher({
   let usageScanOffset = 0;
   let partialUsageLine = "";
   let lastUsageSignature = null;
+  const usageUtf8Decoder = createUtf8ChunkDecoder();
 
   const tick = () => {
     if (isStopped) {
@@ -87,6 +89,7 @@ function createThreadRolloutActivityWatcher({
           endExclusive: lastSize,
           carry: "",
           fsModule,
+          utf8Decoder: usageUtf8Decoder,
           skipLeadingPartial: initialScanStart > 0,
         });
         usageScanOffset = lastSize;
@@ -112,6 +115,7 @@ function createThreadRolloutActivityWatcher({
           endExclusive: nextSize,
           carry: partialUsageLine,
           fsModule,
+          utf8Decoder: usageUtf8Decoder,
         });
         usageScanOffset = nextSize;
         partialUsageLine = usageResult.partialLine;
@@ -601,13 +605,14 @@ function readRolloutUsageChunk({
   endExclusive,
   carry = "",
   fsModule = fs,
+  utf8Decoder = null,
   skipLeadingPartial = false,
 } = {}) {
   if (!filePath || endExclusive <= start) {
     return { partialLine: carry, usage: null };
   }
 
-  const chunk = readFileSlice(filePath, start, endExclusive, fsModule);
+  const chunk = readFileSlice(filePath, start, endExclusive, fsModule, utf8Decoder);
   if (!chunk) {
     return { partialLine: carry, usage: null };
   }
@@ -634,7 +639,7 @@ function readRolloutUsageChunk({
   };
 }
 
-function readFileSlice(filePath, start, endExclusive, fsModule = fs) {
+function readFileSlice(filePath, start, endExclusive, fsModule = fs, utf8Decoder = null) {
   const length = Math.max(0, endExclusive - start);
   if (length === 0) {
     return "";
@@ -644,7 +649,8 @@ function readFileSlice(filePath, start, endExclusive, fsModule = fs) {
   try {
     const buffer = Buffer.alloc(length);
     const bytesRead = fsModule.readSync(fileHandle, buffer, 0, length, start);
-    return buffer.toString("utf8", 0, bytesRead);
+    const slice = buffer.subarray(0, bytesRead);
+    return utf8Decoder ? utf8Decoder.write(slice) : slice.toString("utf8");
   } finally {
     fsModule.closeSync(fileHandle);
   }

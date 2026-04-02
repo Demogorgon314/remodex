@@ -5,29 +5,35 @@
 // Depends on: child_process, ws
 
 const { spawn } = require("child_process");
-const WebSocket = require("ws");
+const { createUtf8ChunkDecoder } = require("./utf8-chunk-decoder");
 
 function createCodexTransport({
   endpoint = "",
   env = process.env,
-  WebSocketImpl = WebSocket,
+  WebSocketImpl = null,
+  spawnImpl = spawn,
 } = {}) {
   if (endpoint) {
-    return createWebSocketTransport({ endpoint, WebSocketImpl });
+    return createWebSocketTransport({
+      endpoint,
+      WebSocketImpl: WebSocketImpl || require("ws"),
+    });
   }
 
-  return createSpawnTransport({ env });
+  return createSpawnTransport({ env, spawnImpl });
 }
 
-function createSpawnTransport({ env }) {
+function createSpawnTransport({ env, spawnImpl = spawn }) {
   const launch = createCodexLaunchPlan({ env });
-  const codex = spawn(launch.command, launch.args, launch.options);
+  const codex = spawnImpl(launch.command, launch.args, launch.options);
 
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let didRequestShutdown = false;
   let didReportError = false;
   const listeners = createListenerBag();
+  const stdoutDecoder = createUtf8ChunkDecoder();
+  const stderrDecoder = createUtf8ChunkDecoder();
 
   codex.on("error", (error) => {
     didReportError = true;
@@ -63,11 +69,11 @@ function createSpawnTransport({ env }) {
   // Keep stderr muted during normal operation, but preserve enough output to
   // explain launch failures when the child exits before the bridge can use it.
   codex.stderr.on("data", (chunk) => {
-    stderrBuffer = appendOutputBuffer(stderrBuffer, chunk.toString("utf8"));
+    stderrBuffer = appendOutputBuffer(stderrBuffer, stderrDecoder.write(chunk));
   });
 
   codex.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString("utf8");
+    stdoutBuffer += stdoutDecoder.write(chunk);
     const lines = stdoutBuffer.split("\n");
     stdoutBuffer = lines.pop() || "";
 

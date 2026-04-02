@@ -5,6 +5,7 @@
 // Depends on: fs, ./rollout-watch
 
 const fs = require("fs");
+const { createUtf8ChunkDecoder } = require("./utf8-chunk-decoder");
 const {
   findRecentRolloutFileForContextRead,
   resolveSessionsRoot,
@@ -106,6 +107,7 @@ function createThreadRolloutLiveMirror({
   let partialLine = "";
   let lastActivityAt = startedAt;
   let didBootstrap = false;
+  const utf8Decoder = createUtf8ChunkDecoder();
 
   const intervalId = setIntervalFn(tick, pollIntervalMs);
   tick();
@@ -141,6 +143,7 @@ function createThreadRolloutLiveMirror({
           fileSize,
           state,
           fsModule,
+          utf8Decoder,
           sendApplicationResponse,
         });
         lastSize = fileSize;
@@ -152,7 +155,7 @@ function createThreadRolloutLiveMirror({
       }
 
       if (fileSize > lastSize) {
-        const chunk = readFileSlice(rolloutPath, lastSize, fileSize, fsModule);
+        const chunk = readFileSlice(rolloutPath, lastSize, fileSize, fsModule, utf8Decoder);
         lastSize = fileSize;
         lastActivityAt = currentTime;
         if (!chunk) {
@@ -200,9 +203,10 @@ function bootstrapFromExistingRollout({
   fileSize,
   state,
   fsModule,
+  utf8Decoder,
   sendApplicationResponse,
 }) {
-  const initialContents = readFileSlice(rolloutPath, 0, fileSize, fsModule);
+  const initialContents = readFileSlice(rolloutPath, 0, fileSize, fsModule, utf8Decoder);
   if (!initialContents) {
     return;
   }
@@ -683,7 +687,7 @@ function readFileSize(filePath, fsModule) {
   return fsModule.statSync(filePath).size;
 }
 
-function readFileSlice(filePath, start, endExclusive, fsModule) {
+function readFileSlice(filePath, start, endExclusive, fsModule, utf8Decoder = null) {
   const length = Math.max(0, endExclusive - start);
   if (length === 0) {
     return "";
@@ -693,7 +697,8 @@ function readFileSlice(filePath, start, endExclusive, fsModule) {
   try {
     const buffer = Buffer.alloc(length);
     const bytesRead = fsModule.readSync(fileHandle, buffer, 0, length, start);
-    return buffer.toString("utf8", 0, bytesRead);
+    const slice = buffer.subarray(0, bytesRead);
+    return utf8Decoder ? utf8Decoder.write(slice) : slice.toString("utf8");
   } finally {
     fsModule.closeSync(fileHandle);
   }
