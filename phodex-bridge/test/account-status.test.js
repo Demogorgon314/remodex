@@ -22,11 +22,12 @@ test("composeAccountStatus marks authenticated accounts and carries account meta
         email: " user@example.com ",
         planType: " plus ",
       },
-      requiresOpenaiAuth: false,
+      requiresOpenaiAuth: true,
     },
     authStatus: {
       authMethod: "chatgpt",
       authToken: "token-value",
+      requiresOpenaiAuth: true,
     },
     bridgeVersionInfo: {
       bridgeVersion: bridgePackageVersion,
@@ -43,9 +44,10 @@ test("composeAccountStatus marks authenticated accounts and carries account meta
     needsReauth: false,
     tokenReady: true,
     expiresAt: null,
-    requiresOpenaiAuth: false,
+    requiresOpenaiAuth: true,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
 });
 
@@ -56,11 +58,12 @@ test("composeAccountStatus keeps authenticated UI state when account/read still 
         type: "chatgpt",
         email: "user@example.com",
       },
-      requiresOpenaiAuth: false,
+      requiresOpenaiAuth: true,
     },
     authStatus: {
       authMethod: "chatgpt",
       authToken: null,
+      requiresOpenaiAuth: true,
     },
     bridgeVersionInfo: {
       bridgeVersion: bridgePackageVersion,
@@ -77,20 +80,18 @@ test("composeAccountStatus keeps authenticated UI state when account/read still 
     needsReauth: false,
     tokenReady: false,
     expiresAt: null,
-    requiresOpenaiAuth: false,
+    requiresOpenaiAuth: true,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
 });
 
-test("composeAccountStatus reports reauth when auth status explicitly requires ChatGPT login again", () => {
+test("composeAccountStatus reports reauth when prior auth exists but no token or account details remain", () => {
   const status = composeAccountStatus({
     accountRead: {
-      account: {
-        type: "chatgpt",
-        email: "user@example.com",
-      },
-      requiresOpenaiAuth: false,
+      account: null,
+      requiresOpenaiAuth: true,
     },
     authStatus: {
       authMethod: "chatgpt",
@@ -106,7 +107,7 @@ test("composeAccountStatus reports reauth when auth status explicitly requires C
   assert.deepEqual(status, {
     status: "expired",
     authMethod: "chatgpt",
-    email: "user@example.com",
+    email: null,
     planType: null,
     loginInFlight: false,
     needsReauth: true,
@@ -115,6 +116,7 @@ test("composeAccountStatus reports reauth when auth status explicitly requires C
     requiresOpenaiAuth: true,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
 });
 
@@ -145,6 +147,7 @@ test("redactAuthStatus strips token-bearing fields from the status snapshot", ()
     expiresAt: null,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
   assert.equal(Object.prototype.hasOwnProperty.call(status, "authToken"), false);
 });
@@ -177,6 +180,7 @@ test("composeAccountStatus keeps a fresh signed-out state distinct from reauth",
     requiresOpenaiAuth: true,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
 });
 
@@ -229,6 +233,7 @@ test("composeSanitizedAuthStatusFromSettledResults keeps the available auth snap
     expiresAt: null,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
 });
 
@@ -241,7 +246,7 @@ test("composeSanitizedAuthStatusFromSettledResults keeps authenticated UI state 
           type: "chatgpt",
           email: "user@example.com",
         },
-        requiresOpenaiAuth: false,
+        requiresOpenaiAuth: true,
       },
     },
     authStatusResult: {
@@ -265,6 +270,7 @@ test("composeSanitizedAuthStatusFromSettledResults keeps authenticated UI state 
     expiresAt: null,
     bridgeVersion: bridgePackageVersion,
     bridgeLatestVersion: "9.9.9",
+    codexTransportMode: null,
   });
 });
 

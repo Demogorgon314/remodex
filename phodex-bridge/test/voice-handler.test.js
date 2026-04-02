@@ -12,13 +12,11 @@ const { createVoiceHandler } = require("../src/voice-handler");
 test("voice/transcribe returns transcribed text without exposing auth tokens", async () => {
   const responses = [];
   const fetchCalls = [];
+  const authRequests = [];
   const handler = createVoiceHandler({
     sendCodexRequest: async (method, params) => {
+      authRequests.push({ method, params });
       assert.equal(method, "getAuthStatus");
-      assert.deepEqual(params, {
-        includeToken: true,
-        refreshToken: true,
-      });
       return {
         authMethod: "chatgpt",
         authToken: makeJWT({
@@ -57,6 +55,15 @@ test("voice/transcribe returns transcribed text without exposing auth tokens", a
   assert.equal(handled, true);
   await tick();
 
+  assert.deepEqual(authRequests, [
+    {
+      method: "getAuthStatus",
+      params: {
+        includeToken: true,
+        refreshToken: false,
+      },
+    },
+  ]);
   assert.equal(fetchCalls.length, 1);
   assert.equal(fetchCalls[0].url, "https://chatgpt.com/backend-api/transcribe");
   assert.equal(fetchCalls[0].options.method, "POST");
@@ -252,9 +259,10 @@ test("voice/transcribe rejects malformed or non-WAV audio before contacting the 
 const { resolveVoiceAuth } = require("../src/voice-handler");
 
 test("resolveVoiceAuth returns token for ChatGPT sessions", async () => {
+  const requests = [];
   const result = await resolveVoiceAuth(async (method, params) => {
+    requests.push({ method, params });
     assert.equal(method, "getAuthStatus");
-    assert.deepEqual(params, { includeToken: true, refreshToken: true });
     return {
       authMethod: "chatgpt",
       authToken: "chatgpt-token-abc",
@@ -262,36 +270,102 @@ test("resolveVoiceAuth returns token for ChatGPT sessions", async () => {
     };
   });
 
+  assert.deepEqual(requests, [
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: false },
+    },
+  ]);
   assert.deepEqual(result, { token: "chatgpt-token-abc" });
 });
 
-test("resolveVoiceAuth rejects when no token is available regardless of requiresOpenaiAuth", async () => {
-  await assert.rejects(
-    () => resolveVoiceAuth(async () => ({
-      authMethod: null,
-      authToken: null,
+test("resolveVoiceAuth refreshes only after the current token is unavailable", async () => {
+  const requests = [];
+  const result = await resolveVoiceAuth(async (method, params) => {
+    requests.push({ method, params });
+    assert.equal(method, "getAuthStatus");
+    if (requests.length === 1) {
+      return {
+        authMethod: "chatgpt",
+        authToken: null,
+        requiresOpenaiAuth: true,
+      };
+    }
+    return {
+      authMethod: "chatgpt",
+      authToken: "chatgpt-token-refreshed",
       requiresOpenaiAuth: true,
-    })),
+    };
+  });
+
+  assert.deepEqual(requests, [
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: false },
+    },
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: true },
+    },
+  ]);
+  assert.deepEqual(result, { token: "chatgpt-token-refreshed" });
+});
+
+test("resolveVoiceAuth rejects when no token is available regardless of requiresOpenaiAuth", async () => {
+  const requests = [];
+  await assert.rejects(
+    () => resolveVoiceAuth(async (method, params) => {
+      requests.push({ method, params });
+      return {
+        authMethod: null,
+        authToken: null,
+        requiresOpenaiAuth: true,
+      };
+    }),
     (error) => {
       assert.equal(error.errorCode, "token_missing");
       return true;
     }
   );
+  assert.deepEqual(requests, [
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: false },
+    },
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: true },
+    },
+  ]);
 });
 
 test("resolveVoiceAuth rejects when Mac has no token", async () => {
+  const requests = [];
   await assert.rejects(
-    () => resolveVoiceAuth(async () => ({
-      authMethod: "chatgpt",
-      authToken: null,
-      requiresOpenaiAuth: false,
-    })),
+    () => resolveVoiceAuth(async (method, params) => {
+      requests.push({ method, params });
+      return {
+        authMethod: "chatgpt",
+        authToken: null,
+        requiresOpenaiAuth: false,
+      };
+    }),
     (error) => {
       assert.match(error.message, /No ChatGPT session token/);
       assert.equal(error.errorCode, "token_missing");
       return true;
     }
   );
+  assert.deepEqual(requests, [
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: false },
+    },
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: true },
+    },
+  ]);
 });
 
 function makeJWT(payload) {

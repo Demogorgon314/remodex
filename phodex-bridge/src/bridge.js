@@ -543,7 +543,7 @@ function startBridge({
       }),
       sendCodexRequest("getAuthStatus", {
         includeToken: true,
-        refreshToken: true,
+        refreshToken: false,
       }),
       readBridgePackageVersionStatus(),
     ]);

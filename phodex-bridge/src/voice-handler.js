@@ -171,14 +171,7 @@ async function requestTranscription({
 
 // Reads the current bridge-owned auth state from the local codex app-server and refreshes if needed.
 async function loadAuthContext(sendCodexRequest) {
-  const authStatus = await sendCodexRequest("getAuthStatus", {
-    includeToken: true,
-    refreshToken: true,
-  });
-
-  const authMethod = readString(authStatus?.authMethod);
-  const token = readString(authStatus?.authToken);
-  const isChatGPT = authMethod === "chatgpt" || authMethod === "chatgptAuthTokens";
+  const { authMethod, token, isChatGPT } = await resolveCurrentOrRefreshedAuthStatus(sendCodexRequest);
 
   if (!token) {
     throw voiceError("not_authenticated", "Sign in with ChatGPT before using voice transcription.");
@@ -285,20 +278,10 @@ function voiceError(errorCode, userMessage) {
 // Returns an ephemeral ChatGPT token so the phone can call the transcription API directly.
 // Uses its own token resolution instead of loadAuthContext so errors are specific and actionable.
 async function resolveVoiceAuth(sendCodexRequest) {
-  let authStatus;
-  try {
-    authStatus = await sendCodexRequest("getAuthStatus", {
-      includeToken: true,
-      refreshToken: true,
-    });
-  } catch (err) {
-    console.error(`[remodex] voice/resolveAuth: getAuthStatus RPC failed: ${err.message}`);
-    throw voiceError("auth_unavailable", "Could not read ChatGPT session from the Mac runtime. Is the bridge running?");
-  }
-
-  const authMethod = readString(authStatus?.authMethod);
-  const token = readString(authStatus?.authToken);
-  const isChatGPT = authMethod === "chatgpt" || authMethod === "chatgptAuthTokens";
+  const { authMethod, token, isChatGPT, requiresOpenaiAuth } = await resolveCurrentOrRefreshedAuthStatus(sendCodexRequest, {
+    rpcErrorCode: "auth_unavailable",
+    rpcErrorMessage: "Could not read ChatGPT session from the Mac runtime. Is the bridge running?",
+  });
 
   // Check for a usable ChatGPT token first. The runtime may set requiresOpenaiAuth
   // even when a valid ChatGPT session is present (the flag is about the runtime's
@@ -308,11 +291,59 @@ async function resolveVoiceAuth(sendCodexRequest) {
   }
 
   if (!token) {
-    console.error(`[remodex] voice/resolveAuth: no token. authMethod=${authMethod || "none"} requiresOpenaiAuth=${authStatus?.requiresOpenaiAuth}`);
+    console.error(`[remodex] voice/resolveAuth: no token. authMethod=${authMethod || "none"} requiresOpenaiAuth=${requiresOpenaiAuth}`);
     throw voiceError("token_missing", "No ChatGPT session token available. Sign in to ChatGPT on the Mac.");
   }
 
   throw voiceError("not_chatgpt", "Voice transcription requires a ChatGPT account.");
+}
+
+async function resolveCurrentOrRefreshedAuthStatus(
+  sendCodexRequest,
+  {
+    rpcErrorCode = "not_authenticated",
+    rpcErrorMessage = "Sign in with ChatGPT before using voice transcription.",
+  } = {}
+) {
+  const currentStatus = await readAuthStatus(sendCodexRequest, {
+    refreshToken: false,
+    rpcErrorCode,
+    rpcErrorMessage,
+  });
+
+  if (currentStatus.token) {
+    return currentStatus;
+  }
+
+  return readAuthStatus(sendCodexRequest, {
+    refreshToken: true,
+    rpcErrorCode,
+    rpcErrorMessage,
+  });
+}
+
+async function readAuthStatus(
+  sendCodexRequest,
+  { refreshToken, rpcErrorCode, rpcErrorMessage }
+) {
+  let authStatus;
+  try {
+    authStatus = await sendCodexRequest("getAuthStatus", {
+      includeToken: true,
+      refreshToken,
+    });
+  } catch (err) {
+    throw voiceError(rpcErrorCode, rpcErrorMessage);
+  }
+
+  const authMethod = readString(authStatus?.authMethod);
+  const token = readString(authStatus?.authToken);
+  return {
+    authMethod,
+    token,
+    isChatGPT: authMethod === "chatgpt" || authMethod === "chatgptAuthTokens",
+    requiresOpenaiAuth: Boolean(authStatus?.requiresOpenaiAuth),
+  };
 }
 
 module.exports = {

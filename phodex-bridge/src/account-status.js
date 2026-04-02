@@ -24,8 +24,11 @@ function composeAccountStatus({
   ]) || null;
   const tokenReady = Boolean(authToken);
   const requiresOpenaiAuth = Boolean(accountRead?.requiresOpenaiAuth || authStatus?.requiresOpenaiAuth);
-  const hasPriorLoginContext = hasAccountLogin || Boolean(authMethod);
-  const needsReauth = !loginInFlight && requiresOpenaiAuth && hasPriorLoginContext;
+  const needsReauth = !loginInFlight
+    && requiresOpenaiAuth
+    && !tokenReady
+    && !hasAccountLogin
+    && Boolean(authMethod);
   const isAuthenticated = !needsReauth && (tokenReady || hasAccountLogin);
   const status = isAuthenticated
     ? "authenticated"
