@@ -11,6 +11,54 @@ import org.junit.Test
 
 class ConversationScreenAccessoryAnchorTest {
     @Test
+    fun `bottom correction stays idle while bottom anchor remains visible`() {
+        val shouldCorrect = shouldCorrectTimelineBottomAfterLayoutChange(
+            previous = TimelineBottomLayoutSnapshot(
+                totalItemsCount = 4,
+                lastVisibleItemIndex = 3,
+                lastVisibleItemOffset = 498,
+                lastVisibleItemSize = 1,
+                viewportEndOffset = 500,
+            ),
+            current = TimelineBottomLayoutSnapshot(
+                totalItemsCount = 4,
+                lastVisibleItemIndex = 3,
+                lastVisibleItemOffset = 498,
+                lastVisibleItemSize = 1,
+                viewportEndOffset = 500,
+            ),
+            bottomAnchorIndex = 3,
+            thresholdPx = 12,
+        )
+
+        assertFalse(shouldCorrect)
+    }
+
+    @Test
+    fun `bottom correction triggers when content growth pushes anchor below viewport`() {
+        val shouldCorrect = shouldCorrectTimelineBottomAfterLayoutChange(
+            previous = TimelineBottomLayoutSnapshot(
+                totalItemsCount = 4,
+                lastVisibleItemIndex = 3,
+                lastVisibleItemOffset = 498,
+                lastVisibleItemSize = 1,
+                viewportEndOffset = 500,
+            ),
+            current = TimelineBottomLayoutSnapshot(
+                totalItemsCount = 4,
+                lastVisibleItemIndex = 2,
+                lastVisibleItemOffset = 452,
+                lastVisibleItemSize = 38,
+                viewportEndOffset = 500,
+            ),
+            bottomAnchorIndex = 3,
+            thresholdPx = 12,
+        )
+
+        assertTrue(shouldCorrect)
+    }
+
+    @Test
     fun `accessory anchor skips trailing context compaction separators`() {
         val items = listOf(
             assistantItem(id = "assistant"),

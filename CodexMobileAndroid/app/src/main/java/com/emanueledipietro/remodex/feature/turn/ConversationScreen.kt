@@ -253,6 +253,8 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.drawscope.Stroke
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import java.util.Date
 import java.util.Locale
@@ -288,8 +290,6 @@ private fun remodexConversationChrome(): RemodexConversationChrome =
 private data class TimelineBottomAnchorRequest(
     val targetIndex: Int,
     val lastItemId: String,
-    val lastItemTextLength: Int,
-    val lastItemSupportingTextLength: Int,
     val lastItemStreaming: Boolean,
     val latestRunningIndicatorMessageId: String?,
     val composerFocused: Boolean,
@@ -297,6 +297,14 @@ private data class TimelineBottomAnchorRequest(
     val autocompleteVisible: Boolean,
     val queuedDraftCount: Int,
     val pinnedPlanItemId: String?,
+)
+
+internal data class TimelineBottomLayoutSnapshot(
+    val totalItemsCount: Int,
+    val lastVisibleItemIndex: Int,
+    val lastVisibleItemOffset: Int,
+    val lastVisibleItemSize: Int,
+    val viewportEndOffset: Int,
 )
 
 internal data class ConversationTimelineLayout(
@@ -1082,8 +1090,6 @@ fun ConversationScreen(
         keepTimelinePinnedToBottom,
         timelineItems.size,
         lastTimelineItemId,
-        lastTimelineItem?.text?.length,
-        lastTimelineItem?.supportingText?.length,
         lastTimelineItem?.isStreaming,
         latestRunningIndicatorMessageId,
         composerFocused,
@@ -1103,8 +1109,6 @@ fun ConversationScreen(
             TimelineBottomAnchorRequest(
                 targetIndex = bottomAnchorIndex,
                 lastItemId = lastTimelineItem.id,
-                lastItemTextLength = lastTimelineItem.text.length,
-                lastItemSupportingTextLength = lastTimelineItem.supportingText?.length ?: 0,
                 lastItemStreaming = lastTimelineItem.isStreaming,
                 latestRunningIndicatorMessageId = latestRunningIndicatorMessageId,
                 composerFocused = composerFocused,
@@ -1298,6 +1302,38 @@ fun ConversationScreen(
             withFrameNanos { }
             timelineState.scrollToItem(request.targetIndex)
         }
+    }
+
+    LaunchedEffect(
+        thread.id,
+        initialScrollApplied,
+        keepTimelinePinnedToBottom,
+        bottomAnchorIndex,
+        followBottomThresholdPx,
+        timelineItems.isNotEmpty(),
+    ) {
+        if (!initialScrollApplied || !keepTimelinePinnedToBottom || timelineItems.isEmpty()) {
+            return@LaunchedEffect
+        }
+
+        var previousSnapshot: TimelineBottomLayoutSnapshot? = null
+        snapshotFlow { timelineBottomLayoutSnapshot(timelineState) }
+            .distinctUntilChanged()
+            .collectLatest { currentSnapshot ->
+                val shouldCorrect = shouldCorrectTimelineBottomAfterLayoutChange(
+                    previous = previousSnapshot,
+                    current = currentSnapshot,
+                    bottomAnchorIndex = bottomAnchorIndex,
+                    thresholdPx = followBottomThresholdPx,
+                )
+                previousSnapshot = currentSnapshot
+                if (!shouldCorrect) {
+                    return@collectLatest
+                }
+
+                withFrameNanos { }
+                timelineState.scrollToItem(bottomAnchorIndex)
+            }
     }
 
     BackHandler(enabled = autocompleteVisible) {
@@ -1723,6 +1759,42 @@ private fun isTimelineNearBottom(
 
     val bottomOverflowPx = (lastVisibleItem.offset + lastVisibleItem.size) - layoutInfo.viewportEndOffset
     return bottomOverflowPx <= thresholdPx
+}
+
+private fun timelineBottomLayoutSnapshot(
+    state: LazyListState,
+): TimelineBottomLayoutSnapshot? {
+    val layoutInfo = state.layoutInfo
+    val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull() ?: return null
+    return TimelineBottomLayoutSnapshot(
+        totalItemsCount = layoutInfo.totalItemsCount,
+        lastVisibleItemIndex = lastVisibleItem.index,
+        lastVisibleItemOffset = lastVisibleItem.offset,
+        lastVisibleItemSize = lastVisibleItem.size,
+        viewportEndOffset = layoutInfo.viewportEndOffset,
+    )
+}
+
+internal fun shouldCorrectTimelineBottomAfterLayoutChange(
+    previous: TimelineBottomLayoutSnapshot?,
+    current: TimelineBottomLayoutSnapshot?,
+    bottomAnchorIndex: Int,
+    thresholdPx: Int,
+): Boolean {
+    current ?: return false
+    if (bottomAnchorIndex < 0 || current.totalItemsCount == 0) {
+        return false
+    }
+
+    val lastVisibleBottom = current.lastVisibleItemOffset + current.lastVisibleItemSize
+    val bottomOverflowPx = lastVisibleBottom - current.viewportEndOffset
+    val bottomAnchorFullyVisible = current.lastVisibleItemIndex == bottomAnchorIndex &&
+        bottomOverflowPx <= thresholdPx
+    if (bottomAnchorFullyVisible) {
+        return false
+    }
+
+    return previous == null || previous != current
 }
 
 @Composable
