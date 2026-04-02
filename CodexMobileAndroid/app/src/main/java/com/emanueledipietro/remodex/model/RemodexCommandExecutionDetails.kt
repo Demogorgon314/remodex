@@ -27,6 +27,7 @@ data class RemodexCommandExecutionDetails(
     val outputTail: String = "",
     val liveStatus: RemodexCommandExecutionLiveStatus? = null,
     val source: RemodexCommandExecutionSource? = null,
+    val processId: String? = null,
 ) {
     fun appendedOutput(chunk: String): RemodexCommandExecutionDetails {
         if (chunk.isEmpty()) {

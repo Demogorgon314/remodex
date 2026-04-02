@@ -59,6 +59,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
+private fun JsonObject.firstBooleanValue(vararg keys: String): Boolean? {
+    keys.forEach { key ->
+        this[key]?.jsonPrimitive?.contentOrNull?.let { raw ->
+            raw.toBooleanStrictOrNull()?.let { return it }
+        }
+    }
+    return null
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class BridgeThreadSyncServiceTest {
     @Test
@@ -1370,6 +1379,10 @@ class BridgeThreadSyncServiceTest {
                 "initialize" to { buildJsonObject { } },
                 "thread/list" to {
                     buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
                         put(
                             "data",
                             buildJsonArray {
@@ -1814,6 +1827,10 @@ class BridgeThreadSyncServiceTest {
                 "initialize" to { buildJsonObject { } },
                 "thread/list" to {
                     buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
                         put(
                             "data",
                             buildJsonArray {
@@ -2054,6 +2071,10 @@ class BridgeThreadSyncServiceTest {
                 "initialize" to { buildJsonObject { } },
                 "thread/list" to {
                     buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
                         put(
                             "data",
                             buildJsonArray {
@@ -3088,6 +3109,7 @@ class BridgeThreadSyncServiceTest {
                     assertEquals("thread-resume", params?.firstString("threadId"))
                     assertEquals("/tmp/project-resume", params?.firstString("cwd"))
                     assertEquals("gpt-5.4", params?.firstString("model"))
+                    assertEquals(true, params?.firstBooleanValue("persistExtendedHistory"))
                     buildJsonObject {
                         put(
                             "thread",
@@ -3169,6 +3191,168 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `resume thread retries without persist extended history when bridge rejects the field`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-resume-persist-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var resumeCalls = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-resume-fallback"))
+                                        put("title", JsonPrimitive("Resume fallback target"))
+                                        put("cwd", JsonPrimitive("/tmp/project-resume-fallback"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_445))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/resume" to { request ->
+                    resumeCalls += 1
+                    val params = request.params?.jsonObjectOrNull
+                    if (resumeCalls == 1) {
+                        assertEquals(true, params?.firstBooleanValue("persistExtendedHistory"))
+                        throw RpcError(code = -32602, message = "Unknown field persistExtendedHistory")
+                    }
+                    assertEquals(null, params?.firstBooleanValue("persistExtendedHistory"))
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-resume-fallback"))
+                                put("title", JsonPrimitive("Resume fallback target"))
+                                put("cwd", JsonPrimitive("/tmp/project-resume-fallback"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.resumeThread(
+                threadId = "thread-resume-fallback",
+                preferredProjectPath = "/tmp/project-resume-fallback",
+                modelIdentifier = null,
+            )
+            advanceUntilIdle()
+
+            assertEquals(2, resumeCalls)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `create thread retries without persist extended history when bridge rejects the field`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-start-persist-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        var startCalls = 0
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/start" to { request ->
+                    startCalls += 1
+                    val params = request.params?.jsonObjectOrNull
+                    if (startCalls == 1) {
+                        assertEquals(true, params?.firstBooleanValue("persistExtendedHistory"))
+                        throw RpcError(code = -32602, message = "Unknown field persistExtendedHistory")
+                    }
+                    assertEquals(null, params?.firstBooleanValue("persistExtendedHistory"))
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-start-fallback"))
+                                put("title", JsonPrimitive("Start fallback target"))
+                                put("cwd", JsonPrimitive("/tmp/project-start-fallback"))
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            val created = service.createThread(
+                preferredProjectPath = "/tmp/project-start-fallback",
+                runtimeDefaults = RemodexRuntimeDefaults(),
+            )
+            advanceUntilIdle()
+
+            assertNotNull(created)
+            assertTrue(startCalls >= 2)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `service tier retries once and future requests omit unsupported field`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -3215,6 +3399,7 @@ class BridgeThreadSyncServiceTest {
                     }
                 },
                 "thread/start" to { message ->
+                    assertEquals(true, message.params?.jsonObjectOrNull?.firstBooleanValue("persistExtendedHistory"))
                     val serviceTier = message.params?.jsonObjectOrNull?.firstString("serviceTier")
                     threadStartServiceTiers += serviceTier
                     if (serviceTier == "fast") {
@@ -3475,7 +3660,7 @@ class BridgeThreadSyncServiceTest {
             assertEquals("thread-forked", forkedThread?.id)
             assertEquals(3, capturedForkParamKeys.size)
             assertTrue(capturedForkParamKeys.dropLast(1).any { keys -> "cwd" in keys })
-            assertEquals(setOf("threadId", "approvalPolicy"), capturedForkParamKeys.last())
+            assertEquals(setOf("threadId", "persistExtendedHistory", "approvalPolicy"), capturedForkParamKeys.last())
             assertTrue(service.supportsThreadFork.value)
             assertNull(service.bridgeUpdatePrompt.value)
         } finally {
@@ -5218,6 +5403,306 @@ class BridgeThreadSyncServiceTest {
         assertEquals(RemodexCommandExecutionLiveStatus.RUNNING, details?.liveStatus)
         assertEquals("completed sleep 30", projected.single().text)
         assertFalse(projected.single().isStreaming)
+    }
+
+    @Test
+    fun `terminal interaction appends waited background terminal history row`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-background-wait",
+                    title = "Background wait thread",
+                    preview = "sleep 30",
+                    projectPath = "/tmp/project-background-wait",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "command-item",
+                                itemId = "command-item",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "completed sleep 30",
+                                turnId = "turn-background-wait",
+                                isStreaming = false,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        setCommandExecutionDetails(
+            service = service,
+            detailsByItemId = mapOf(
+                "command-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-background-wait"))
+                put("turnId", JsonPrimitive("turn-background-wait"))
+                put("itemId", JsonPrimitive("command-item"))
+                put("processId", JsonPrimitive("process-background-wait"))
+                put("stdin", JsonPrimitive(""))
+                put("status", JsonPrimitive("running"))
+                put("command", JsonPrimitive("bash -lc \"sleep 30\""))
+            },
+        )
+
+        val projected = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-background-wait" }.timelineMutations,
+        )
+
+        assertEquals(listOf("completed sleep 30", "Waited for background terminal"), projected.map(RemodexConversationItem::text))
+        assertEquals("sleep 30", projected.last().supportingText)
+    }
+
+    @Test
+    fun `terminal interaction reuses startup item id when process matches running background terminal`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-background-process",
+                    title = "Background process thread",
+                    preview = "sleep 30",
+                    projectPath = "/tmp/project-background-process",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "startup-item",
+                                itemId = "startup-item",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running sleep 30",
+                                turnId = "turn-background-process",
+                                isStreaming = false,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        setCommandExecutionDetails(
+            service = service,
+            detailsByItemId = mapOf(
+                "startup-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                    processId = "process-background-process",
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-background-process"))
+                put("turnId", JsonPrimitive("turn-background-process"))
+                put("itemId", JsonPrimitive("interaction-item"))
+                put("processId", JsonPrimitive("process-background-process"))
+                put("stdin", JsonPrimitive(""))
+            },
+        )
+
+        val projected = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-background-process" }.timelineMutations,
+        )
+
+        assertEquals(
+            listOf("running sleep 30", "Waited for background terminal"),
+            projected.map(RemodexConversationItem::text),
+        )
+        assertEquals("startup-item", projected.last().itemId)
+    }
+
+    @Test
+    fun `terminal interaction appends interacted background terminal history row`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-background-interaction",
+                    title = "Background interaction thread",
+                    preview = "sleep 30",
+                    projectPath = "/tmp/project-background-interaction",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "command-item",
+                                itemId = "command-item",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "completed sleep 30",
+                                turnId = "turn-background-interaction",
+                                isStreaming = false,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        setCommandExecutionDetails(
+            service = service,
+            detailsByItemId = mapOf(
+                "command-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-background-interaction"))
+                put("turnId", JsonPrimitive("turn-background-interaction"))
+                put("itemId", JsonPrimitive("command-item"))
+                put("processId", JsonPrimitive("process-background-interaction"))
+                put("stdin", JsonPrimitive("echo hello"))
+                put("status", JsonPrimitive("running"))
+                put("command", JsonPrimitive("bash -lc \"sleep 30\""))
+            },
+        )
+
+        val projected = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-background-interaction" }.timelineMutations,
+        )
+
+        assertEquals(
+            listOf("completed sleep 30", "Interacted with background terminal"),
+            projected.map(RemodexConversationItem::text),
+        )
+        assertEquals("sleep 30", projected.last().supportingText)
+    }
+
+    @Test
+    fun `terminal interaction does not append background history row for foreground commands`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-foreground-command",
+                    title = "Foreground command thread",
+                    preview = "pwd",
+                    projectPath = "/tmp/project-foreground-command",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "command-item",
+                                itemId = "command-item",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.COMMAND_EXECUTION,
+                                text = "running pwd",
+                                turnId = "turn-foreground-command",
+                                isStreaming = true,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        setCommandExecutionDetails(
+            service = service,
+            detailsByItemId = mapOf(
+                "command-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "pwd",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.USER_SHELL,
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleCommandExecutionTerminalInteraction",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-foreground-command"))
+                put("turnId", JsonPrimitive("turn-foreground-command"))
+                put("itemId", JsonPrimitive("command-item"))
+                put("processId", JsonPrimitive("process-foreground-command"))
+                put("stdin", JsonPrimitive(""))
+                put("status", JsonPrimitive("running"))
+                put("command", JsonPrimitive("pwd"))
+            },
+        )
+
+        val projected = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-foreground-command" }.timelineMutations,
+        )
+
+        assertEquals(listOf("running pwd"), projected.map(RemodexConversationItem::text))
     }
 
     @Test

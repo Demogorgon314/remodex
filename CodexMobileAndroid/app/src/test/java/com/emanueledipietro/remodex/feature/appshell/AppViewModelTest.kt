@@ -1216,6 +1216,7 @@ class AppViewModelTest {
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
         assertEquals(1L, viewModel.uiState.value.backgroundTerminalSheetSignal)
+        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
     }
 
     @Test
@@ -1235,6 +1236,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals(1L, viewModel.uiState.value.backgroundTerminalSheetSignal)
+        assertEquals(listOf("thread-1"), repository.activeThreadSyncRequests)
         assertTrue(repository.sentPrompts.isEmpty())
         assertEquals("", viewModel.uiState.value.composer.draftText)
     }

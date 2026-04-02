@@ -275,6 +275,7 @@ class BridgeThreadSyncService(
     private var supportsThreadForkCapability = true
     private var hasPresentedThreadForkBridgeUpdatePrompt = false
     private var supportsTurnCollaborationMode = true
+    private var supportsPersistExtendedHistory = true
 
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
@@ -305,6 +306,7 @@ class BridgeThreadSyncService(
                         supportsThreadForkCapability = true
                         hasPresentedThreadForkBridgeUpdatePrompt = false
                         supportsTurnCollaborationMode = true
+                        supportsPersistExtendedHistory = true
                         backingBridgeUpdatePrompt.value = null
                         backingSupportsThreadFork.value = true
                         if (!initializeSession()) {
@@ -320,6 +322,7 @@ class BridgeThreadSyncService(
                     supportsThreadForkCapability = true
                     hasPresentedThreadForkBridgeUpdatePrompt = false
                     supportsTurnCollaborationMode = true
+                    supportsPersistExtendedHistory = true
                     backingBridgeUpdatePrompt.value = null
                     backingSupportsThreadFork.value = true
                     activeTurnIdByThread.clear()
@@ -598,16 +601,19 @@ class BridgeThreadSyncService(
         if (!isConnected()) {
             return null
         }
-        val response = sendRequestWithServiceTierFallback(
+        val response = sendRequestWithThreadHistoryFallback(
             method = "thread/start",
             accessMode = runtimeDefaults.accessMode,
             includeServiceTier = shouldIncludeServiceTier(runtimeDefaults.serviceTier),
-            buildBaseParams = { includeServiceTier ->
+            buildBaseParams = { includeServiceTier, includePersistExtendedHistory ->
                 buildJsonObject {
                     preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
                     runtimeDefaults.modelId?.takeIf(String::isNotBlank)?.let { put("model", JsonPrimitive(it)) }
                     if (includeServiceTier) {
                         runtimeDefaults.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
+                    }
+                    if (includePersistExtendedHistory) {
+                        put("persistExtendedHistory", JsonPrimitive(true))
                     }
                 }
             },
@@ -1639,15 +1645,29 @@ class BridgeThreadSyncService(
         preferredProjectPath: String?,
         modelIdentifier: String?,
     ): RpcMessage? {
-        val params = buildJsonObject {
-            put("threadId", JsonPrimitive(threadId))
-            preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
-            modelIdentifier?.trim()?.takeIf(String::isNotEmpty)?.let { put("model", JsonPrimitive(it)) }
+        var includePersistExtendedHistory = supportsPersistExtendedHistory
+        while (true) {
+            val params = buildJsonObject {
+                put("threadId", JsonPrimitive(threadId))
+                preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
+                modelIdentifier?.trim()?.takeIf(String::isNotEmpty)?.let { put("model", JsonPrimitive(it)) }
+                if (includePersistExtendedHistory) {
+                    put("persistExtendedHistory", JsonPrimitive(true))
+                }
+            }
+            try {
+                return secureConnectionCoordinator.sendRequest(
+                    method = "thread/resume",
+                    params = params,
+                )
+            } catch (error: Throwable) {
+                if (consumeUnsupportedPersistExtendedHistory(error, includePersistExtendedHistory)) {
+                    includePersistExtendedHistory = false
+                    continue
+                }
+                throw error
+            }
         }
-        return secureConnectionCoordinator.sendRequest(
-            method = "thread/resume",
-            params = params,
-        )
     }
 
     private suspend fun loadGitSync(threadId: String): RemodexGitRepoSync? {
@@ -1755,6 +1775,7 @@ class BridgeThreadSyncService(
         var includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier)
         var includeSandbox = true
         var useMinimalParams = false
+        var includePersistExtendedHistory = supportsPersistExtendedHistory
         while (true) {
             val baseParams = buildJsonObject {
                 put("threadId", JsonPrimitive(threadId))
@@ -1767,6 +1788,9 @@ class BridgeThreadSyncService(
                     if (includeSandbox) {
                         put("sandbox", JsonPrimitive(runtimeConfig.accessMode.sandboxLegacyValue))
                     }
+                }
+                if (includePersistExtendedHistory) {
+                    put("persistExtendedHistory", JsonPrimitive(true))
                 }
             }
             try {
@@ -1794,6 +1818,10 @@ class BridgeThreadSyncService(
 
                     includeSandbox && (message.contains("sandbox") || message.contains("approvalpolicy")) -> {
                         includeSandbox = false
+                    }
+
+                    consumeUnsupportedPersistExtendedHistory(error, includePersistExtendedHistory) -> {
+                        includePersistExtendedHistory = false
                     }
 
                     consumeUnsupportedThreadForkOverrides(error, useMinimalParams) -> {
@@ -2035,8 +2063,68 @@ class BridgeThreadSyncService(
         }
     }
 
+    private suspend fun sendRequestWithThreadHistoryFallback(
+        method: String,
+        accessMode: RemodexAccessMode,
+        includeServiceTier: Boolean,
+        buildBaseParams: (Boolean, Boolean) -> JsonObject,
+    ): RpcMessage {
+        var shouldIncludeServiceTier = includeServiceTier
+        var shouldIncludePersistExtendedHistory = supportsPersistExtendedHistory
+        val policies = accessMode.approvalPolicyCandidates
+        while (true) {
+            var lastError: Throwable? = null
+            var shouldRetryWholeRequest = false
+            for ((index, policy) in policies.withIndex()) {
+                val params = JsonObject(
+                    buildBaseParams(
+                        shouldIncludeServiceTier,
+                        shouldIncludePersistExtendedHistory,
+                    ) + ("approvalPolicy" to JsonPrimitive(policy)),
+                )
+                try {
+                    return secureConnectionCoordinator.sendRequest(method = method, params = params)
+                } catch (error: Throwable) {
+                    lastError = error
+                    when {
+                        consumeUnsupportedServiceTier(error, shouldIncludeServiceTier) -> {
+                            shouldIncludeServiceTier = false
+                            shouldRetryWholeRequest = true
+                        }
+
+                        consumeUnsupportedPersistExtendedHistory(error, shouldIncludePersistExtendedHistory) -> {
+                            shouldIncludePersistExtendedHistory = false
+                            shouldRetryWholeRequest = true
+                        }
+
+                        index < policies.lastIndex && shouldRetryWithApprovalPolicyFallback(error) -> {
+                            continue
+                        }
+
+                        else -> throw error
+                    }
+                    break
+                }
+            }
+            if (!shouldRetryWholeRequest) {
+                throw lastError ?: IllegalStateException("$method failed without a concrete transport error.")
+            }
+        }
+    }
+
     private fun shouldIncludeServiceTier(serviceTier: RemodexServiceTier?): Boolean {
         return supportsServiceTier && serviceTier != null
+    }
+
+    private fun consumeUnsupportedPersistExtendedHistory(
+        error: Throwable,
+        includePersistExtendedHistory: Boolean,
+    ): Boolean {
+        if (!includePersistExtendedHistory || !shouldRetryWithoutPersistExtendedHistory(error)) {
+            return false
+        }
+        supportsPersistExtendedHistory = false
+        return true
     }
 
     private fun shouldIncludeCollaborationMode(planningMode: RemodexPlanningMode): Boolean {
@@ -2071,6 +2159,21 @@ class BridgeThreadSyncService(
             || message.contains("unrecognized field")
             || message.contains("invalid param")
             || message.contains("invalid params")
+    }
+
+    private fun shouldRetryWithoutPersistExtendedHistory(error: Throwable): Boolean {
+        val rpcError = error as? RpcError ?: return false
+        if (rpcError.code != -32600 && rpcError.code != -32602 && rpcError.code != -32000) {
+            return false
+        }
+        val message = rpcError.message.lowercase(Locale.ROOT)
+        val mentionsUnknownField = message.contains("unknown field")
+            || message.contains("unexpected field")
+            || message.contains("unrecognized field")
+        val mentionsInvalidParam = message.contains("invalid param") || message.contains("invalid params")
+        val mentionsPersistField = message.contains("persistextendedhistory")
+            || message.contains("persist extended history")
+        return mentionsPersistField || (mentionsUnknownField || mentionsInvalidParam) && message.contains("persist")
     }
 
     private fun shouldIncludeThreadFork(): Boolean {
@@ -3097,6 +3200,10 @@ class BridgeThreadSyncService(
 
     private fun handleCommandExecutionTerminalInteraction(paramsObject: JsonObject) {
         val context = resolveNotificationContext(paramsObject) ?: return
+        appendBackgroundTerminalInteractionHistory(
+            context = context,
+            paramsObject = paramsObject,
+        )
         val existingItem = projectedTimelineItem(
             threadId = context.threadId,
             messageId = streamingMessageId(
@@ -3109,6 +3216,11 @@ class BridgeThreadSyncService(
             speaker = ConversationSpeaker.SYSTEM,
             kind = ConversationItemKind.COMMAND_EXECUTION,
         )
+        val hasCommandHint = extractCommandExecutionCommand(context.payloadObject) != null
+            || context.payloadObject.firstValue("command", "cmd", "raw_command", "rawCommand") != null
+        if (!hasCommandHint && existingItem == null) {
+            return
+        }
         val state = decodeCommandExecutionRunState(
             payloadObject = context.payloadObject,
             paramsObject = paramsObject,
@@ -3131,6 +3243,88 @@ class BridgeThreadSyncService(
                 paramsObject = paramsObject,
             )
         }
+    }
+
+    private fun appendBackgroundTerminalInteractionHistory(
+        context: NotificationContext,
+        paramsObject: JsonObject,
+    ) {
+        val processId = paramsObject.firstString("processId", "process_id")
+            ?: envelopeEventObject(paramsObject)?.firstString("processId", "process_id")
+        val matchingProcessEntry = processId
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { normalizedProcessId ->
+                backingCommandExecutionDetails.value.entries.firstOrNull { (itemId, details) ->
+                    itemId != context.itemId &&
+                        details.processId == normalizedProcessId &&
+                        details.source == RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP
+                } ?: backingCommandExecutionDetails.value.entries.firstOrNull { (itemId, details) ->
+                    itemId != context.itemId && details.processId == normalizedProcessId
+                }
+            }
+        val details = context.itemId?.let(backingCommandExecutionDetails.value::get)
+            ?: matchingProcessEntry?.value
+        if (
+            details?.source == RemodexCommandExecutionSource.AGENT ||
+            details?.source == RemodexCommandExecutionSource.USER_SHELL
+        ) {
+            return
+        }
+        val stdin = paramsObject.firstRawString("stdin")
+            ?: envelopeEventObject(paramsObject)?.firstRawString("stdin")
+            ?: return
+        val snapshot = backingThreads.value.firstOrNull { it.id == context.threadId } ?: return
+        val historyText = if (stdin.isEmpty()) {
+            "Waited for background terminal"
+        } else {
+            "Interacted with background terminal"
+        }
+        val historyItemId = matchingProcessEntry?.key ?: context.itemId
+        val commandPreview = details?.fullCommand
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let(::shortCommandPreview)
+        val projected = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+        if (
+            stdin.isEmpty() &&
+            projected.lastOrNull()?.let { previous ->
+                val previousProcessId = previous.itemId
+                    ?.let(backingCommandExecutionDetails.value::get)
+                    ?.processId
+                previous.speaker == ConversationSpeaker.SYSTEM &&
+                    previous.kind == ConversationItemKind.CHAT &&
+                    previous.turnId == context.turnId &&
+                    (
+                        previous.itemId == historyItemId ||
+                            (
+                                processId != null &&
+                                    previousProcessId != null &&
+                                    previousProcessId == processId
+                                )
+                        ) &&
+                    previous.text == historyText
+            } == true
+        ) {
+            return
+        }
+        appendTimelineMutation(
+            threadId = context.threadId,
+            mutation = TimelineMutation.Upsert(
+                timelineItem(
+                    id = "background-terminal-${UUID.randomUUID()}",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.CHAT,
+                    text = historyText,
+                    supportingText = commandPreview,
+                    turnId = context.turnId,
+                    itemId = historyItemId,
+                    orderIndex = nextOrderIndex(snapshot),
+                    systemTurnOrderingHint = ConversationSystemTurnOrderingHint.PRESERVE_CHRONOLOGY_WHEN_LATE,
+                ),
+            ),
+            isRunning = threadHasKnownRunningState(context.threadId),
+        )
     }
 
     private fun handleItemLifecycle(
@@ -6105,6 +6299,8 @@ class BridgeThreadSyncService(
             ?: paramsObject?.firstString("cwd", "working_directory", "workingDirectory")
         val itemId = payloadObject.firstString("id", "call_id", "callId")
             ?: paramsObject?.firstString("itemId", "item_id")
+        val processId = payloadObject.firstString("processId", "process_id")
+            ?: paramsObject?.firstString("processId", "process_id")
         val exitCode = payloadObject.firstInt("exitCode", "exit_code")
             ?: payloadObject.firstObject("result")?.firstInt("exitCode", "exit_code")
         val durationMs = payloadObject.firstInt("durationMs", "duration_ms")
@@ -6122,6 +6318,7 @@ class BridgeThreadSyncService(
             exitCode = exitCode,
             durationMs = durationMs,
             source = source,
+            processId = processId,
         )
     }
 
@@ -6296,6 +6493,7 @@ class BridgeThreadSyncService(
                     outputTail = "",
                     liveStatus = liveStatusForCommandExecutionPhase(state.phase),
                     source = state.source,
+                    processId = state.processId,
                 )
             } else {
                 existing.copy(
@@ -6309,6 +6507,7 @@ class BridgeThreadSyncService(
                     durationMs = state.durationMs ?: existing.durationMs,
                     liveStatus = liveStatusForCommandExecutionPhase(state.phase),
                     source = existing.source ?: state.source,
+                    processId = existing.processId ?: state.processId,
                 )
             }
         }
@@ -6551,6 +6750,7 @@ class BridgeThreadSyncService(
         val exitCode: Int?,
         val durationMs: Int?,
         val source: RemodexCommandExecutionSource?,
+        val processId: String?,
     )
 
     private enum class CommandExecutionRunPhase(

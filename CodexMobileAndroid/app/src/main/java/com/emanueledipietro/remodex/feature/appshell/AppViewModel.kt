@@ -1136,7 +1136,7 @@ class AppViewModel(
             if (isPsCommandRequest) {
                 bumpComposerSendDismissSignal(threadId)
                 bumpComposerSendAnchorSignal(threadId)
-                bumpBackgroundTerminalSheetSignal(threadId)
+                openBackgroundTerminalSheet(threadId)
                 clearComposer(threadId)
                 return@launch
             }
@@ -1521,7 +1521,9 @@ class AppViewModel(
                     }
                 }
                 clearComposerAutocomplete()
-                bumpBackgroundTerminalSheetSignal(threadId)
+                viewModelScope.launch {
+                    openBackgroundTerminalSheet(threadId)
+                }
             }
 
             RemodexSlashCommand.STOP -> {
@@ -3354,6 +3356,17 @@ class AppViewModel(
                 )
             }
         }
+    }
+
+    private suspend fun openBackgroundTerminalSheet(threadId: String) {
+        runCatching {
+            repository.syncActiveThread(threadId)
+        }.onFailure { error ->
+            if (error is CancellationException) {
+                throw error
+            }
+        }
+        bumpBackgroundTerminalSheetSignal(threadId)
     }
 
     private fun startPlanComposerSession(

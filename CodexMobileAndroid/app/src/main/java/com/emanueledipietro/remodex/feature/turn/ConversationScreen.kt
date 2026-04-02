@@ -238,6 +238,7 @@ import com.emanueledipietro.remodex.model.RemodexSubagentThreadPresentation
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.isRunningBackgroundTerminal
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
@@ -408,6 +409,40 @@ internal fun buildConversationTimelineLayout(
         timelineItems = timelineItems,
         pinnedPlanItem = pinnedPlanItem,
     )
+}
+
+internal fun suppressRunningBackgroundTerminalCommandRows(
+    items: List<RemodexConversationItem>,
+    detailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+): List<RemodexConversationItem> {
+    val terminalHistorySessionKeys = items
+        .asSequence()
+        .filter { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.kind == ConversationItemKind.CHAT &&
+                (
+                    item.text == "Waited for background terminal" ||
+                        item.text == "Interacted with background terminal"
+                    )
+        }
+        .mapNotNull { item ->
+            val itemId = item.itemId?.trim()?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+            val details = detailsByItemId[itemId]
+            details?.processId?.trim()?.takeIf(String::isNotEmpty) ?: itemId
+        }
+        .toSet()
+    if (terminalHistorySessionKeys.isEmpty()) {
+        return items
+    }
+    return items.filterNot { item ->
+        if (item.kind != ConversationItemKind.COMMAND_EXECUTION) {
+            return@filterNot false
+        }
+        val itemId = item.itemId?.trim()?.takeIf(String::isNotEmpty) ?: return@filterNot false
+        val details = detailsByItemId[itemId] ?: return@filterNot false
+        val sessionKey = details.processId?.trim()?.takeIf(String::isNotEmpty) ?: itemId
+        sessionKey in terminalHistorySessionKeys && details.isRunningBackgroundTerminal()
+    }
 }
 
 private fun RemodexConversationItem.isPlanSystemMessage(): Boolean {
@@ -971,7 +1006,12 @@ fun ConversationScreen(
         )
     }
     val pinnedPlanItem = conversationLayout.pinnedPlanItem
-    val timelineItems = conversationLayout.timelineItems
+    val timelineItems = remember(conversationLayout.timelineItems, uiState.commandExecutionDetailsByItemId) {
+        suppressRunningBackgroundTerminalCommandRows(
+            items = conversationLayout.timelineItems,
+            detailsByItemId = uiState.commandExecutionDetailsByItemId,
+        )
+    }
     val emptyTimelineStatePresentation = remember(
         timelineItems,
         pinnedPlanItem?.id,
@@ -9109,33 +9149,86 @@ internal fun resolveBackgroundTerminalPresentations(
     messages: List<RemodexConversationItem>,
     detailsByItemId: Map<String, RemodexCommandExecutionDetails>,
 ): List<BackgroundTerminalPresentation> {
-    val sessionsByItemId = linkedMapOf<String, BackgroundTerminalPresentation>()
-    messages.forEach { item ->
-        if (item.kind != ConversationItemKind.COMMAND_EXECUTION) {
+    data class BackgroundTerminalAccumulator(
+        val sessionKey: String,
+        var displayItemId: String,
+        var displayOrder: Long,
+        var displaySourcePriority: Int,
+        var fullCommand: String,
+        val recentOutputLines: MutableList<String> = mutableListOf(),
+    )
+
+    val firstKnownOrderByItemId = messages
+        .asSequence()
+        .mapNotNull { item ->
+            item.itemId?.trim()?.takeIf(String::isNotEmpty)?.let { itemId -> itemId to item.orderIndex }
+        }
+        .groupBy({ it.first }, { it.second })
+        .mapValues { (_, orders) -> orders.minOrNull() ?: Long.MAX_VALUE }
+
+    val sessionsByKey = linkedMapOf<String, BackgroundTerminalAccumulator>()
+    detailsByItemId.forEach { (itemId, details) ->
+        if (details.liveStatus != RemodexCommandExecutionLiveStatus.RUNNING) {
             return@forEach
         }
-        val itemId = item.itemId?.trim()?.takeIf(String::isNotEmpty) ?: return@forEach
-        val details = detailsByItemId[itemId] ?: return@forEach
         if (
-            details.liveStatus != RemodexCommandExecutionLiveStatus.RUNNING
-            || details.source != RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP
+            details.source != RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP &&
+            details.source != RemodexCommandExecutionSource.UNIFIED_EXEC_INTERACTION
         ) {
             return@forEach
         }
-        val fullCommand = details.fullCommand.trim().ifEmpty { "command" }
-        sessionsByItemId[itemId] = BackgroundTerminalPresentation(
-            itemId = itemId,
-            commandPreview = backgroundTerminalCommandPreview(fullCommand),
-            fullCommand = fullCommand,
-            recentOutputLines = details.outputTail
-                .lineSequence()
-                .map(String::trimEnd)
-                .filter(String::isNotEmpty)
-                .toList()
-                .takeLast(3),
-        )
+        val sessionKey = details.processId?.trim()?.takeIf(String::isNotEmpty) ?: itemId
+        val order = firstKnownOrderByItemId[itemId] ?: Long.MAX_VALUE
+        val sourcePriority = if (details.source == RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP) 0 else 1
+        val accumulator = sessionsByKey.getOrPut(sessionKey) {
+            BackgroundTerminalAccumulator(
+                sessionKey = sessionKey,
+                displayItemId = itemId,
+                displayOrder = order,
+                displaySourcePriority = sourcePriority,
+                fullCommand = details.fullCommand.trim().ifEmpty { "command" },
+            )
+        }
+        val shouldReplaceDisplayIdentity = when {
+            sourcePriority < accumulator.displaySourcePriority -> true
+            sourcePriority > accumulator.displaySourcePriority -> false
+            else -> order < accumulator.displayOrder
+        }
+        if (shouldReplaceDisplayIdentity) {
+            accumulator.displayOrder = order
+            accumulator.displaySourcePriority = sourcePriority
+            accumulator.displayItemId = itemId
+        }
+        if (
+            details.source == RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP ||
+            accumulator.fullCommand.isBlank() ||
+            accumulator.fullCommand == "command"
+        ) {
+            accumulator.fullCommand = details.fullCommand.trim().ifEmpty { accumulator.fullCommand }
+        }
+        details.outputTail
+            .lineSequence()
+            .map(String::trimEnd)
+            .filter(String::isNotEmpty)
+            .forEach { line ->
+                if (accumulator.recentOutputLines.lastOrNull() != line) {
+                    accumulator.recentOutputLines += line
+                }
+            }
     }
-    return sessionsByItemId.values.toList()
+    return sessionsByKey.values
+        .sortedWith(
+            compareBy<BackgroundTerminalAccumulator>({ it.displayOrder }, { it.fullCommand.lowercase() }),
+        )
+        .map { session ->
+            val fullCommand = session.fullCommand.trim().ifEmpty { "command" }
+            BackgroundTerminalPresentation(
+                itemId = session.displayItemId,
+                commandPreview = backgroundTerminalCommandPreview(fullCommand),
+                fullCommand = fullCommand,
+                recentOutputLines = session.recentOutputLines.takeLast(3),
+            )
+        }
 }
 
 private fun backgroundTerminalCommandPreview(

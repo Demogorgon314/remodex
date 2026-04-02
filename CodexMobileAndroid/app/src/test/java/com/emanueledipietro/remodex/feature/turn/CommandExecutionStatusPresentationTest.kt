@@ -118,6 +118,7 @@ class CommandExecutionStatusPresentationTest {
                     outputTail = "tick 1\ntick 2\ntick 3\ntick 4",
                     liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
                     source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                    processId = "process-running",
                 ),
                 "command-foreground" to RemodexCommandExecutionDetails(
                     fullCommand = "pwd",
@@ -136,5 +137,83 @@ class CommandExecutionStatusPresentationTest {
         assertEquals("command-running", sessions.single().itemId)
         assertTrue(sessions.single().commandPreview.contains("sleep 30"))
         assertEquals(listOf("tick 2", "tick 3", "tick 4"), sessions.single().recentOutputLines)
+    }
+
+    @Test
+    fun `background terminal presentations merge interaction only history by process id`() {
+        val waitedItem = RemodexConversationItem(
+            id = "wait-1",
+            itemId = "interaction-item",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.CHAT,
+            text = "Waited for background terminal",
+            orderIndex = 2L,
+        )
+
+        val sessions = resolveBackgroundTerminalPresentations(
+            messages = listOf(waitedItem),
+            detailsByItemId = mapOf(
+                "startup-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                    processId = "process-1",
+                ),
+                "interaction-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    outputTail = "tick 1\ntick 2",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_INTERACTION,
+                    processId = "process-1",
+                ),
+            ),
+        )
+
+        assertEquals(1, sessions.size)
+        assertEquals("startup-item", sessions.single().itemId)
+        assertEquals(listOf("tick 1", "tick 2"), sessions.single().recentOutputLines)
+    }
+
+    @Test
+    fun `waited background terminal history suppresses running startup command row by process id`() {
+        val visibleItems = suppressRunningBackgroundTerminalCommandRows(
+            items = listOf(
+                RemodexConversationItem(
+                    id = "command-startup",
+                    itemId = "startup-item",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "running sleep 30",
+                    orderIndex = 1L,
+                ),
+                RemodexConversationItem(
+                    id = "wait-1",
+                    itemId = "interaction-item",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Waited for background terminal",
+                    orderIndex = 2L,
+                ),
+            ),
+            detailsByItemId = mapOf(
+                "startup-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_STARTUP,
+                    processId = "process-1",
+                ),
+                "interaction-item" to RemodexCommandExecutionDetails(
+                    fullCommand = "bash -lc \"sleep 30\"",
+                    liveStatus = RemodexCommandExecutionLiveStatus.RUNNING,
+                    source = RemodexCommandExecutionSource.UNIFIED_EXEC_INTERACTION,
+                    processId = "process-1",
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("Waited for background terminal"),
+            visibleItems.map(RemodexConversationItem::text),
+        )
     }
 }
