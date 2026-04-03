@@ -329,6 +329,67 @@ class FakeThreadSyncService(
         }
     }
 
+    override suspend fun steerPrompt(
+        threadId: String,
+        prompt: String,
+        runtimeConfig: RemodexRuntimeConfig,
+        attachments: List<RemodexComposerAttachment>,
+    ) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId }
+        val activeTurnId = snapshot?.activeTurnId
+        if (snapshot == null || !snapshot.isRunning || activeTurnId.isNullOrBlank()) {
+            sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        backingThreads.update { threads ->
+            threads.map { candidate ->
+                if (candidate.id != threadId) {
+                    candidate
+                } else {
+                    val nextOrderIndex = nextOrderIndex(candidate)
+                    val normalizedPrompt = if (prompt.isBlank() && attachments.isEmpty()) {
+                        "Shared a follow-up from Android."
+                    } else {
+                        androidUserMessageText(
+                            prompt = prompt,
+                            attachmentCount = attachments.size,
+                        )
+                    }
+                    candidate.copy(
+                        preview = normalizedPrompt,
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = now,
+                        isRunning = true,
+                        activeTurnId = activeTurnId,
+                        runtimeConfig = runtimeConfig,
+                        timelineMutations = candidate.timelineMutations + listOf(
+                            TimelineMutation.Upsert(
+                                timelineItem(
+                                    id = "user-${UUID.randomUUID()}",
+                                    speaker = ConversationSpeaker.USER,
+                                    text = normalizedPrompt,
+                                    turnId = activeTurnId,
+                                    deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                                    attachments = attachments.map { attachment -> attachment.toConversationAttachment() },
+                                    orderIndex = nextOrderIndex,
+                                ),
+                            ),
+                            TimelineMutation.AssistantTextDelta(
+                                messageId = "assistant-${UUID.randomUUID()}",
+                                turnId = activeTurnId,
+                                itemId = "assistant-$activeTurnId",
+                                delta = "Steered the active turn toward \"$normalizedPrompt\".",
+                                orderIndex = nextOrderIndex + 1,
+                            ),
+                        ),
+                    )
+                }
+            }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
+    }
+
     override suspend fun compactThread(threadId: String) {
         val now = System.currentTimeMillis()
         backingThreads.update { threads ->

@@ -28,6 +28,8 @@ import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedFile
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
@@ -37,6 +39,7 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
+import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -1825,6 +1828,49 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `sending while a turn is running preserves raw queued composer state`() = runTest {
+        val repository = createRepository(scope = backgroundScope)
+        repository.selectThread("thread-android-client")
+        advanceUntilIdle()
+
+        repository.sendPrompt(
+            threadId = "thread-android-client",
+            prompt = "Inspect @app/src/main/java/com/emanueledipietro/remodex/feature/turn/ConversationScreen.kt",
+            attachments = emptyList(),
+            planningModeOverride = null,
+            queuedDraftContext = RemodexQueuedDraftContext(
+                rawInput = "Inspect @ConversationScreen.kt",
+                rawMentionedFiles = listOf(
+                    RemodexComposerMentionedFile(
+                        id = "file-1",
+                        fileName = "ConversationScreen.kt",
+                        path = "app/src/main/java/com/emanueledipietro/remodex/feature/turn/ConversationScreen.kt",
+                    ),
+                ),
+                rawMentionedSkills = listOf(
+                    RemodexComposerMentionedSkill(
+                        id = "skill-1",
+                        name = "gh-address-comments",
+                        path = "/tmp/gh-address-comments/SKILL.md",
+                        description = "Address review feedback",
+                    ),
+                ),
+                rawSubagentsSelectionArmed = true,
+            ),
+        )
+        advanceUntilIdle()
+
+        val queuedDraft = repository.session.value.selectedThread?.queuedDraftItems?.firstOrNull()
+        assertEquals("Inspect @ConversationScreen.kt", queuedDraft?.rawInput)
+        assertEquals(
+            listOf("app/src/main/java/com/emanueledipietro/remodex/feature/turn/ConversationScreen.kt"),
+            queuedDraft?.rawMentionedFiles?.map(RemodexComposerMentionedFile::path),
+        )
+        assertEquals(listOf("gh-address-comments"), queuedDraft?.rawMentionedSkills?.map(RemodexComposerMentionedSkill::name))
+        assertTrue(queuedDraft?.rawSubagentsSelectionArmed == true)
+    }
+
+    @Test
     fun `queued follow up preserves an explicit auto planning override`() = runTest {
         val syncService = PlanningModeCaptureSyncService()
         val repository = DefaultRemodexAppRepository(
@@ -1897,6 +1943,59 @@ class DefaultRemodexAppRepositoryTest {
             repository.session.value.selectedThread?.queuedDraftItems?.map(RemodexQueuedDraft::text),
         )
         assertEquals(1, repository.session.value.selectedThread?.queuedDrafts)
+    }
+
+    @Test
+    fun `steering queued draft removes only selected row and preserves order`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val syncService = SteeringCaptureSyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        val firstDraft = RemodexQueuedDraft(id = "draft-1", text = "first", createdAtEpochMs = 1L)
+        val secondDraft = RemodexQueuedDraft(id = "draft-2", text = "second", createdAtEpochMs = 2L)
+        val thirdDraft = RemodexQueuedDraft(id = "draft-3", text = "third", createdAtEpochMs = 3L)
+
+        syncService.updateThreads(
+            syncService.threads.value.map { snapshot ->
+                if (snapshot.id == "thread-android-client") {
+                    snapshot.copy(
+                        isRunning = true,
+                        activeTurnId = "turn-live",
+                    )
+                } else {
+                    snapshot
+                }
+            },
+        )
+        preferencesRepository.setQueuedDrafts(
+            threadId = "thread-android-client",
+            drafts = listOf(firstDraft, secondDraft, thirdDraft),
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-android-client")
+        advanceUntilIdle()
+        awaitSelectedThread(
+            repository = repository,
+            description = "thread-android-client to be running",
+        ) { selectedThread ->
+            selectedThread?.id == "thread-android-client" && selectedThread.isRunning
+        }
+
+        repository.steerQueuedDraft("thread-android-client", secondDraft.id)
+        advanceUntilIdle()
+
+        assertEquals(listOf("second"), syncService.steeredPrompts)
+        assertEquals(
+            listOf("draft-1", "draft-3"),
+            repository.session.value.selectedThread?.queuedDraftItems?.map(RemodexQueuedDraft::id),
+        )
     }
 
     @Test
@@ -2738,6 +2837,26 @@ class DefaultRemodexAppRepositoryTest {
         ) {
             lastSendPlanningMode = runtimeConfig.planningMode
             delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+        }
+    }
+
+    private class SteeringCaptureSyncService(
+        private val delegate: FakeThreadSyncService = FakeThreadSyncService(),
+    ) : ThreadSyncService by delegate, ThreadCommandService by delegate {
+        val steeredPrompts = mutableListOf<String>()
+
+        fun updateThreads(threads: List<ThreadSyncSnapshot>) {
+            delegate.updateThreads(threads)
+        }
+
+        override suspend fun steerPrompt(
+            threadId: String,
+            prompt: String,
+            runtimeConfig: RemodexRuntimeConfig,
+            attachments: List<RemodexComposerAttachment>,
+        ) {
+            steeredPrompts += prompt
+            delegate.steerPrompt(threadId, prompt, runtimeConfig, attachments)
         }
     }
 

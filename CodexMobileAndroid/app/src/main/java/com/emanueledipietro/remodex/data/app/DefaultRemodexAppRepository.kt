@@ -50,6 +50,7 @@ import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
+import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexGptAccountStatus
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
@@ -189,6 +190,41 @@ class DefaultRemodexAppRepository(
             prompt = prompt,
             attachments = attachments,
             planningModeOverride = null,
+            queuedDraftContext = null,
+            forceQueue = false,
+        )
+    }
+
+    suspend fun sendPrompt(
+        threadId: String,
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
+        planningModeOverride: RemodexPlanningMode?,
+    ) {
+        sendPrompt(
+            threadId = threadId,
+            prompt = prompt,
+            attachments = attachments,
+            planningModeOverride = planningModeOverride,
+            queuedDraftContext = null,
+            forceQueue = false,
+        )
+    }
+
+    suspend fun sendPrompt(
+        threadId: String,
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
+        planningModeOverride: RemodexPlanningMode?,
+        queuedDraftContext: RemodexQueuedDraftContext?,
+    ) {
+        sendPrompt(
+            threadId = threadId,
+            prompt = prompt,
+            attachments = attachments,
+            planningModeOverride = planningModeOverride,
+            queuedDraftContext = queuedDraftContext,
+            forceQueue = false,
         )
     }
     private val gptAccountSnapshotState = MutableStateFlow(remodexInitialGptAccountSnapshot())
@@ -1230,6 +1266,8 @@ class DefaultRemodexAppRepository(
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
         planningModeOverride: RemodexPlanningMode?,
+        queuedDraftContext: RemodexQueuedDraftContext?,
+        forceQueue: Boolean,
     ) {
         val trimmedPrompt = prompt.trim()
         if (trimmedPrompt.isEmpty() && attachments.isEmpty()) {
@@ -1237,6 +1275,18 @@ class DefaultRemodexAppRepository(
         }
         var thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
         val activePlanningMode = planningModeOverride ?: thread.runtimeConfig.planningMode
+        val queuedDraft = buildQueuedDraft(
+            prompt = trimmedPrompt,
+            attachments = attachments,
+            planningMode = planningModeOverride ?: activePlanningMode.takeIf {
+                it == RemodexPlanningMode.PLAN
+            },
+            context = queuedDraftContext,
+        )
+        if (forceQueue) {
+            appendQueuedDraft(threadId = threadId, draft = queuedDraft)
+            return
+        }
         if (!thread.isRunning) {
             try {
                 thread = resumeThreadBeforeSend(thread = thread)
@@ -1266,25 +1316,7 @@ class DefaultRemodexAppRepository(
             }
         }
         if (thread.isRunning) {
-            val nextDrafts = thread.queuedDraftItems + RemodexQueuedDraft(
-                id = "draft-${UUID.randomUUID()}",
-                text = trimmedPrompt,
-                createdAtEpochMs = System.currentTimeMillis(),
-                attachments = attachments,
-                planningMode = planningModeOverride ?: activePlanningMode.takeIf {
-                    it == RemodexPlanningMode.PLAN
-                },
-            )
-            appPreferencesRepository.setQueuedDrafts(threadId, nextDrafts)
-            applyPreferencesLocally(
-                preferencesState.value.copy(
-                    queuedDraftsByThread = preferencesState.value.queuedDraftsByThread
-                        .toMutableMap()
-                        .apply {
-                            this[threadId] = nextDrafts
-                    },
-                ),
-            )
+            appendQueuedDraft(threadId = threadId, draft = queuedDraft)
             return
         }
 
@@ -1435,16 +1467,85 @@ class DefaultRemodexAppRepository(
         refreshBaseThreadsFromSync()
     }
 
+    override suspend fun steerQueuedDraft(
+        threadId: String,
+        draftId: String,
+    ) {
+        val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        val draft = thread.queuedDraftItems.firstOrNull { it.id == draftId } ?: return
+        val remainingDrafts = thread.queuedDraftItems.filterNot { it.id == draftId }
+        persistQueuedDrafts(threadId = threadId, drafts = remainingDrafts)
+        try {
+            if (thread.isRunning) {
+                threadCommandService.steerPrompt(
+                    threadId = threadId,
+                    prompt = draft.text,
+                    runtimeConfig = thread.runtimeConfig.copy(
+                        planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
+                    ),
+                    attachments = draft.attachments,
+                )
+            } else {
+                sendPromptWithLocalOptimistic(
+                    threadId = threadId,
+                    prompt = draft.text,
+                    runtimeConfig = thread.runtimeConfig.copy(
+                        planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
+                    ),
+                    attachments = draft.attachments,
+                )
+            }
+        } catch (error: Throwable) {
+            persistQueuedDrafts(
+                threadId = threadId,
+                drafts = thread.queuedDraftItems,
+            )
+            throw error
+        }
+        refreshBaseThreadsFromSync()
+    }
+
+    override suspend fun appendQueuedDraft(
+        threadId: String,
+        draft: RemodexQueuedDraft,
+    ) {
+        val existingDrafts = sessionState.value.threads
+            .firstOrNull { thread -> thread.id == threadId }
+            ?.queuedDraftItems
+            .orEmpty()
+        persistQueuedDrafts(threadId = threadId, drafts = existingDrafts + draft)
+    }
+
+    override suspend fun removeQueuedDraft(
+        threadId: String,
+        draftId: String,
+    ) {
+        val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return
+        persistQueuedDrafts(
+            threadId = threadId,
+            drafts = thread.queuedDraftItems.filterNot { draft -> draft.id == draftId },
+        )
+    }
+
+    override suspend fun popQueuedDraft(
+        threadId: String,
+        draftId: String,
+    ): RemodexQueuedDraft? {
+        val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return null
+        val draft = thread.queuedDraftItems.firstOrNull { it.id == draftId } ?: return null
+        persistQueuedDrafts(
+            threadId = threadId,
+            drafts = thread.queuedDraftItems.filterNot { candidate -> candidate.id == draftId },
+        )
+        return draft
+    }
+
     override suspend fun popLatestQueuedDraft(
         threadId: String,
     ): RemodexQueuedDraft? {
         val thread = sessionState.value.threads.firstOrNull { it.id == threadId } ?: return null
         val latestDraft = thread.queuedDraftItems.lastOrNull() ?: return null
-        persistQueuedDrafts(
-            threadId = threadId,
-            drafts = thread.queuedDraftItems.dropLast(1),
-        )
-        return latestDraft
+        return popQueuedDraft(threadId = threadId, draftId = latestDraft.id)
     }
 
     override suspend fun setPlanningMode(
@@ -2374,6 +2475,25 @@ class DefaultRemodexAppRepository(
                         }
                     },
             ),
+        )
+    }
+
+    private fun buildQueuedDraft(
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
+        planningMode: RemodexPlanningMode?,
+        context: RemodexQueuedDraftContext?,
+    ): RemodexQueuedDraft {
+        return RemodexQueuedDraft(
+            id = "draft-${UUID.randomUUID()}",
+            text = prompt,
+            createdAtEpochMs = System.currentTimeMillis(),
+            attachments = attachments,
+            planningMode = planningMode,
+            rawInput = context?.rawInput,
+            rawMentionedFiles = context?.rawMentionedFiles.orEmpty(),
+            rawMentionedSkills = context?.rawMentionedSkills.orEmpty(),
+            rawSubagentsSelectionArmed = context?.rawSubagentsSelectionArmed == true,
         )
     }
 

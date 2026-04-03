@@ -819,6 +819,111 @@ class BridgeThreadSyncService(
         hydrateThread(threadId)
     }
 
+    override suspend fun steerPrompt(
+        threadId: String,
+        prompt: String,
+        runtimeConfig: RemodexRuntimeConfig,
+        attachments: List<RemodexComposerAttachment>,
+    ) {
+        if (!isConnected()) {
+            return
+        }
+
+        val trimmedPrompt = prompt.trim()
+        if (trimmedPrompt.isEmpty() && attachments.isEmpty()) {
+            return
+        }
+        if (!threadHasKnownRunningState(threadId)) {
+            sendPrompt(
+                threadId = threadId,
+                prompt = trimmedPrompt,
+                runtimeConfig = runtimeConfig,
+                attachments = attachments,
+            )
+            return
+        }
+
+        optimisticAppendUserMessage(
+            threadId = threadId,
+            prompt = trimmedPrompt,
+            attachments = attachments,
+            runtimeConfig = runtimeConfig,
+        )
+
+        var imageUrlKey = "url"
+        var includeCollaborationMode = shouldIncludeCollaborationMode(runtimeConfig.planningMode)
+        var responseMessage: RpcMessage? = null
+        val expectedTurnId = resolveSteerExpectedTurnId(threadId)
+        val response = try {
+            retryAfterThreadMaterialization {
+                while (responseMessage == null) {
+                    try {
+                        responseMessage = sendRequestWithServiceTierFallback(
+                            method = if (expectedTurnId.isNullOrBlank()) "turn/start" else "turn/steer",
+                            accessMode = runtimeConfig.accessMode,
+                            includeServiceTier = shouldIncludeServiceTier(runtimeConfig.serviceTier),
+                            buildBaseParams = { includeServiceTier ->
+                                if (expectedTurnId.isNullOrBlank()) {
+                                    buildTurnStartParams(
+                                        threadId = threadId,
+                                        prompt = trimmedPrompt,
+                                        attachments = attachments,
+                                        runtimeConfig = runtimeConfig,
+                                        includeServiceTier = includeServiceTier,
+                                        imageUrlKey = imageUrlKey,
+                                        includeCollaborationMode = includeCollaborationMode,
+                                    )
+                                } else {
+                                    buildTurnSteerParams(
+                                        threadId = threadId,
+                                        prompt = trimmedPrompt,
+                                        attachments = attachments,
+                                        runtimeConfig = runtimeConfig,
+                                        includeServiceTier = includeServiceTier,
+                                        imageUrlKey = imageUrlKey,
+                                        includeCollaborationMode = includeCollaborationMode,
+                                        expectedTurnId = expectedTurnId,
+                                    )
+                                }
+                            },
+                        )
+                    } catch (error: Throwable) {
+                        if (imageUrlKey == "url" &&
+                            attachments.isNotEmpty() &&
+                            shouldRetryWithImageUrlFieldFallback(error)
+                        ) {
+                            imageUrlKey = "image_url"
+                            continue
+                        }
+                        if (consumeUnsupportedCollaborationMode(error, includeCollaborationMode)) {
+                            includeCollaborationMode = false
+                            continue
+                        }
+                        throw error
+                    }
+                }
+                responseMessage ?: error("queued send retry loop exited without a response")
+            }
+        } catch (error: Throwable) {
+            removeLatestPendingUserMessage(
+                threadId = threadId,
+                matchingText = trimmedPrompt,
+                matchingAttachments = attachments,
+            )
+            throw error
+        }
+        val turnId = extractTurnId(response.result)
+        if (turnId != null) {
+            setActiveTurnId(threadId = threadId, turnId = turnId)
+            confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
+            beginAssistantMessage(threadId = threadId, turnId = turnId)
+        } else {
+            markThreadAsRunningFallback(threadId)
+        }
+        refreshThreads()
+        hydrateThread(threadId)
+    }
+
     override suspend fun compactThread(threadId: String) {
         if (!isConnected()) {
             return
@@ -1638,6 +1743,24 @@ class BridgeThreadSyncService(
                 },
             )
         }.getOrThrow()
+    }
+
+    private suspend fun resolveSteerExpectedTurnId(threadId: String): String? {
+        activeTurnIdByThread[threadId]?.takeIf(String::isNotBlank)?.let { return it }
+        val threadObject = requestThreadRead(threadId)
+            .result
+            ?.jsonObjectOrNull
+            ?.firstObject("thread")
+            ?: return null
+        val expectedTurnId = resolveInterruptibleTurnId(threadObject)
+        return if (!expectedTurnId.isNullOrBlank()) {
+            setActiveTurnId(threadId = threadId, turnId = expectedTurnId)
+            expectedTurnId
+        } else {
+            clearThreadRunningState(threadId)
+            touchThread(threadId = threadId, isRunning = false)
+            null
+        }
     }
 
     private suspend fun runThreadResume(
@@ -8040,6 +8163,28 @@ class BridgeThreadSyncService(
                 buildCollaborationModePayload(runtimeConfig)?.let { put("collaborationMode", it) }
             }
         }
+    }
+
+    private fun buildTurnSteerParams(
+        threadId: String,
+        prompt: String,
+        attachments: List<RemodexComposerAttachment>,
+        runtimeConfig: RemodexRuntimeConfig,
+        includeServiceTier: Boolean,
+        imageUrlKey: String,
+        includeCollaborationMode: Boolean,
+        expectedTurnId: String,
+    ): JsonObject {
+        val baseParams = buildTurnStartParams(
+            threadId = threadId,
+            prompt = prompt,
+            attachments = attachments,
+            runtimeConfig = runtimeConfig,
+            includeServiceTier = includeServiceTier,
+            imageUrlKey = imageUrlKey,
+            includeCollaborationMode = includeCollaborationMode,
+        )
+        return JsonObject(baseParams + ("expectedTurnId" to JsonPrimitive(expectedTurnId)))
     }
 
     private fun buildCollaborationModePayload(

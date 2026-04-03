@@ -9,6 +9,7 @@ import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
+import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
@@ -79,6 +80,8 @@ interface RemodexAppRepository {
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
         planningModeOverride: RemodexPlanningMode? = null,
+        queuedDraftContext: RemodexQueuedDraftContext? = null,
+        forceQueue: Boolean = false,
     )
 
     suspend fun compactThread(threadId: String)
@@ -109,9 +112,31 @@ interface RemodexAppRepository {
         draftId: String,
     )
 
+    suspend fun steerQueuedDraft(
+        threadId: String,
+        draftId: String,
+    )
+
+    suspend fun appendQueuedDraft(
+        threadId: String,
+        draft: RemodexQueuedDraft,
+    )
+
+    suspend fun removeQueuedDraft(
+        threadId: String,
+        draftId: String,
+    )
+
+    suspend fun popQueuedDraft(
+        threadId: String,
+        draftId: String,
+    ): RemodexQueuedDraft?
+
     suspend fun popLatestQueuedDraft(
         threadId: String,
-    ): RemodexQueuedDraft?
+    ): RemodexQueuedDraft? {
+        return null
+    }
 
     suspend fun setPlanningMode(
         threadId: String,

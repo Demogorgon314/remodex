@@ -1,5 +1,7 @@
 package com.emanueledipietro.remodex.model
 
+import kotlinx.serialization.Serializable
+
 data class RemodexFuzzyFileMatch(
     val root: String,
     val path: String,
@@ -22,12 +24,14 @@ data class RemodexSkillMetadata(
         get() = name.trim().lowercase()
 }
 
+@Serializable
 data class RemodexComposerMentionedFile(
     val id: String,
     val fileName: String,
     val path: String,
 )
 
+@Serializable
 data class RemodexComposerMentionedSkill(
     val id: String,
     val name: String,

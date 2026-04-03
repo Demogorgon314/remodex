@@ -47,6 +47,7 @@ import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
+import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
@@ -87,6 +88,10 @@ data class ComposerUiState(
     val reviewSelection: RemodexComposerReviewSelection? = null,
     val isSubagentsSelectionArmed: Boolean = false,
     val queuedDrafts: List<RemodexQueuedDraft> = emptyList(),
+    val canRestoreQueuedDrafts: Boolean = false,
+    val steeringQueuedDraftId: String? = null,
+    val isQueuePaused: Boolean = false,
+    val queuePauseMessage: String? = null,
     val attachments: List<RemodexComposerAttachment> = emptyList(),
     val attachmentLimitMessage: String? = null,
     val composerMessage: String? = null,
@@ -257,6 +262,8 @@ private data class ComposerRenderStateB(
     val subagentsSelectionsByThread: Map<String, Boolean> = emptyMap(),
     val attachmentMessagesByThread: Map<String, String?> = emptyMap(),
     val composerMessagesByThread: Map<String, String?> = emptyMap(),
+    val queuePauseMessagesByThread: Map<String, String?> = emptyMap(),
+    val steeringQueuedDraftIdsByThread: Map<String, String?> = emptyMap(),
     val gitStatesByThread: Map<String, RemodexGitState> = emptyMap(),
     val baseBranchesByThread: Map<String, String> = emptyMap(),
     val autocomplete: RemodexComposerAutocompleteState = RemodexComposerAutocompleteState(),
@@ -341,6 +348,8 @@ class AppViewModel(
     private val composerSubagentsSelections = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val attachmentMessages = MutableStateFlow<Map<String, String?>>(emptyMap())
     private val composerMessages = MutableStateFlow<Map<String, String?>>(emptyMap())
+    private val queuePauseMessages = MutableStateFlow<Map<String, String?>>(emptyMap())
+    private val steeringQueuedDraftIds = MutableStateFlow<Map<String, String?>>(emptyMap())
     private val gitStates = MutableStateFlow<Map<String, RemodexGitState>>(emptyMap())
     private val selectedGitBaseBranchByThread = MutableStateFlow<Map<String, String>>(emptyMap())
     private val autocompleteState = MutableStateFlow(RemodexComposerAutocompleteState())
@@ -409,17 +418,28 @@ class AppViewModel(
             )
         }
 
+    private val composerQueueRenderState =
+        combine(
+            queuePauseMessages,
+            steeringQueuedDraftIds,
+        ) { queuePauseMessagesByThread, steeringQueuedDraftIdsByThread ->
+            queuePauseMessagesByThread to steeringQueuedDraftIdsByThread
+        }
+
     private val composerRenderStateB =
         combine(
             composerSubagentsSelections,
             attachmentMessages,
             composerMessages,
+            composerQueueRenderState,
             composerRenderStateBRight,
-        ) { subagentsSelectionsByThread, attachmentMessagesByThread, composerMessagesByThread, right ->
+        ) { subagentsSelectionsByThread, attachmentMessagesByThread, composerMessagesByThread, queueState, right ->
             ComposerRenderStateB(
                 subagentsSelectionsByThread = subagentsSelectionsByThread,
                 attachmentMessagesByThread = attachmentMessagesByThread,
                 composerMessagesByThread = composerMessagesByThread,
+                queuePauseMessagesByThread = queueState.first,
+                steeringQueuedDraftIdsByThread = queueState.second,
                 gitStatesByThread = right.first,
                 baseBranchesByThread = right.second,
                 autocomplete = right.third,
@@ -524,6 +544,8 @@ class AppViewModel(
             val isSubagentsSelectionArmed = selectedThread?.id?.let(renderStateB.subagentsSelectionsByThread::get) == true
             val attachmentMessage = selectedThread?.id?.let(renderStateB.attachmentMessagesByThread::get)
             val composerMessage = selectedThread?.id?.let(renderStateB.composerMessagesByThread::get)
+            val queuePauseMessage = selectedThread?.id?.let(renderStateB.queuePauseMessagesByThread::get)
+            val steeringQueuedDraftId = selectedThread?.id?.let(renderStateB.steeringQueuedDraftIdsByThread::get)
             val gitState = selectedThread?.id?.let(renderStateB.gitStatesByThread::get) ?: RemodexGitState()
             val selectedGitBaseBranch = selectedThread?.id?.let(renderStateB.baseBranchesByThread::get)
                 ?: gitState.branches.defaultBranch.orEmpty()
@@ -563,6 +585,8 @@ class AppViewModel(
                     isSubagentsSelectionArmed = isSubagentsSelectionArmed,
                     attachmentLimitMessage = attachmentMessage,
                     composerMessage = composerMessage,
+                    queuePauseMessage = queuePauseMessage,
+                    steeringQueuedDraftId = steeringQueuedDraftId,
                     autocomplete = renderStateB.autocomplete.enriched(
                         selectedThread = selectedThread,
                         gitState = gitState,
@@ -1163,6 +1187,13 @@ class AppViewModel(
                 mentionedFiles = composer.mentionedFiles,
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
+            val queuedDraftContext = RemodexQueuedDraftContext(
+                rawInput = composer.draftText,
+                rawMentionedFiles = composer.mentionedFiles,
+                rawMentionedSkills = composer.mentionedSkills,
+                rawSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
+            )
+            val queuePausedWhileIdle = composer.isQueuePaused && !selectedThread.isRunning
             if (startsPlanComposerSession) {
                 startPlanComposerSession(
                     threadId = threadId,
@@ -1173,7 +1204,17 @@ class AppViewModel(
             bumpComposerSendAnchorSignal(threadId)
             clearComposer(threadId)
             try {
-                repository.sendPrompt(threadId, payload, composer.attachments)
+                repository.sendPrompt(
+                    threadId = threadId,
+                    prompt = payload,
+                    attachments = composer.attachments,
+                    queuedDraftContext = queuedDraftContext,
+                    forceQueue = queuePausedWhileIdle,
+                )
+                if (queuePausedWhileIdle) {
+                    clearQueuePauseMessage(threadId)
+                    flushQueuedDraftsIfPossible(threadId)
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) {
                     throw error
@@ -1246,10 +1287,58 @@ class AppViewModel(
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
             val draft = repository.popLatestQueuedDraft(threadId) ?: return@launch
-            restoreQueuedDraftToComposer(
+            restoreQueuedDraftStateToComposer(
                 threadId = threadId,
                 draft = draft,
             )
+        }
+    }
+
+    fun restoreQueuedDraftToComposer(draftId: String) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        viewModelScope.launch {
+            val draft = repository.popQueuedDraft(threadId, draftId) ?: return@launch
+            restoreQueuedDraftStateToComposer(
+                threadId = threadId,
+                draft = draft,
+            )
+        }
+    }
+
+    fun removeQueuedDraft(draftId: String) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        viewModelScope.launch {
+            repository.removeQueuedDraft(threadId, draftId)
+            if (uiState.value.selectedThread?.queuedDraftItems.orEmpty().size <= 1) {
+                clearQueuePauseMessage(threadId)
+            }
+        }
+    }
+
+    fun steerQueuedDraft(draftId: String) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        viewModelScope.launch {
+            setSteeringQueuedDraftId(threadId, draftId)
+            runCatching {
+                repository.steerQueuedDraft(threadId, draftId)
+            }.onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                setComposerMessage(
+                    threadId = threadId,
+                    message = error.message ?: "Could not steer this queued draft.",
+                )
+            }
+            setSteeringQueuedDraftId(threadId, null)
+        }
+    }
+
+    fun resumeQueue() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        clearQueuePauseMessage(threadId)
+        viewModelScope.launch {
+            flushQueuedDraftsIfPossible(threadId)
         }
     }
 
@@ -3025,17 +3114,7 @@ class AppViewModel(
             if (!didCompleteTurn) {
                 return@forEach
             }
-            val nextDraftId = currentThread.queuedDraftItems.firstOrNull()?.id ?: return@forEach
-            runCatching {
-                repository.sendQueuedDraft(currentThread.id, nextDraftId)
-            }.onFailure { error ->
-                if (error is CancellationException) {
-                    throw error
-                }
-                if (snapshot.selectedThread?.id == currentThread.id) {
-                    presentTransientBanner(error.message ?: "Could not send the next queued message.")
-                }
-            }
+            flushQueuedDraftsIfPossible(currentThread.id)
         }
     }
 
@@ -3297,6 +3376,26 @@ class AppViewModel(
         )
     }
 
+    private suspend fun flushQueuedDraftsIfPossible(threadId: String) {
+        val currentThread = repository.session.value.threads.firstOrNull { thread -> thread.id == threadId } ?: return
+        if (currentThread.isRunning || queuePauseMessages.value[threadId] != null) {
+            return
+        }
+        val nextDraftId = currentThread.queuedDraftItems.firstOrNull()?.id ?: return
+        runCatching {
+            repository.sendQueuedDraft(threadId, nextDraftId)
+        }.onSuccess {
+            if (repository.session.value.threads.firstOrNull { thread -> thread.id == threadId }?.queuedDraftItems.isNullOrEmpty()) {
+                clearQueuePauseMessage(threadId)
+            }
+        }.onFailure { error ->
+            if (error is CancellationException) {
+                throw error
+            }
+            setQueuePauseMessage(threadId, error.message ?: "Could not send the next queued message.")
+        }
+    }
+
     private fun clearComposer(threadId: String) {
         composerDrafts.update { draftsByThread ->
             draftsByThread.toMutableMap().apply { this[threadId] = "" }
@@ -3386,13 +3485,13 @@ class AppViewModel(
         }
     }
 
-    private suspend fun restoreQueuedDraftToComposer(
+    private suspend fun restoreQueuedDraftStateToComposer(
         threadId: String,
         draft: RemodexQueuedDraft,
     ) {
         composerDrafts.update { draftsByThread ->
             draftsByThread.toMutableMap().apply {
-                this[threadId] = draft.text
+                this[threadId] = draft.rawInput ?: draft.text
             }
         }
         composerAttachments.update { attachmentsByThread ->
@@ -3401,16 +3500,30 @@ class AppViewModel(
             }
         }
         composerMentionedFiles.update { mentionsByThread ->
-            mentionsByThread.toMutableMap().apply { remove(threadId) }
+            mentionsByThread.toMutableMap().apply {
+                if (draft.rawMentionedFiles.isEmpty()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = draft.rawMentionedFiles
+                }
+            }
         }
         composerMentionedSkills.update { mentionsByThread ->
-            mentionsByThread.toMutableMap().apply { remove(threadId) }
+            mentionsByThread.toMutableMap().apply {
+                if (draft.rawMentionedSkills.isEmpty()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = draft.rawMentionedSkills
+                }
+            }
         }
         composerReviewSelections.update { selectionsByThread ->
             selectionsByThread.toMutableMap().apply { remove(threadId) }
         }
         composerSubagentsSelections.update { selectionsByThread ->
-            selectionsByThread.toMutableMap().apply { this[threadId] = false }
+            selectionsByThread.toMutableMap().apply {
+                this[threadId] = draft.rawSubagentsSelectionArmed
+            }
         }
         attachmentMessages.update { messagesByThread ->
             messagesByThread.toMutableMap().apply { remove(threadId) }
@@ -3418,6 +3531,7 @@ class AppViewModel(
         composerMessages.update { messagesByThread ->
             messagesByThread.toMutableMap().apply { remove(threadId) }
         }
+        clearQueuePauseMessage(threadId)
         draft.planningMode?.let { planningMode ->
             repository.setPlanningMode(threadId, planningMode)
         }
@@ -3474,6 +3588,40 @@ class AppViewModel(
                     remove(threadId)
                 } else {
                     this[threadId] = message
+                }
+            }
+        }
+    }
+
+    private fun setQueuePauseMessage(
+        threadId: String,
+        message: String?,
+    ) {
+        queuePauseMessages.update { messagesByThread ->
+            messagesByThread.toMutableMap().apply {
+                if (message.isNullOrBlank()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = message
+                }
+            }
+        }
+    }
+
+    private fun clearQueuePauseMessage(threadId: String) {
+        setQueuePauseMessage(threadId, null)
+    }
+
+    private fun setSteeringQueuedDraftId(
+        threadId: String,
+        draftId: String?,
+    ) {
+        steeringQueuedDraftIds.update { idsByThread ->
+            idsByThread.toMutableMap().apply {
+                if (draftId.isNullOrBlank()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = draftId
                 }
             }
         }
@@ -4193,6 +4341,8 @@ class AppViewModel(
         isSubagentsSelectionArmed: Boolean,
         attachmentLimitMessage: String?,
         composerMessage: String?,
+        queuePauseMessage: String?,
+        steeringQueuedDraftId: String?,
         autocomplete: RemodexComposerAutocompleteState,
         voiceUiState: ComposerVoiceUiState,
         isConnected: Boolean,
@@ -4206,6 +4356,13 @@ class AppViewModel(
         val showsRunningUi = thread.isRunning
         val hasConfirmedReviewSelection = reviewSelection?.request != null
         val hasPendingReviewSelection = false
+        val hasComposerDraftContent = draftText.isNotBlank() ||
+            attachments.isNotEmpty() ||
+            mentionedFiles.isNotEmpty() ||
+            mentionedSkills.isNotEmpty() ||
+            reviewSelection != null ||
+            isSubagentsSelectionArmed ||
+            thread.runtimeConfig.planningMode == RemodexPlanningMode.PLAN
         val canSend = !hasPendingReviewSelection && (
             draftText.isNotBlank() ||
                 attachments.isNotEmpty() ||
@@ -4227,6 +4384,10 @@ class AppViewModel(
             reviewSelection = reviewSelection,
             isSubagentsSelectionArmed = isSubagentsSelectionArmed,
             queuedDrafts = thread.queuedDraftItems,
+            canRestoreQueuedDrafts = !hasComposerDraftContent && steeringQueuedDraftId == null,
+            steeringQueuedDraftId = steeringQueuedDraftId,
+            isQueuePaused = queuePauseMessage != null,
+            queuePauseMessage = queuePauseMessage,
             attachments = attachments,
             attachmentLimitMessage = attachmentLimitMessage,
             composerMessage = composerMessage,

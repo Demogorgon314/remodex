@@ -917,6 +917,10 @@ fun ConversationScreen(
     onDismissPlanComposerSession: () -> Unit = {},
     onStopTurn: () -> Unit,
     onRestoreLatestQueuedDraft: () -> Unit = {},
+    onRestoreQueuedDraft: (String) -> Unit = {},
+    onSteerQueuedDraft: (String) -> Unit = {},
+    onRemoveQueuedDraft: (String) -> Unit = {},
+    onResumeQueue: () -> Unit = {},
     onSelectModel: (String?) -> Unit,
     onSelectPlanningMode: (RemodexPlanningMode) -> Unit,
     onSelectReasoningEffort: (String) -> Unit,
@@ -1519,7 +1523,13 @@ fun ConversationScreen(
                             if (uiState.composer.queuedDrafts.isNotEmpty()) {
                                 QueuedDraftsCard(
                                     queuedDrafts = uiState.composer.queuedDrafts,
+                                    isThreadRunning = uiState.selectedThread?.isRunning == true,
+                                    canRestoreDrafts = uiState.composer.canRestoreQueuedDrafts,
+                                    steeringDraftId = uiState.composer.steeringQueuedDraftId,
                                     onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
+                                    onRestoreQueuedDraft = onRestoreQueuedDraft,
+                                    onSteerQueuedDraft = onSteerQueuedDraft,
+                                    onRemoveQueuedDraft = onRemoveQueuedDraft,
                                 )
                             }
 
@@ -1599,6 +1609,7 @@ fun ConversationScreen(
                                         onComposerInputChanged = onComposerInputChanged,
                                         onSendPrompt = onSendPrompt,
                                         onStopTurn = onStopTurn,
+                                        onResumeQueue = onResumeQueue,
                                         onSelectModel = onSelectModel,
                                         onSelectPlanningMode = onSelectPlanningMode,
                                         onSelectReasoningEffort = onSelectReasoningEffort,
@@ -2767,7 +2778,13 @@ private fun PlanDetailStepRow(step: com.emanueledipietro.remodex.model.RemodexPl
 @Composable
 private fun QueuedDraftsCard(
     queuedDrafts: List<RemodexQueuedDraft>,
+    isThreadRunning: Boolean,
+    canRestoreDrafts: Boolean,
+    steeringDraftId: String?,
     onRestoreLatestQueuedDraft: () -> Unit,
+    onRestoreQueuedDraft: (String) -> Unit,
+    onSteerQueuedDraft: (String) -> Unit,
+    onRemoveQueuedDraft: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val latestDraftId = queuedDrafts.lastOrNull()?.id
@@ -2785,7 +2802,12 @@ private fun QueuedDraftsCard(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             queuedDrafts.forEach { draft ->
-                val canEditDraft = draft.id == latestDraftId
+                val actionState = resolveQueuedDraftRowActionState(
+                    draftId = draft.id,
+                    isThreadRunning = isThreadRunning,
+                    canRestoreDrafts = canRestoreDrafts,
+                    steeringDraftId = steeringDraftId,
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2823,16 +2845,69 @@ private fun QueuedDraftsCard(
                             )
                         }
                     }
-                    if (canEditDraft) {
+                    if (draft.id == latestDraftId) {
                         SecondaryBarAction(
                             label = "Edit",
                             onClick = onRestoreLatestQueuedDraft,
+                            enabled = actionState.restoreEnabled,
                         )
+                    } else {
+                        TextButton(
+                            onClick = { onRestoreQueuedDraft(draft.id) },
+                            enabled = actionState.restoreEnabled,
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                        ) {
+                            Text(text = "↓")
+                        }
+                    }
+                    if (actionState.showsSteer) {
+                        SecondaryBarAction(
+                            label = "Steer",
+                            onClick = { onSteerQueuedDraft(draft.id) },
+                            enabled = actionState.steerEnabled,
+                        )
+                    }
+                    TextButton(
+                        onClick = { onRemoveQueuedDraft(draft.id) },
+                        enabled = actionState.removeEnabled,
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                    ) {
+                        Text(text = "Delete")
                     }
                 }
             }
         }
     }
+}
+
+internal data class QueuedDraftRowActionState(
+    val showsSteer: Boolean,
+    val restoreEnabled: Boolean,
+    val steerEnabled: Boolean,
+    val removeEnabled: Boolean,
+)
+
+internal fun resolveConversationComposerPlaceholder(canStop: Boolean): String {
+    return if (canStop) {
+        "Queue a follow-up"
+    } else {
+        "Ask anything... @files, \$skills, /commands"
+    }
+}
+
+internal fun resolveQueuedDraftRowActionState(
+    draftId: String,
+    isThreadRunning: Boolean,
+    canRestoreDrafts: Boolean,
+    steeringDraftId: String?,
+): QueuedDraftRowActionState {
+    val isSteeringDraft = steeringDraftId == draftId
+    return QueuedDraftRowActionState(
+        showsSteer = isThreadRunning,
+        restoreEnabled = canRestoreDrafts,
+        steerEnabled = isThreadRunning && steeringDraftId == null,
+        removeEnabled = !isSteeringDraft,
+    )
 }
 
 @Composable
@@ -3273,6 +3348,7 @@ private fun ComposerSecondaryBar(
 private fun SecondaryBarAction(
     label: String,
     onClick: () -> Unit,
+    enabled: Boolean = true,
 ) {
     val chrome = remodexConversationChrome()
     Surface(
@@ -3285,10 +3361,10 @@ private fun SecondaryBarAction(
         Text(
             text = label,
             modifier = Modifier
-                .clickable(onClick = onClick)
+                .clickable(enabled = enabled, onClick = onClick)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             style = MaterialTheme.typography.labelMedium,
-            color = chrome.secondaryText,
+            color = if (enabled) chrome.secondaryText else chrome.secondaryText.copy(alpha = 0.45f),
         )
     }
 }
@@ -3929,6 +4005,7 @@ private fun ComposerCard(
     onComposerInputChanged: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onStopTurn: () -> Unit,
+    onResumeQueue: () -> Unit,
     onSelectModel: (String?) -> Unit,
     onSelectPlanningMode: (RemodexPlanningMode) -> Unit,
     onSelectReasoningEffort: (String) -> Unit,
@@ -4056,11 +4133,7 @@ private fun ComposerCard(
             ) {
                 if (composerInputState.text.isBlank()) {
                     Text(
-                        text = if (composer.canStop) {
-                            "Queue a follow-up"
-                        } else {
-                            "Ask anything... @files, \$skills, /commands"
-                        },
+                        text = resolveConversationComposerPlaceholder(canStop = composer.canStop),
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontSize = 14.sp,
                             lineHeight = 21.sp,
@@ -4111,6 +4184,12 @@ private fun ComposerCard(
                 ComposerInlineNotice(
                     text = message,
                     color = chrome.destructive,
+                )
+            }
+            if (composer.isQueuePaused && !composer.queuePauseMessage.isNullOrBlank()) {
+                ComposerInlineNotice(
+                    text = "Queue paused: ${composer.queuePauseMessage}",
+                    color = chrome.warning,
                 )
             }
 
@@ -4256,6 +4335,16 @@ private fun ComposerCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (composer.isQueuePaused && queuedCount > 0) {
+                            ConversationCircleButton(
+                                icon = Icons.Outlined.Refresh,
+                                contentDescription = "Resume queued messages",
+                                onClick = onResumeQueue,
+                                enabled = true,
+                                filled = true,
+                                hapticOnClick = true,
+                            )
+                        }
                         ConversationVoiceButton(
                             modifier = Modifier.testTag(ComposerVoiceButtonTag),
                             voiceUiState = composer.voice,

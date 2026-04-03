@@ -6665,6 +6665,183 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `steer prompt sends turn steer with the active turn id`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-steer-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "turn/steer" to {
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-live"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-steer",
+                        title = "Steer thread",
+                        preview = "Running",
+                        projectPath = "/tmp/thread-steer",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-steer",
+                "turn-live",
+            )
+
+            service.steerPrompt(
+                threadId = "thread-steer",
+                prompt = "Ship the Android queued draft fix.",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            val steerRequest = relayFactory.receivedRequests.last { request -> request.method == "turn/steer" }
+            assertEquals("thread-steer", steerRequest.params?.jsonObjectOrNull?.firstString("threadId"))
+            assertEquals("turn-live", steerRequest.params?.jsonObjectOrNull?.firstString("expectedTurnId"))
+            val projected = TurnTimelineReducer.reduceProjected(
+                service.threads.value.first { it.id == "thread-steer" }.timelineMutations,
+            )
+            assertTrue(
+                projected.any { item ->
+                    item.speaker == ConversationSpeaker.USER &&
+                        item.deliveryState == RemodexMessageDeliveryState.CONFIRMED &&
+                        item.turnId == "turn-live" &&
+                        item.text.contains("Ship the Android queued draft fix.")
+                },
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `steer prompt falls back to turn start when thread read shows no active turn`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-steer-fallback-test",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-steer-fallback"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to {
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-new"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-steer-fallback",
+                        title = "Steer fallback thread",
+                        preview = "Running",
+                        projectPath = "/tmp/thread-steer-fallback",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+
+            service.steerPrompt(
+                threadId = "thread-steer-fallback",
+                prompt = "Retry this queued draft as a fresh turn.",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            val requestMethods = relayFactory.receivedRequests.map { request -> request.method }
+            assertTrue(requestMethods.contains("thread/read"))
+            assertTrue(requestMethods.contains("turn/start"))
+            assertFalse(requestMethods.contains("turn/steer"))
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `final answer completion alone does not clear running state without terminal lifecycle events`() = runTest {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(

@@ -94,6 +94,13 @@ interface ThreadCommandService {
         attachments: List<RemodexComposerAttachment>,
     )
 
+    suspend fun steerPrompt(
+        threadId: String,
+        prompt: String,
+        runtimeConfig: RemodexRuntimeConfig,
+        attachments: List<RemodexComposerAttachment>,
+    )
+
     suspend fun compactThread(threadId: String)
 
     suspend fun cleanBackgroundTerminals(threadId: String)
