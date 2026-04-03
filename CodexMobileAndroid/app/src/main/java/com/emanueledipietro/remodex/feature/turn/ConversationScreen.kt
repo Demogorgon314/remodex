@@ -421,6 +421,7 @@ internal fun buildConversationTimelineLayout(
         when {
             item.id == hiddenPromptItemId -> Unit
             item.shouldDisplayPinnedPlanAccessory(activePlanningMode) -> pinnedPlanItem = item
+            !shouldDisplayConversationTimelineItem(item) -> Unit
             else -> timelineItems += item
         }
     }
@@ -428,6 +429,19 @@ internal fun buildConversationTimelineLayout(
     return ConversationTimelineLayout(
         timelineItems = timelineItems,
         pinnedPlanItem = pinnedPlanItem,
+    )
+}
+
+internal fun shouldDisplayConversationTimelineItem(
+    item: RemodexConversationItem,
+): Boolean {
+    if (item.speaker != ConversationSpeaker.SYSTEM || item.kind != ConversationItemKind.FILE_CHANGE) {
+        return true
+    }
+    return FileChangeRenderParser.hasDisplayableTimelineContent(
+        sourceText = item.text,
+        supportingText = item.supportingText,
+        isStreaming = item.isStreaming,
     )
 }
 
@@ -1550,9 +1564,6 @@ fun ConversationScreen(
                                             commandExecutionDetails = message.itemId?.let(uiState.commandExecutionDetailsByItemId::get),
                                             onOpenPlanDetails = { planItemId ->
                                                 selectedPlanSheetItemId = planItemId
-                                            },
-                                            onOpenFileChangeDetails = { presentation ->
-                                                fileChangeSheetPresentation = presentation
                                             },
                                             onOpenCommandExecutionDetails = { messageId ->
                                                 commandDetailsMessageId = messageId
@@ -7099,7 +7110,6 @@ private fun ConversationBubble(
             onSubmitStructuredUserInput = { _, _ -> },
             commandExecutionDetails = item.itemId?.let(commandExecutionDetailsByItemId::get),
             onOpenPlanDetails = {},
-            onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
             parentThreadId = parentThreadId,
             threads = threads,
@@ -7279,7 +7289,6 @@ private fun SystemConversationRow(
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
     commandExecutionDetails: RemodexCommandExecutionDetails?,
     onOpenPlanDetails: (String) -> Unit,
-    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     parentThreadId: String,
     threads: List<RemodexThreadSummary>,
@@ -7319,7 +7328,6 @@ private fun SystemConversationRow(
             ConversationItemKind.FILE_CHANGE -> FileChangeConversationRow(
                 item = item,
                 accessoryState = accessoryState,
-                onOpenDetails = onOpenFileChangeDetails,
             )
             ConversationItemKind.CONTEXT_COMPACTION -> ContextCompactionConversationRow(
                 item = item,
@@ -7964,7 +7972,6 @@ private fun ThinkingDisclosureContentView(
 private fun FileChangeConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
-    onOpenDetails: (FileChangeSheetPresentation) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val renderState = remember(item.text) {
@@ -7980,31 +7987,16 @@ private fun FileChangeConversationRow(
     val groupedEntries = remember(summaryEntries) {
         FileChangeRenderParser.grouped(summaryEntries)
     }
-    val diffChunks = remember(item.text, renderState.summary?.entries) {
-        FileChangeRenderParser.diffChunks(
-            bodyText = item.text,
-            entries = renderState.summary?.entries.orEmpty(),
-        )
-    }
-    val detailsPresentation = remember(item.id, renderState, diffChunks) {
-        if (diffChunks.isEmpty()) {
-            null
-        } else {
-            FileChangeSheetPresentation(
-                title = "Changes",
-                messageId = item.id,
-                renderState = renderState,
-                diffChunks = diffChunks,
-            )
-        }
+    val showsStreamingIndicator = accessoryState?.showsRunningIndicator == true || item.isStreaming
+    if (groupedEntries.isEmpty() && item.supportingText.isNullOrBlank() && !showsStreamingIndicator) {
+        return
     }
     ConversationMessageActionContainer(
         text = item.text,
         messageRole = ConversationSpeaker.SYSTEM,
         usesMarkdownSelection = false,
         allowsSelectText = true,
-        onClick = detailsPresentation?.let { presentation -> { onOpenDetails(presentation) } },
-    ) { showContextMenuAt ->
+    ) { _ ->
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -8018,13 +8010,6 @@ private fun FileChangeConversationRow(
                         chrome = chrome,
                     )
                 }
-            } else if (item.text.isNotBlank()) {
-                ConversationMarkdownText(
-                    text = item.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.bodyText,
-                    onLongPress = showContextMenuAt,
-                )
             }
             item.supportingText?.takeIf(String::isNotBlank)?.let { supportingText ->
                 Text(
@@ -8047,19 +8032,34 @@ private fun FileChangeInlineGroup(
     group: FileChangeGroup,
     chrome: RemodexConversationChrome,
 ) {
+    val (totalAdditions, totalDeletions) = remember(group.entries) {
+        aggregateFileChangeDiffCounts(group.entries)
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Text(
-            text = group.key,
-            style = MaterialTheme.typography.labelSmall,
-            color = chrome.secondaryText.copy(alpha = 0.6f),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = group.key,
+                style = MaterialTheme.typography.labelSmall,
+                color = chrome.secondaryText.copy(alpha = 0.6f),
+                modifier = Modifier.weight(1f),
+            )
+            FileChangeDiffCounts(
+                additions = totalAdditions,
+                deletions = totalDeletions,
+            )
+        }
         group.entries.forEach { entry ->
             FileChangeInlineActionRow(
                 entry = entry,
                 showActionLabel = false,
+                showsCounts = false,
                 chrome = chrome,
             )
         }
@@ -8070,6 +8070,7 @@ private fun FileChangeInlineGroup(
 private fun FileChangeInlineActionRow(
     entry: FileChangeSummaryEntry,
     showActionLabel: Boolean,
+    showsCounts: Boolean = true,
     chrome: RemodexConversationChrome,
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
@@ -8097,12 +8098,19 @@ private fun FileChangeInlineActionRow(
                 overflow = TextOverflow.MiddleEllipsis,
                 modifier = Modifier.weight(1f),
             )
-            FileChangeDiffCounts(
-                additions = entry.additions,
-                deletions = entry.deletions,
-            )
+            if (showsCounts) {
+                FileChangeDiffCounts(
+                    additions = entry.additions,
+                    deletions = entry.deletions,
+                )
+            }
         }
     }
+}
+
+internal fun aggregateFileChangeDiffCounts(entries: List<FileChangeSummaryEntry>): Pair<Int, Int> {
+    return entries.sumOf(FileChangeSummaryEntry::additions) to
+        entries.sumOf(FileChangeSummaryEntry::deletions)
 }
 
 @Composable

@@ -5,6 +5,26 @@ import org.junit.Test
 
 class ConversationScreenFileChangeSheetTest {
     @Test
+    fun `file change group counts aggregate additions and deletions`() {
+        val entries = listOf(
+            FileChangeSummaryEntry(
+                path = "src/Main.kt",
+                additions = 3,
+                deletions = 1,
+                action = FileChangeAction.EDITED,
+            ),
+            FileChangeSummaryEntry(
+                path = "src/Other.kt",
+                additions = 2,
+                deletions = 4,
+                action = FileChangeAction.EDITED,
+            ),
+        )
+
+        assertEquals(5 to 5, aggregateFileChangeDiffCounts(entries))
+    }
+
+    @Test
     fun `initial expansion keeps small single file diff open`() {
         val chunks = listOf(
             diffChunk(

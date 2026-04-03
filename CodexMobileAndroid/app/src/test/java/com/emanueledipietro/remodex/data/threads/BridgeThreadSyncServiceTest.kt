@@ -46,6 +46,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -77,6 +78,47 @@ class BridgeThreadSyncServiceTest {
         assertFalse(shouldIgnoreStreamingTextDelta(" "))
         assertFalse(shouldIgnoreStreamingTextDelta("\n"))
         assertFalse(shouldIgnoreStreamingTextDelta("    "))
+    }
+
+    @Test
+    fun `history file change summary separates metadata only rows from displayable rows`() {
+        val displayableFileChange = RemodexConversationItem(
+            id = "file-change-displayable",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.FILE_CHANGE,
+            text = """
+                Status: completed
+
+                Path: src/Visible.kt
+                Kind: update
+                Totals: +3 -1
+            """.trimIndent(),
+        )
+        val metadataOnlyFileChange = RemodexConversationItem(
+            id = "file-change-metadata",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.FILE_CHANGE,
+            text = """
+                Status: completed
+
+                Path: src/Hidden.kt
+                Kind: update
+            """.trimIndent(),
+        )
+        val assistantMessage = RemodexConversationItem(
+            id = "assistant-message",
+            speaker = ConversationSpeaker.ASSISTANT,
+            text = "Done",
+        )
+
+        val summary = summarizeThreadHistoryFileChanges(
+            listOf(displayableFileChange, metadataOnlyFileChange, assistantMessage),
+        )
+
+        assertEquals(3, summary.totalItems)
+        assertEquals(2, summary.fileChangeItems)
+        assertEquals(1, summary.displayableFileChangeItems)
+        assertEquals(1, summary.metadataOnlyFileChangeItems)
     }
 
     @Test
@@ -762,6 +804,7 @@ class BridgeThreadSyncServiceTest {
         val refreshedSnapshot = invokePrivateMethod(
             service,
             "mergeThreadSnapshotResponse",
+            "thread/read",
             "thread-live",
             RpcMessage.response(
                 id = null,
@@ -7250,7 +7293,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `file change progress notifications do not create duplicate timeline rows`() = runTest {
+    fun `file change progress notifications reuse the live row and attach realtime diff`() = runTest {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
                 store = InMemorySecureStore(),
@@ -7351,7 +7394,108 @@ class BridgeThreadSyncServiceTest {
             Status: in_progress
 
             Path: app/src/Main.kt
-            Kind: add
+            Kind: update
+
+            ```diff
+            diff --git a/app/src/Main.kt b/app/src/Main.kt
+            new file mode 100644
+            --- /dev/null
+            +++ b/app/src/Main.kt
+            @@ -0,0 +1 @@
+            +hello
+            ```
+            """.trimIndent(),
+            fileChangeItems.single().text,
+        )
+        val renderState = FileChangeRenderParser.renderState(fileChangeItems.single().text)
+        val summaryEntry = renderState.summary?.entries?.single()
+        assertEquals("app/src/Main.kt", summaryEntry?.path)
+        assertEquals(FileChangeAction.ADDED, summaryEntry?.action)
+        assertEquals(1, summaryEntry?.additions)
+        assertEquals(0, summaryEntry?.deletions)
+        val diffChunks = FileChangeRenderParser.diffChunks(
+            bodyText = fileChangeItems.single().text,
+            entries = renderState.summary?.entries.orEmpty(),
+        )
+        assertEquals(1, diffChunks.size)
+        assertTrue(diffChunks.single().diffCode.contains("+hello"))
+        assertTrue(fileChangeItems.single().isStreaming)
+    }
+
+    @Test
+    fun `turn diff updates create a live file change row when no structured item exists`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-turn-diff-live",
+                    title = "Turn diff live thread",
+                    preview = "",
+                    projectPath = "/tmp/project-turn-diff-live",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnDiffUpdatedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turn-diff-live"))
+                put("turnId", JsonPrimitive("turn-turn-diff-live"))
+                put(
+                    "diff",
+                    JsonPrimitive(
+                        """
+                        diff --git a/app/src/Main.kt b/app/src/Main.kt
+                        index 1111111..2222222 100644
+                        --- a/app/src/Main.kt
+                        +++ b/app/src/Main.kt
+                        @@ -1 +1 @@
+                        -old
+                        +new
+                        """.trimIndent(),
+                    ),
+                )
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-turn-diff-live" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val fileChangeItems = projected.filter { item -> item.kind == ConversationItemKind.FILE_CHANGE }
+
+        assertEquals(1, fileChangeItems.size)
+        assertNull(fileChangeItems.single().itemId)
+        assertEquals(
+            """
+            Status: in_progress
+
+            Path: app/src/Main.kt
+            Kind: update
+
+            ```diff
+            diff --git a/app/src/Main.kt b/app/src/Main.kt
+            index 1111111..2222222 100644
+            --- a/app/src/Main.kt
+            +++ b/app/src/Main.kt
+            @@ -1 +1 @@
+            -old
+            +new
+            ```
             """.trimIndent(),
             fileChangeItems.single().text,
         )
@@ -7530,7 +7674,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `hydrate thread keeps metadata-only file change items as generic status rows`() = runTest {
+    fun `hydrate thread keeps metadata-only file change items without renderable summary evidence`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         val payload = createTestPairingPayload(
@@ -7645,8 +7789,258 @@ class BridgeThreadSyncServiceTest {
                 """.trimIndent(),
                 fileChangeItem.text,
             )
-            val summaryEntry = FileChangeRenderParser.renderState(fileChangeItem.text).summary?.entries?.single()
-            assertEquals("app/src/Main.kt", summaryEntry?.path)
+            val renderState = FileChangeRenderParser.renderState(fileChangeItem.text)
+            assertNull(renderState.summary)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `raw history file change summary distinguishes patch diffs from metadata only changes`() {
+        val summary = summarizeRawThreadHistoryFileChanges(
+            buildJsonObject {
+                put(
+                    "turns",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("id", JsonPrimitive("turn-raw-history"))
+                                put(
+                                    "items",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("filechange-add"))
+                                                put("type", JsonPrimitive("fileChange"))
+                                                put(
+                                                    "changes",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("path", JsonPrimitive("README.md"))
+                                                                put("kind", JsonPrimitive("add"))
+                                                                put("diff", JsonPrimitive("hello\n"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("filechange-update"))
+                                                put("type", JsonPrimitive("fileChange"))
+                                                put(
+                                                    "changes",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("path", JsonPrimitive("src/Main.kt"))
+                                                                put("kind", JsonPrimitive("update"))
+                                                                put(
+                                                                    "diff",
+                                                                    JsonPrimitive(
+                                                                        """
+                                                                        diff --git a/src/Main.kt b/src/Main.kt
+                                                                        index 1111111..2222222 100644
+                                                                        --- a/src/Main.kt
+                                                                        +++ b/src/Main.kt
+                                                                        @@ -1 +1 @@
+                                                                        -old
+                                                                        +new
+                                                                        """.trimIndent(),
+                                                                    ),
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("toolcall-metadata"))
+                                                put("type", JsonPrimitive("tool_call"))
+                                                put("name", JsonPrimitive("apply_patch"))
+                                                put(
+                                                    "output",
+                                                    buildJsonObject {
+                                                        put(
+                                                            "changes",
+                                                            buildJsonArray {
+                                                                add(
+                                                                    buildJsonObject {
+                                                                        put("path", JsonPrimitive("src/Empty.kt"))
+                                                                        put("kind", JsonPrimitive("update"))
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        )
+
+        assertEquals(3, summary.fileChangeLikeItems)
+        assertEquals(mapOf("filechange" to 2, "toolcall" to 1), summary.typeCounts)
+        assertEquals(3, summary.itemsWithChangesPayload)
+        assertEquals(2, summary.itemsWithAnyDiffField)
+        assertEquals(1, summary.itemsWithPatchLikeDiff)
+        assertEquals(0, summary.itemsWithInlineTotals)
+        assertEquals(0, summary.itemsWithContentField)
+        assertEquals(
+            listOf(
+                "filechange-add:filechange:changes=true:anyDiff=true:patchDiff=false:inlineTotals=false:content=false",
+                "filechange-update:filechange:changes=true:anyDiff=true:patchDiff=true:inlineTotals=false:content=false",
+                "toolcall-metadata:toolcall:changes=true:anyDiff=false:patchDiff=false:inlineTotals=false:content=false",
+            ),
+            summary.sampleDescriptors,
+        )
+    }
+
+    @Test
+    fun `hydrate thread decodes app server file changes with hunk-only diffs`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-filechange-hunk-history",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-filechange-hunk"))
+                                            put("title", JsonPrimitive("App server hunk diff thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-filechange-hunk"))
+                                            put("updatedAt", JsonPrimitive(1_713_333_666))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-filechange-hunk"))
+                                put("title", JsonPrimitive("App server hunk diff thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-filechange-hunk"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-filechange-hunk"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("filechange-item-hunk"))
+                                                                put("type", JsonPrimitive("fileChange"))
+                                                                put("status", JsonPrimitive("completed"))
+                                                                put(
+                                                                    "changes",
+                                                                    buildJsonArray {
+                                                                        add(
+                                                                            buildJsonObject {
+                                                                                put(
+                                                                                    "path",
+                                                                                    JsonPrimitive("/tmp/project-filechange-hunk/src/Main.kt"),
+                                                                                )
+                                                                                put(
+                                                                                    "kind",
+                                                                                    buildJsonObject {
+                                                                                        put("type", JsonPrimitive("update"))
+                                                                                        put("move_path", JsonNull)
+                                                                                    },
+                                                                                )
+                                                                                put(
+                                                                                    "diff",
+                                                                                    JsonPrimitive(
+                                                                                        """
+                                                                                        @@ -1 +1,2 @@
+                                                                                        -old
+                                                                                        +new
+                                                                                        +more
+                                                                                        """.trimIndent(),
+                                                                                    ),
+                                                                                )
+                                                                            },
+                                                                        )
+                                                                    },
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.hydrateThread("thread-filechange-hunk")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-filechange-hunk" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            val fileChangeItem = projected.single { item ->
+                item.kind == ConversationItemKind.FILE_CHANGE
+            }
+
+            val renderState = FileChangeRenderParser.renderState(fileChangeItem.text)
+            val entry = renderState.summary?.entries?.single()
+            assertEquals("/tmp/project-filechange-hunk/src/Main.kt", entry?.path)
+            assertEquals(FileChangeAction.EDITED, entry?.action)
+            assertEquals(2, entry?.additions)
+            assertEquals(1, entry?.deletions)
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

@@ -109,11 +109,30 @@ internal object FileChangeRenderParser {
         if (sectionChunks.isNotEmpty()) {
             return sectionChunks
         }
+        if (looksLikeRenderedFileChangeBody(bodyText)) {
+            return emptyList()
+        }
         val patchChunks = parseUnifiedPatchChunks(bodyText, entries)
         if (patchChunks.isNotEmpty()) {
             return patchChunks
         }
         return emptyList()
+    }
+
+    fun hasDisplayableTimelineContent(
+        sourceText: String,
+        supportingText: String? = null,
+        isStreaming: Boolean = false,
+    ): Boolean {
+        val renderState = renderState(sourceText)
+        val summaryEntries = if (renderState.actionEntries.isNotEmpty()) {
+            renderState.actionEntries
+        } else {
+            renderState.summary?.entries.orEmpty()
+        }
+        return summaryEntries.isNotEmpty() ||
+            supportingText?.isNotBlank() == true ||
+            isStreaming
     }
 
     private fun parseSummary(sourceText: String): FileChangeSummary? {
@@ -144,18 +163,19 @@ internal object FileChangeRenderParser {
             when {
                 path != null && diffCode != null && RemodexUnifiedPatchParser.looksLikePatchText(diffCode) -> {
                     val patchEntry = parsePatchChunk(diffCode).firstOrNull()
+                    val diffTotals = countPatchBodyLines(diffCode)
                     val kindAction = FileChangeAction.fromKind(kind)
                     val patchAction = patchEntry?.action
                     val entry = FileChangeSummaryEntry(
                         path = patchEntry?.path ?: path,
-                        additions = patchEntry?.additions ?: totals?.first ?: 0,
-                        deletions = patchEntry?.deletions ?: totals?.second ?: 0,
+                        additions = patchEntry?.additions ?: totals?.first ?: diffTotals.first,
+                        deletions = patchEntry?.deletions ?: totals?.second ?: diffTotals.second,
                         action = when {
                             patchAction != null && (kindAction == null || kindAction == FileChangeAction.EDITED) -> patchAction
                             else -> kindAction ?: patchAction ?: FileChangeAction.EDITED
                         },
                     )
-                    entry.takeIf { hasEntryEvidence(it, diffCode) }
+                    entry.takeIf { hasSummaryEvidence(it, diffCode) }
                 }
 
                 path != null -> {
@@ -165,7 +185,7 @@ internal object FileChangeRenderParser {
                         deletions = totals?.second ?: 0,
                         action = FileChangeAction.fromKind(kind) ?: FileChangeAction.EDITED,
                     )
-                    entry.takeIf(::hasEntryEvidence)
+                    entry.takeIf(::hasSummaryEvidence)
                 }
 
                 else -> null
@@ -175,7 +195,7 @@ internal object FileChangeRenderParser {
 
     private fun parseUnifiedPatchEntries(sourceText: String): List<FileChangeSummaryEntry> {
         return splitUnifiedPatchByFile(sourceText).mapNotNull { chunk ->
-            parsePatchChunk(chunk).firstOrNull()?.takeIf { entry -> hasEntryEvidence(entry, chunk) }
+            parsePatchChunk(chunk).firstOrNull()?.takeIf { entry -> hasSummaryEvidence(entry, chunk) }
         }
     }
 
@@ -212,11 +232,7 @@ internal object FileChangeRenderParser {
         if (sections.size <= 1) {
             return parseSingleRenderedSectionFallback(bodyText, entries)
         }
-        val looksLikeRenderedSections = sections.any { section ->
-            val lines = section.lines()
-            lines.any { line -> parsePathLine(line) != null } || lines.any { line -> line.trim().startsWith("```") }
-        }
-        if (!looksLikeRenderedSections) {
+        if (!looksLikeRenderedFileChangeBody(bodyText)) {
             return emptyList()
         }
         return sections.mapIndexedNotNull { index, section ->
@@ -310,7 +326,7 @@ internal object FileChangeRenderParser {
     ): List<PerFileDiffChunk> {
         return splitUnifiedPatchByFile(bodyText).mapIndexedNotNull { index, chunk ->
             val entry = parsePatchChunk(chunk).firstOrNull() ?: entries.getOrNull(index) ?: return@mapIndexedNotNull null
-            if (!hasEntryEvidence(entry, chunk)) {
+            if (!hasSummaryEvidence(entry, chunk)) {
                 return@mapIndexedNotNull null
             }
             PerFileDiffChunk(
@@ -373,6 +389,19 @@ internal object FileChangeRenderParser {
             (match.groupValues[2].toIntOrNull() ?: return null)
     }
 
+    private fun looksLikeRenderedFileChangeBody(bodyText: String): Boolean {
+        return bodyText
+            .split("\n\n---\n\n")
+            .filter { section -> section.isNotBlank() }
+            .any { section ->
+                val lines = section.lines()
+                lines.any { line -> parsePathLine(line) != null } ||
+                    lines.any { line -> parseKindLine(line) != null } ||
+                    lines.any { line -> parseTotalsLine(line) != null } ||
+                    lines.any { line -> line.trim().startsWith("Status:") }
+            }
+    }
+
     private fun extractFencedCode(lines: List<String>): String? {
         var inFence = false
         val codeLines = mutableListOf<String>()
@@ -403,17 +432,14 @@ internal object FileChangeRenderParser {
         }
     }
 
-    private fun hasEntryEvidence(
+    private fun hasSummaryEvidence(
         entry: FileChangeSummaryEntry,
         diffCode: String? = null,
     ): Boolean {
-        return (
-            entry.path.isNotBlank() &&
-                !entry.path.equals("unknown", ignoreCase = true)
-            ) ||
-            entry.additions > 0 ||
-            entry.deletions > 0 ||
-            hasPatchBodyEvidence(diffCode)
+        val hasNonZeroTotals = entry.additions > 0 || entry.deletions > 0
+        val hasPatchEvidence = hasPatchBodyEvidence(diffCode)
+        val hasActionWithEvidence = entry.action != null && hasPatchEvidence
+        return hasNonZeroTotals || hasActionWithEvidence
     }
 
     private fun hasPatchBodyEvidence(diffCode: String?): Boolean {

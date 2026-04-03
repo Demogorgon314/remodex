@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.feature.turn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -36,6 +37,30 @@ class FileChangeRenderParserTest {
         assertEquals(2, entries.single().additions)
         assertEquals(1, chunks.size)
         assertTrue(chunks.single().diffCode.contains("@@ -1 +1,2 @@"))
+    }
+
+    @Test
+    fun renderState_countsHunkOnlyRenderedDiffWhenPatchHeadersAreMissing() {
+        val rendered = """
+            Status: completed
+
+            Path: src/Main.kt
+            Kind: update
+            ```diff
+            @@ -1 +1,2 @@
+            -old
+            +new
+            +more
+            ```
+        """.trimIndent()
+
+        val renderState = FileChangeRenderParser.renderState(rendered)
+        val entry = renderState.summary?.entries?.single()
+
+        assertEquals("src/Main.kt", entry?.path)
+        assertEquals(FileChangeAction.EDITED, entry?.action)
+        assertEquals(2, entry?.additions)
+        assertEquals(1, entry?.deletions)
     }
 
     @Test
@@ -100,12 +125,7 @@ class FileChangeRenderParserTest {
 
         val renderState = FileChangeRenderParser.renderState(rendered)
         val chunks = FileChangeRenderParser.diffChunks(rendered, renderState.summary?.entries.orEmpty())
-        val entry = renderState.summary?.entries?.single()
-
-        assertEquals("src/Empty.kt", entry?.path)
-        assertEquals(FileChangeAction.EDITED, entry?.action)
-        assertEquals(0, entry?.additions)
-        assertEquals(0, entry?.deletions)
+        assertNull(renderState.summary)
         assertTrue(chunks.isEmpty())
     }
 
@@ -121,13 +141,40 @@ class FileChangeRenderParserTest {
 
         val renderState = FileChangeRenderParser.renderState(rendered)
         val chunks = FileChangeRenderParser.diffChunks(rendered, renderState.summary?.entries.orEmpty())
-        val entry = renderState.summary?.entries?.single()
-
-        assertEquals("src/Zero.kt", entry?.path)
-        assertEquals(FileChangeAction.ADDED, entry?.action)
-        assertEquals(0, entry?.additions)
-        assertEquals(0, entry?.deletions)
+        assertNull(renderState.summary)
         assertTrue(chunks.isEmpty())
+    }
+
+    @Test
+    fun hasDisplayableTimelineContent_matches_summary_supporting_text_and_streaming_rules() {
+        val metadataOnly = """
+            Status: completed
+
+            Path: src/Empty.kt
+            Kind: update
+        """.trimIndent()
+        val withTotals = """
+            Status: completed
+
+            Path: src/Summary.kt
+            Kind: update
+            Totals: +2 -1
+        """.trimIndent()
+
+        assertFalse(FileChangeRenderParser.hasDisplayableTimelineContent(metadataOnly))
+        assertTrue(FileChangeRenderParser.hasDisplayableTimelineContent(withTotals))
+        assertTrue(
+            FileChangeRenderParser.hasDisplayableTimelineContent(
+                sourceText = metadataOnly,
+                supportingText = "Applying changes",
+            ),
+        )
+        assertTrue(
+            FileChangeRenderParser.hasDisplayableTimelineContent(
+                sourceText = metadataOnly,
+                isStreaming = true,
+            ),
+        )
     }
 
     @Test

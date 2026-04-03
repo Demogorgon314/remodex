@@ -124,6 +124,51 @@ class ConversationScreenPlanAccessoryTest {
     }
 
     @Test
+    fun `timeline layout filters non streaming metadata only file change rows`() {
+        val metadataOnlyFileChange = RemodexConversationItem(
+            id = "file-change-metadata",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.FILE_CHANGE,
+            text = """
+                Status: completed
+
+                Path: src/Empty.kt
+                Kind: update
+            """.trimIndent(),
+        )
+
+        val layout = buildConversationTimelineLayout(
+            listOf(metadataOnlyFileChange),
+            activePlanningMode = RemodexPlanningMode.AUTO,
+        )
+
+        assertTrue(layout.timelineItems.isEmpty())
+    }
+
+    @Test
+    fun `timeline layout keeps streaming metadata only file change rows visible`() {
+        val metadataOnlyFileChange = RemodexConversationItem(
+            id = "file-change-streaming",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.FILE_CHANGE,
+            text = """
+                Status: in_progress
+
+                Path: src/Empty.kt
+                Kind: update
+            """.trimIndent(),
+            isStreaming = true,
+        )
+
+        val layout = buildConversationTimelineLayout(
+            listOf(metadataOnlyFileChange),
+            activePlanningMode = RemodexPlanningMode.AUTO,
+        )
+
+        assertEquals(listOf("file-change-streaming"), layout.timelineItems.map(RemodexConversationItem::id))
+    }
+
+    @Test
     fun `timeline layout hides composer takeover prompt while keeping completed plan visible`() {
         val prompt = promptItem(id = "prompt")
         val completedPlan = planItem(

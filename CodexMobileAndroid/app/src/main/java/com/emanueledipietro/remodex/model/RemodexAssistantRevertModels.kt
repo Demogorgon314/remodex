@@ -112,7 +112,10 @@ object RemodexUnifiedPatchParser {
             return false
         }
         return normalized.contains("diff --git ")
-            || (normalized.contains("\n@@ ") && normalized.contains("\n+++ "))
+            || normalized.contains("\n@@ ")
+            || normalized.startsWith("@@ ")
+            || (normalized.contains("\n+++ ") && normalized.contains("\n--- "))
+            || (normalized.contains("\nPath: ") && normalized.contains("\nKind: "))
             || normalized.startsWith("--- ")
     }
 

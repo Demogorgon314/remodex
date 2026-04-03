@@ -81,6 +81,7 @@ import com.emanueledipietro.remodex.model.isRunningBackgroundTerminal
 import com.emanueledipietro.remodex.model.isInlineImageDataUrl
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.toConversationAttachment
+import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CancellationException
@@ -118,6 +119,383 @@ internal fun shouldMergeThreadReadHistory(
     existingHasTimeline: Boolean,
     allowWhileRunning: Boolean,
 ): Boolean = allowWhileRunning || !threadIsRunning || !existingHasTimeline
+
+private const val RawHistoryFileChangeSummarySearchDepth = 4
+private const val RawHistoryFileChangeSummarySampleLimit = 3
+
+internal data class ThreadHistoryFileChangeSummary(
+    val totalItems: Int,
+    val fileChangeItems: Int,
+    val displayableFileChangeItems: Int,
+    val metadataOnlyFileChangeItems: Int,
+)
+
+internal data class RawThreadHistoryFileChangeSummary(
+    val fileChangeLikeItems: Int,
+    val typeCounts: Map<String, Int>,
+    val itemsWithChangesPayload: Int,
+    val itemsWithAnyDiffField: Int,
+    val itemsWithPatchLikeDiff: Int,
+    val itemsWithInlineTotals: Int,
+    val itemsWithContentField: Int,
+    val sampleDescriptors: List<String>,
+)
+
+internal fun summarizeThreadHistoryFileChanges(
+    items: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+): ThreadHistoryFileChangeSummary {
+    val fileChangeItems = items.filter { item ->
+        item.speaker == ConversationSpeaker.SYSTEM && item.kind == ConversationItemKind.FILE_CHANGE
+    }
+    val displayableFileChangeItems = fileChangeItems.count { item ->
+        FileChangeRenderParser.hasDisplayableTimelineContent(
+            sourceText = item.text,
+            supportingText = item.supportingText,
+            isStreaming = item.isStreaming,
+        )
+    }
+    return ThreadHistoryFileChangeSummary(
+        totalItems = items.size,
+        fileChangeItems = fileChangeItems.size,
+        displayableFileChangeItems = displayableFileChangeItems,
+        metadataOnlyFileChangeItems = fileChangeItems.size - displayableFileChangeItems,
+    )
+}
+
+internal fun summarizeRawThreadHistoryFileChanges(
+    threadObject: JsonObject,
+): RawThreadHistoryFileChangeSummary {
+    val typeCounts = linkedMapOf<String, Int>()
+    var fileChangeLikeItems = 0
+    var itemsWithChangesPayload = 0
+    var itemsWithAnyDiffField = 0
+    var itemsWithPatchLikeDiff = 0
+    var itemsWithInlineTotals = 0
+    var itemsWithContentField = 0
+    val sampleDescriptors = mutableListOf<String>()
+
+    threadObject.firstArray("turns").orEmpty().forEach { turnValue ->
+        val turnObject = turnValue.jsonObjectOrNull ?: return@forEach
+        turnObject.firstArray("items").orEmpty().forEach { itemValue ->
+            val itemObject = itemValue.jsonObjectOrNull ?: return@forEach
+            val itemType = normalizeRawHistoryItemType(itemObject.firstString("type").orEmpty())
+            if (!isRawHistoryFileChangeLike(itemObject = itemObject, itemType = itemType)) {
+                return@forEach
+            }
+
+            fileChangeLikeItems += 1
+            typeCounts[itemType] = (typeCounts[itemType] ?: 0) + 1
+
+            val rawChanges = rawHistoryExtractFileChangeChanges(itemObject)
+            val changeObjects = rawHistoryDecodeChangeObjects(rawChanges)
+            val hasChangesPayload = rawChanges != null
+            val hasInlineTotals = changeObjects.any(::rawHistoryChangeHasInlineTotals)
+            val hasContentField = changeObjects.any(::rawHistoryChangeHasContentField)
+            val diffTexts = buildList {
+                rawHistoryExtractUnifiedDiffText(itemObject)
+                    ?.takeIf(String::isNotBlank)
+                    ?.let(::add)
+                changeObjects.forEach { changeObject ->
+                    rawHistoryChangeDiffText(changeObject)
+                        .takeIf(String::isNotBlank)
+                        ?.let(::add)
+                }
+            }
+            val hasAnyDiffField = diffTexts.isNotEmpty()
+            val hasPatchLikeDiff = diffTexts.any(RemodexUnifiedPatchParser::looksLikePatchText)
+
+            if (hasChangesPayload) {
+                itemsWithChangesPayload += 1
+            }
+            if (hasInlineTotals) {
+                itemsWithInlineTotals += 1
+            }
+            if (hasContentField) {
+                itemsWithContentField += 1
+            }
+            if (hasAnyDiffField) {
+                itemsWithAnyDiffField += 1
+            }
+            if (hasPatchLikeDiff) {
+                itemsWithPatchLikeDiff += 1
+            }
+
+            if (sampleDescriptors.size < RawHistoryFileChangeSummarySampleLimit) {
+                val itemId = itemObject.firstString("id")?.trim()?.takeIf(String::isNotEmpty) ?: "?"
+                sampleDescriptors +=
+                    "$itemId:$itemType:changes=$hasChangesPayload:anyDiff=$hasAnyDiffField:" +
+                        "patchDiff=$hasPatchLikeDiff:inlineTotals=$hasInlineTotals:content=$hasContentField"
+            }
+        }
+    }
+
+    return RawThreadHistoryFileChangeSummary(
+        fileChangeLikeItems = fileChangeLikeItems,
+        typeCounts = typeCounts,
+        itemsWithChangesPayload = itemsWithChangesPayload,
+        itemsWithAnyDiffField = itemsWithAnyDiffField,
+        itemsWithPatchLikeDiff = itemsWithPatchLikeDiff,
+        itemsWithInlineTotals = itemsWithInlineTotals,
+        itemsWithContentField = itemsWithContentField,
+        sampleDescriptors = sampleDescriptors,
+    )
+}
+
+private fun normalizeRawHistoryItemType(value: String): String {
+    return value
+        .trim()
+        .replace("_", "")
+        .replace("-", "")
+        .lowercase(Locale.ROOT)
+}
+
+private fun isRawHistoryFileChangeLike(
+    itemObject: JsonObject,
+    itemType: String,
+): Boolean {
+    if (itemType == "filechange" || itemType == "diff") {
+        return true
+    }
+    if (itemType != "toolcall") {
+        return false
+    }
+    if (rawHistoryExtractFileChangeChanges(itemObject) != null || rawHistoryExtractUnifiedDiffText(itemObject) != null) {
+        return true
+    }
+    val toolLabel = normalizeRawHistoryItemType(
+        itemObject.firstString("tool", "name", "call", "callName", "call_name").orEmpty(),
+    )
+    return toolLabel.contains("patch") ||
+        toolLabel.contains("edit") ||
+        toolLabel.contains("write") ||
+        toolLabel.contains("file")
+}
+
+private fun rawHistoryExtractFileChangeChanges(itemObject: JsonObject): JsonElement? {
+    return rawHistoryFirstNestedValue(
+        element = itemObject,
+        keys = setOf(
+            "changes",
+            "file_changes",
+            "fileChanges",
+            "files",
+            "edits",
+            "modified_files",
+            "modifiedFiles",
+            "patches",
+        ),
+    )
+}
+
+private fun rawHistoryExtractUnifiedDiffText(itemObject: JsonObject): String? {
+    return rawHistoryFirstNestedString(
+        element = itemObject,
+        keys = setOf("diff", "unified_diff", "unifiedDiff", "patch"),
+    )
+}
+
+private fun rawHistoryFirstNestedString(
+    element: JsonElement?,
+    keys: Set<String>,
+    depth: Int = 0,
+): String? {
+    return rawHistoryFirstNestedValue(element = element, keys = keys, depth = depth)
+        ?.stringOrNull
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+}
+
+private fun rawHistoryFirstNestedValue(
+    element: JsonElement?,
+    keys: Set<String>,
+    depth: Int = 0,
+): JsonElement? {
+    if (element == null || depth > RawHistoryFileChangeSummarySearchDepth) {
+        return null
+    }
+    return when (element) {
+        is JsonObject -> {
+            keys.firstNotNullOfOrNull(element::get) ?: element.values.firstNotNullOfOrNull { value ->
+                rawHistoryFirstNestedValue(
+                    element = value,
+                    keys = keys,
+                    depth = depth + 1,
+                )
+            }
+        }
+
+        is JsonArray -> element.firstNotNullOfOrNull { value ->
+            rawHistoryFirstNestedValue(
+                element = value,
+                keys = keys,
+                depth = depth + 1,
+            )
+        }
+
+        else -> null
+    }
+}
+
+private fun rawHistoryDecodeChangeObjects(rawChanges: JsonElement?): List<JsonObject> {
+    val changeObjects = mutableListOf<JsonObject>()
+    when (rawChanges) {
+        is JsonArray -> rawChanges.forEach { value ->
+            value.jsonObjectOrNull?.let(changeObjects::add)
+        }
+
+        is JsonObject -> rawChanges.keys.sorted().forEach { key ->
+            when (val value = rawChanges[key]) {
+                is JsonObject -> {
+                    if (value["path"] == null) {
+                        changeObjects += buildJsonObject {
+                            put("path", JsonPrimitive(key))
+                            value.forEach { (nestedKey, nestedValue) ->
+                                put(nestedKey, nestedValue)
+                            }
+                        }
+                    } else {
+                        changeObjects += value
+                    }
+                }
+
+                is JsonPrimitive -> {
+                    value.contentOrNull
+                        ?.trim()
+                        ?.takeIf(String::isNotEmpty)
+                        ?.let { diff ->
+                            changeObjects += buildJsonObject {
+                                put("path", JsonPrimitive(key))
+                                put("diff", JsonPrimitive(diff))
+                            }
+                        }
+                }
+
+                else -> Unit
+            }
+        }
+
+        else -> Unit
+    }
+    return changeObjects
+}
+
+private fun rawHistoryChangeDiffText(changeObject: JsonObject): String {
+    return changeObject.firstString(
+        "diff",
+        "unified_diff",
+        "unifiedDiff",
+        "patch",
+        "delta",
+    )?.trim().orEmpty()
+}
+
+private fun rawHistoryChangeHasInlineTotals(changeObject: JsonObject): Boolean {
+    return rawHistoryDecodeNumericField(
+        objectValue = changeObject,
+        keys = listOf(
+            "additions",
+            "lines_added",
+            "line_additions",
+            "lineAdditions",
+            "added",
+            "insertions",
+            "inserted",
+            "num_added",
+            "deletions",
+            "lines_deleted",
+            "line_deletions",
+            "lineDeletions",
+            "removed",
+            "deleted",
+            "num_deleted",
+            "num_removed",
+        ),
+    ) != null
+}
+
+private fun rawHistoryChangeHasContentField(changeObject: JsonObject): Boolean {
+    return changeObject.firstString("content")?.trim()?.takeIf(String::isNotEmpty) != null
+}
+
+private fun rawHistoryDecodeNumericField(
+    objectValue: JsonObject,
+    keys: List<String>,
+): Int? {
+    keys.forEach { key ->
+        objectValue.firstInt(key)?.let { return it }
+        objectValue.firstDouble(key)?.toInt()?.let { return it }
+        objectValue.firstString(key)?.trim()?.toIntOrNull()?.let { return it }
+    }
+    return null
+}
+
+private fun RawThreadHistoryFileChangeSummary.typeBreakdownLabel(): String {
+    if (typeCounts.isEmpty()) {
+        return ""
+    }
+    return typeCounts.entries.joinToString(separator = ",") { (type, count) ->
+        "$type=$count"
+    }
+}
+
+private fun RawThreadHistoryFileChangeSummary.sampleLabel(): String {
+    return sampleDescriptors.joinToString(separator = ",")
+}
+
+private data class ThreadHistoryHydrationLogContext(
+    val source: String,
+    val threadId: String,
+    val turnCount: Int,
+    val rawSummary: RawThreadHistoryFileChangeSummary,
+    val existingSummary: ThreadHistoryFileChangeSummary,
+    val decodedSummary: ThreadHistoryFileChangeSummary,
+    val mergedSummary: ThreadHistoryFileChangeSummary,
+)
+
+private fun shouldLogThreadHistoryHydration(
+    source: String,
+    existingSummary: ThreadHistoryFileChangeSummary,
+    mergedSummary: ThreadHistoryFileChangeSummary,
+): Boolean {
+    return when {
+        existingSummary != mergedSummary -> true
+        source == "thread/read" && existingSummary.totalItems == 0 -> true
+        else -> false
+    }
+}
+
+private fun logThreadHistoryHydration(
+    source: String,
+    threadId: String,
+    turnCount: Int,
+    rawSummary: RawThreadHistoryFileChangeSummary,
+    existingSummary: ThreadHistoryFileChangeSummary,
+    decodedSummary: ThreadHistoryFileChangeSummary,
+    mergedSummary: ThreadHistoryFileChangeSummary,
+) {
+    if (!shouldLogThreadHistoryHydration(source, existingSummary, mergedSummary)) {
+        return
+    }
+    runCatching {
+        Log.d(
+            "RemodexThreadSync",
+            "event=threadHistoryHydrated source=$source threadId=$threadId turns=$turnCount " +
+                "rawFileChangeLike=${rawSummary.fileChangeLikeItems} rawTypeBreakdown=${rawSummary.typeBreakdownLabel()} " +
+                "rawWithChanges=${rawSummary.itemsWithChangesPayload} rawWithAnyDiff=${rawSummary.itemsWithAnyDiffField} " +
+                "rawWithPatchLikeDiff=${rawSummary.itemsWithPatchLikeDiff} rawWithInlineTotals=${rawSummary.itemsWithInlineTotals} " +
+                "rawWithContent=${rawSummary.itemsWithContentField} rawSamples=${rawSummary.sampleLabel()} " +
+                "existingItems=${existingSummary.totalItems} existingFileChange=${existingSummary.fileChangeItems} " +
+                "existingDisplayableFileChange=${existingSummary.displayableFileChangeItems} " +
+                "existingMetadataOnlyFileChange=${existingSummary.metadataOnlyFileChangeItems} " +
+                "decodedItems=${decodedSummary.totalItems} decodedFileChange=${decodedSummary.fileChangeItems} " +
+                "decodedDisplayableFileChange=${decodedSummary.displayableFileChangeItems} " +
+                "decodedMetadataOnlyFileChange=${decodedSummary.metadataOnlyFileChangeItems} " +
+                "mergedItems=${mergedSummary.totalItems} mergedFileChange=${mergedSummary.fileChangeItems} " +
+                "mergedDisplayableFileChange=${mergedSummary.displayableFileChangeItems} " +
+                "mergedMetadataOnlyFileChange=${mergedSummary.metadataOnlyFileChangeItems}",
+        )
+    }
+}
 
 internal fun findReusableAssistantCompletionItemValue(
     items: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
@@ -417,6 +795,7 @@ class BridgeThreadSyncService(
             return
         }
         mergeThreadSnapshotResponse(
+            source = "thread/read",
             threadId = threadId,
             response = response,
             existingSnapshot = existingSnapshot,
@@ -445,6 +824,7 @@ class BridgeThreadSyncService(
             return existingSnapshot
         }
         val refreshedSnapshot = mergeThreadSnapshotResponse(
+            source = "thread/resume",
             threadId = threadId,
             response = response,
             existingSnapshot = existingSnapshot,
@@ -503,6 +883,7 @@ class BridgeThreadSyncService(
     }
 
     private fun mergeThreadSnapshotResponse(
+        source: String,
         threadId: String,
         response: RpcMessage,
         existingSnapshot: ThreadSyncSnapshot?,
@@ -524,6 +905,10 @@ class BridgeThreadSyncService(
         if (activityState != null && !threadHasKnownRunningState(threadId)) {
             markThreadAsRunningFallback(threadId)
         }
+        val turnCount = threadObject.firstArray("turns").orEmpty().size
+        val rawHistorySummary by lazy(LazyThreadSafetyMode.NONE) {
+            summarizeRawThreadHistoryFileChanges(threadObject)
+        }
         val decodedHistoryItems by lazy(LazyThreadSafetyMode.NONE) {
             TurnTimelineReducer.reduce(
                 decodeHistoryItems(
@@ -532,6 +917,7 @@ class BridgeThreadSyncService(
                 ),
             )
         }
+        var hydrationLogContext: ThreadHistoryHydrationLogContext? = null
 
         fun mergedSnapshot(baseSnapshot: ThreadSyncSnapshot?): ThreadSyncSnapshot? {
             val threadIsRunning = threadHasKnownRunningState(threadId)
@@ -552,6 +938,15 @@ class BridgeThreadSyncService(
             } else {
                 existingItems
             }
+            hydrationLogContext = ThreadHistoryHydrationLogContext(
+                source = source,
+                threadId = threadId,
+                turnCount = turnCount,
+                rawSummary = rawHistorySummary,
+                existingSummary = summarizeThreadHistoryFileChanges(existingItems),
+                decodedSummary = summarizeThreadHistoryFileChanges(decodedHistoryItems),
+                mergedSummary = summarizeThreadHistoryFileChanges(mergedHistoryItems),
+            )
             return parseThreadSnapshot(
                 threadObject = threadObject,
                 syncState = syncState,
@@ -569,11 +964,33 @@ class BridgeThreadSyncService(
             merged
         }
         if (refreshedSnapshot != null) {
+            hydrationLogContext?.let { context ->
+                logThreadHistoryHydration(
+                    source = context.source,
+                    threadId = context.threadId,
+                    turnCount = context.turnCount,
+                    rawSummary = context.rawSummary,
+                    existingSummary = context.existingSummary,
+                    decodedSummary = context.decodedSummary,
+                    mergedSummary = context.mergedSummary,
+                )
+            }
             return refreshedSnapshot
         }
 
         val createdSnapshot = mergedSnapshot(currentThreadSnapshot(threadId) ?: existingSnapshot) ?: return null
         upsertThreadSnapshot(createdSnapshot)
+        hydrationLogContext?.let { context ->
+            logThreadHistoryHydration(
+                source = context.source,
+                threadId = context.threadId,
+                turnCount = context.turnCount,
+                rawSummary = context.rawSummary,
+                existingSummary = context.existingSummary,
+                decodedSummary = context.decodedSummary,
+                mergedSummary = context.mergedSummary,
+            )
+        }
         return createdSnapshot
     }
 
@@ -3286,9 +3703,16 @@ class BridgeThreadSyncService(
         if (resolvedTurnId != null) {
             threadIdByTurnId[resolvedTurnId] = threadId
         }
-        // Codex treats file-change deltas as ephemeral progress, not transcript rows.
-        // Keep the thread warm without synthesizing placeholder "Edited" lines.
-        touchThread(threadId, isRunning = true)
+        val delta = extractTextDelta(paramsObject)
+        if (delta.isBlank()) {
+            touchThread(threadId, isRunning = true)
+            return
+        }
+        appendSystemTextDelta(
+            paramsObject = paramsObject,
+            kind = ConversationItemKind.FILE_CHANGE,
+            fallbackPrefix = "filechange",
+        )
     }
 
     private fun appendToolCallDelta(paramsObject: JsonObject) {
@@ -4549,12 +4973,135 @@ class BridgeThreadSyncService(
     private fun handleTurnDiffUpdatedNotification(paramsObject: JsonObject) {
         val turnId = extractTurnId(paramsObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
-        if (!turnId.isNullOrBlank()) {
-            threadIdByTurnId[turnId] = threadId
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (!resolvedTurnId.isNullOrBlank()) {
+            threadIdByTurnId[resolvedTurnId] = threadId
         }
-        // The desktop client uses turn-level diffs to refresh auxiliary diff UI only.
-        // Avoid materializing them as standalone timeline rows on Android.
-        touchThread(threadId)
+        val diff = extractUnifiedDiffText(paramsObject)
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { candidate ->
+                RemodexUnifiedPatchParser.normalize(candidate) ?: candidate
+            }
+        if (resolvedTurnId.isNullOrBlank() || diff == null || !RemodexUnifiedPatchParser.looksLikePatchText(diff)) {
+            touchThread(threadId)
+            return
+        }
+        upsertTurnDiffFileChange(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            diff = diff,
+        )
+    }
+
+    private fun upsertTurnDiffFileChange(
+        threadId: String,
+        turnId: String,
+        diff: String,
+    ) {
+        val renderedBody = renderUnifiedDiffBody(
+            diff = diff,
+            status = "in_progress",
+        )
+        val existingItem = reusableFileChangeTimelineItem(
+            threadId = threadId,
+            turnId = turnId,
+            bodyText = renderedBody,
+        )
+        val messageId = existingItem?.id ?: streamingMessageId(
+            itemId = null,
+            turnId = turnId,
+            fallbackPrefix = streamingFallbackPrefix(ConversationItemKind.FILE_CHANGE),
+        )
+        val effectiveItemId = existingItem?.itemId
+        val threadIsRunning = threadHasKnownRunningState(threadId) ||
+            (backingThreads.value.firstOrNull { snapshot -> snapshot.id == threadId }?.isRunning == true)
+        val isStreaming = existingItem?.isStreaming == true || threadIsRunning
+
+        upsertStreamingItem(
+            threadId = threadId,
+            item = timelineItem(
+                id = messageId,
+                speaker = ConversationSpeaker.SYSTEM,
+                text = renderedBody,
+                kind = ConversationItemKind.FILE_CHANGE,
+                turnId = turnId,
+                itemId = effectiveItemId,
+                isStreaming = isStreaming,
+                attachments = existingItem?.attachments.orEmpty(),
+                orderIndex = resolveOrderIndex(
+                    threadId = threadId,
+                    messageId = messageId,
+                    turnId = turnId,
+                    itemId = effectiveItemId,
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                ),
+                assistantChangeSet = existingItem?.assistantChangeSet,
+                systemTurnOrderingHint = existingItem?.systemTurnOrderingHint
+                    ?: ConversationSystemTurnOrderingHint.AUTO,
+            ),
+            isRunning = isStreaming || threadIsRunning,
+        )
+    }
+
+    private fun reusableFileChangeTimelineItem(
+        threadId: String,
+        turnId: String,
+        bodyText: String,
+    ): com.emanueledipietro.remodex.model.RemodexConversationItem? {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
+        val turnScopedMessageId = streamingMessageId(
+            itemId = null,
+            turnId = turnId,
+            fallbackPrefix = streamingFallbackPrefix(ConversationItemKind.FILE_CHANGE),
+        )
+        val projected = TurnTimelineReducer.reduceProjected(snapshot.timelineMutations)
+        projected.firstOrNull { candidate ->
+            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                candidate.kind == ConversationItemKind.FILE_CHANGE &&
+                candidate.turnId == turnId &&
+                candidate.id == turnScopedMessageId
+        }?.let { return it }
+
+        val candidates = projected.filter { candidate ->
+            candidate.speaker == ConversationSpeaker.SYSTEM &&
+                candidate.kind == ConversationItemKind.FILE_CHANGE &&
+                (candidate.turnId == turnId || candidate.turnId.isNullOrBlank())
+        }
+        if (candidates.isEmpty()) {
+            return null
+        }
+
+        val incomingPaths = normalizedFileChangePaths(bodyText)
+        if (incomingPaths.isNotEmpty()) {
+            val matchingCandidates = candidates.filter { candidate ->
+                val candidatePaths = normalizedFileChangePaths(candidate.text)
+                candidatePaths.isNotEmpty() && candidatePaths.any(incomingPaths::contains)
+            }
+            if (matchingCandidates.size == 1) {
+                return matchingCandidates.single()
+            }
+        }
+
+        return candidates.singleOrNull()
+    }
+
+    private fun normalizedFileChangePaths(
+        sourceText: String,
+    ): Set<String> {
+        return FileChangeRenderParser.renderState(sourceText).summary?.entries
+            ?.map { entry -> normalizeFileChangePath(entry.path) }
+            ?.toSet()
+            .orEmpty()
+    }
+
+    private fun normalizeFileChangePath(rawPath: String): String {
+        val trimmed = rawPath.trim()
+        return when {
+            trimmed.startsWith("a/") || trimmed.startsWith("b/") -> trimmed.drop(2)
+            else -> trimmed
+        }.lowercase(Locale.ROOT)
     }
 
     private fun handleStructuredFallback(
