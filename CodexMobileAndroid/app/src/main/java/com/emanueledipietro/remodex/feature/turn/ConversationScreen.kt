@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.SystemClock
 import android.text.format.DateFormat
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -37,6 +38,7 @@ import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.content.hasMediaType
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Canvas
@@ -267,6 +269,7 @@ import com.emanueledipietro.remodex.R
 
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
+private val ConversationScrollToLatestButtonOffset = 18.dp
 private val ComposerStopGlyphSize = 10.dp
 private val ComposerStopGlyphCornerRadius = 2.5.dp
 private const val StructuredSystemSummaryAutoCollapseDelayMs = 650L
@@ -1066,9 +1069,11 @@ fun ConversationScreen(
         )
     }
     val timelineState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val isUserDragging by timelineState.interactionSource.collectIsDraggedAsState()
     val showsEmptyTimelineState = timelineItems.isEmpty()
     val showsTimelineLoadingState =
         showsEmptyTimelineState &&
@@ -1079,11 +1084,23 @@ fun ConversationScreen(
     val bottomAnchorIndex = timelineItems.size
     val followBottomThresholdPx = with(density) { ComposerFollowBottomThreshold.roundToPx() }
     var initialScrollApplied by rememberSaveable(thread.id) { mutableStateOf(false) }
-    var keepTimelinePinnedToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
+    var autoScrollModeName by rememberSaveable(thread.id) {
+        mutableStateOf(ConversationAutoScrollMode.FOLLOW_BOTTOM.name)
+    }
+    var isScrolledToBottom by rememberSaveable(thread.id) { mutableStateOf(true) }
+    var previousIsUserDragging by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var previousScrollInProgress by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var userInitiatedScrollInProgress by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var userScrollCooldownUntilMs by rememberSaveable(thread.id) { mutableStateOf<Long?>(null) }
+    var isUserScrollCooldownActive by rememberSaveable(thread.id) { mutableStateOf(false) }
     var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var handledComposerAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     var pendingTurnAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     var previousConnectionPhase by remember(thread.id) { mutableStateOf(uiState.connectionStatus.phase) }
+    val autoScrollMode = remember(autoScrollModeName) {
+        ConversationAutoScrollMode.valueOf(autoScrollModeName)
+    }
+    val shouldPauseAutomaticScrolling = isUserDragging || isUserScrollCooldownActive
     val latestRunningIndicatorMessageId = remember(timelineItems, blockAccessories) {
         timelineItems.lastOrNull { item -> blockAccessories[item.id]?.showsRunningIndicator == true }?.id
     }
@@ -1093,9 +1110,28 @@ fun ConversationScreen(
             activeTurnId = thread.activeTurnId,
         )
     }
+    val shouldPinTimelineToBottomDuringLayoutChange = remember(
+        autoScrollMode,
+        shouldPauseAutomaticScrolling,
+        activeTurnAnchorIndex,
+    ) {
+        when {
+            shouldPauseAutomaticScrolling -> false
+            autoScrollMode == ConversationAutoScrollMode.FOLLOW_BOTTOM -> true
+            autoScrollMode == ConversationAutoScrollMode.ANCHOR_TURN -> activeTurnAnchorIndex == null
+            else -> false
+        }
+    }
+    val shouldShowScrollToLatestButton = remember(timelineItems.size, isScrolledToBottom) {
+        ConversationScrollStateTracker.shouldShowScrollToLatestButton(
+            itemCount = timelineItems.size,
+            isScrolledToBottom = isScrolledToBottom,
+        )
+    }
     val bottomAnchorRequest = remember(
         initialScrollApplied,
-        keepTimelinePinnedToBottom,
+        autoScrollMode,
+        shouldPauseAutomaticScrolling,
         timelineItems.size,
         lastTimelineItemId,
         lastTimelineItem?.isStreaming,
@@ -1105,12 +1141,18 @@ fun ConversationScreen(
         autocompleteVisible,
         uiState.composer.queuedDrafts.size,
         pinnedPlanItem?.id,
+        activeTurnAnchorIndex,
     ) {
         if (
             !initialScrollApplied ||
-            !keepTimelinePinnedToBottom ||
+            shouldPauseAutomaticScrolling ||
             timelineItems.isEmpty() ||
             lastTimelineItem == null
+        ) {
+            null
+        } else if (
+            autoScrollMode != ConversationAutoScrollMode.FOLLOW_BOTTOM &&
+            !(autoScrollMode == ConversationAutoScrollMode.ANCHOR_TURN && activeTurnAnchorIndex == null)
         ) {
             null
         } else {
@@ -1180,22 +1222,84 @@ fun ConversationScreen(
             timelineState.scrollToItem(bottomAnchorIndex)
             withFrameNanos { }
             timelineState.scrollToItem(bottomAnchorIndex)
-            keepTimelinePinnedToBottom = true
+            autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
+            isScrolledToBottom = true
             initialScrollApplied = true
         }
     }
 
-    LaunchedEffect(thread.id, followBottomThresholdPx) {
+    LaunchedEffect(thread.id, followBottomThresholdPx, initialScrollApplied, autoScrollMode) {
+        snapshotFlow {
+            isTimelineNearBottom(
+                state = timelineState,
+                thresholdPx = followBottomThresholdPx,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { nearBottom ->
+                if (!nearBottom && !initialScrollApplied && autoScrollMode == ConversationAutoScrollMode.FOLLOW_BOTTOM) {
+                    return@collect
+                }
+                isScrolledToBottom = nearBottom
+                if (nearBottom && autoScrollMode != ConversationAutoScrollMode.ANCHOR_TURN) {
+                    autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
+                }
+            }
+    }
+
+    LaunchedEffect(thread.id, isUserDragging, isScrolledToBottom, autoScrollMode) {
+        if (isUserDragging == previousIsUserDragging) {
+            return@LaunchedEffect
+        }
+
+        previousIsUserDragging = isUserDragging
+        if (isUserDragging) {
+            userInitiatedScrollInProgress = true
+            userScrollCooldownUntilMs = null
+            isUserScrollCooldownActive = false
+            val nextMode = ConversationScrollStateTracker.modeAfterUserDragBegan(autoScrollMode)
+            autoScrollModeName = nextMode.name
+            if (nextMode == ConversationAutoScrollMode.MANUAL) {
+                pendingTurnAnchorSignal = 0L
+            }
+        }
+    }
+
+    LaunchedEffect(thread.id, followBottomThresholdPx, isUserDragging, autoScrollMode) {
         snapshotFlow { timelineState.isScrollInProgress }
             .drop(1)
             .collect { isScrolling ->
-                if (!isScrolling) {
-                    keepTimelinePinnedToBottom = isTimelineNearBottom(
-                        state = timelineState,
-                        thresholdPx = followBottomThresholdPx,
-                    )
+                val wasScrolling = previousScrollInProgress
+                previousScrollInProgress = isScrolling
+                if (!wasScrolling || isScrolling || isUserDragging || !userInitiatedScrollInProgress) {
+                    return@collect
                 }
+
+                val nearBottom = isTimelineNearBottom(
+                    state = timelineState,
+                    thresholdPx = followBottomThresholdPx,
+                )
+                isScrolledToBottom = nearBottom
+                userScrollCooldownUntilMs = ConversationScrollStateTracker.cooldownDeadline(SystemClock.elapsedRealtime())
+                isUserScrollCooldownActive = true
+                autoScrollModeName = ConversationScrollStateTracker.modeAfterUserDragEnded(
+                    currentMode = autoScrollMode,
+                    isScrolledToBottom = nearBottom,
+                ).name
+                userInitiatedScrollInProgress = false
             }
+    }
+
+    LaunchedEffect(thread.id, userScrollCooldownUntilMs) {
+        val deadline = userScrollCooldownUntilMs ?: return@LaunchedEffect
+        val remainingMs = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        if (remainingMs > 0L) {
+            delay(remainingMs)
+        }
+        if (userScrollCooldownUntilMs == deadline) {
+            userScrollCooldownUntilMs = null
+            isUserScrollCooldownActive = false
+        }
     }
 
     LaunchedEffect(thread.id, composerFocused, imeBottomPx) {
@@ -1251,7 +1355,10 @@ fun ConversationScreen(
         }
 
         handledComposerAnchorSignal = signal
-        keepTimelinePinnedToBottom = true
+        autoScrollModeName = ConversationAutoScrollMode.ANCHOR_TURN.name
+        isScrolledToBottom = true
+        userScrollCooldownUntilMs = null
+        isUserScrollCooldownActive = false
         pendingTurnAnchorSignal = signal
 
         if (timelineItems.isNotEmpty()) {
@@ -1272,16 +1379,27 @@ fun ConversationScreen(
         if (!reconnectedToLiveThread) {
             return@LaunchedEffect
         }
+        if (autoScrollMode != ConversationAutoScrollMode.FOLLOW_BOTTOM || shouldPauseAutomaticScrolling) {
+            return@LaunchedEffect
+        }
 
-        keepTimelinePinnedToBottom = true
+        autoScrollModeName = ConversationAutoScrollMode.ANCHOR_TURN.name
         pendingTurnAnchorSignal = maxOf(
             pendingTurnAnchorSignal + 1L,
             System.currentTimeMillis(),
         )
     }
 
-    LaunchedEffect(thread.id, pendingTurnAnchorSignal, activeTurnAnchorIndex, bottomAnchorIndex, timelineItems.isNotEmpty()) {
-        if (pendingTurnAnchorSignal == 0L) {
+    LaunchedEffect(
+        thread.id,
+        pendingTurnAnchorSignal,
+        activeTurnAnchorIndex,
+        bottomAnchorIndex,
+        timelineItems.isNotEmpty(),
+        autoScrollMode,
+        shouldPauseAutomaticScrolling,
+    ) {
+        if (pendingTurnAnchorSignal == 0L || autoScrollMode != ConversationAutoScrollMode.ANCHOR_TURN || shouldPauseAutomaticScrolling) {
             return@LaunchedEffect
         }
 
@@ -1292,9 +1410,11 @@ fun ConversationScreen(
 
         withFrameNanos { }
         timelineState.scrollToItem(targetIndex)
-        // After we jump back to the current turn, keep follow-bottom enabled so
-        // streaming output continues to track downward like a live chat.
-        keepTimelinePinnedToBottom = true
+        autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
+        isScrolledToBottom = isTimelineNearBottom(
+            state = timelineState,
+            thresholdPx = followBottomThresholdPx,
+        )
         pendingTurnAnchorSignal = 0L
     }
 
@@ -1315,12 +1435,12 @@ fun ConversationScreen(
     LaunchedEffect(
         thread.id,
         initialScrollApplied,
-        keepTimelinePinnedToBottom,
+        shouldPinTimelineToBottomDuringLayoutChange,
         bottomAnchorIndex,
         followBottomThresholdPx,
         timelineItems.isNotEmpty(),
     ) {
-        if (!initialScrollApplied || !keepTimelinePinnedToBottom || timelineItems.isEmpty()) {
+        if (!initialScrollApplied || !shouldPinTimelineToBottomDuringLayoutChange || timelineItems.isEmpty()) {
             return@LaunchedEffect
         }
 
@@ -1457,6 +1577,33 @@ fun ConversationScreen(
                                 }
                             }
                         }
+                    }
+                }
+
+                Box(modifier = Modifier.matchParentSize()) {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = shouldShowScrollToLatestButton,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .offset(y = -ConversationScrollToLatestButtonOffset),
+                        enter = fadeIn() + scaleIn(initialScale = 0.85f),
+                        exit = fadeOut() + scaleOut(targetScale = 0.85f),
+                    ) {
+                        ConversationCircleButton(
+                            icon = Icons.Outlined.ArrowDownward,
+                            contentDescription = "Scroll to latest message",
+                            hapticOnClick = true,
+                            onClick = {
+                                autoScrollModeName = ConversationAutoScrollMode.FOLLOW_BOTTOM.name
+                                isScrolledToBottom = true
+                                userScrollCooldownUntilMs = null
+                                isUserScrollCooldownActive = false
+                                pendingTurnAnchorSignal = 0L
+                                coroutineScope.launch {
+                                    timelineState.scrollToItem(bottomAnchorIndex)
+                                }
+                            },
+                        )
                     }
                 }
 
