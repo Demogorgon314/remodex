@@ -89,6 +89,7 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
+import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -709,6 +710,16 @@ internal const val ComposerVoiceButtonTag = "composer_voice_button"
 internal const val ComposerVoiceRecordingCapsuleTag = "composer_voice_recording_capsule"
 internal const val ComposerReasoningTriggerTag = "composer_reasoning_trigger"
 internal const val ComposerReasoningTriggerIconTag = "composer_reasoning_trigger_icon"
+internal const val QueuedDraftsSectionTag = "composer_queued_drafts_section"
+internal const val ComposerQueueBadgeTag = "composer_queue_badge"
+
+internal fun queuedDraftRowTag(draftId: String): String = "composer_queued_draft_row_$draftId"
+
+internal fun queuedDraftRestoreTag(draftId: String): String = "composer_queued_draft_restore_$draftId"
+
+internal fun queuedDraftSteerTag(draftId: String): String = "composer_queued_draft_steer_$draftId"
+
+internal fun queuedDraftRemoveTag(draftId: String): String = "composer_queued_draft_remove_$draftId"
 internal const val ConversationRunningIndicatorTag = "conversation_running_indicator"
 internal const val ConversationCopyButtonTag = "conversation_copy_button"
 internal const val ConversationSelectableTextSheetTag = "conversation_selectable_text_sheet"
@@ -1717,7 +1728,7 @@ fun ConversationScreen(
 
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(0.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 if (uiState.composer.queuedDrafts.isNotEmpty()) {
                                     QueuedDraftsCard(
@@ -3157,10 +3168,17 @@ private fun QueuedDraftsCard(
     onRemoveQueuedDraft: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val queueSurfaceColor = if (chrome.panelSurface.luminance() > 0.5f) {
+        chrome.panelSurface.copy(alpha = 0.9f)
+    } else {
+        chrome.panelSurfaceStrong.copy(alpha = 0.92f)
+    }
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = chrome.panelSurface,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(QueuedDraftsSectionTag),
+        color = queueSurfaceColor,
+        shape = RemodexConversationShapes.composer,
         border = BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
@@ -3168,7 +3186,7 @@ private fun QueuedDraftsCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 5.dp),
+                .padding(vertical = 5.dp),
         ) {
             queuedDrafts.forEachIndexed { index, draft ->
                 val actionState = resolveQueuedDraftRowActionState(
@@ -3180,14 +3198,16 @@ private fun QueuedDraftsCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .testTag(queuedDraftRowTag(draft.id))
                         .padding(horizontal = 10.dp, vertical = 2.5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = "↩",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = chrome.tertiaryText,
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.Reply,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = chrome.tertiaryText,
                     )
                     Text(
                         text = draft.text.ifBlank {
@@ -3204,6 +3224,7 @@ private fun QueuedDraftsCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                     QueuedDraftIconAction(
+                        modifier = Modifier.testTag(queuedDraftRestoreTag(draft.id)),
                         icon = Icons.Outlined.ArrowDownward,
                         contentDescription = "Move draft into input",
                         enabled = actionState.restoreEnabled,
@@ -3217,17 +3238,19 @@ private fun QueuedDraftsCard(
                     )
                     if (actionState.showsSteer) {
                         QueuedDraftPillAction(
+                            modifier = Modifier.testTag(queuedDraftSteerTag(draft.id)),
                             label = "Steer",
                             enabled = actionState.steerEnabled,
                             onClick = { onSteerQueuedDraft(draft.id) },
                         )
                     }
                     QueuedDraftIconAction(
+                        modifier = Modifier.testTag(queuedDraftRemoveTag(draft.id)),
                         icon = Icons.Outlined.DeleteOutline,
                         contentDescription = "Delete queued draft",
                         enabled = actionState.removeEnabled,
                         buttonSize = 28.dp,
-                        iconSize = 15.dp,
+                        iconSize = 14.dp,
                         tonal = false,
                         onClick = { onRemoveQueuedDraft(draft.id) },
                     )
@@ -3255,9 +3278,9 @@ private fun QueuedDraftIconAction(
     tonal: Boolean = true,
 ) {
     val chrome = remodexConversationChrome()
+    val buttonSurfaceColor = chrome.mutedSurface.copy(alpha = if (chrome.mutedSurface.luminance() > 0.5f) 0.78f else 0.92f)
     Surface(
-        modifier = modifier,
-        color = if (tonal) chrome.mutedSurface else Color.Transparent,
+        color = if (tonal) buttonSurfaceColor else Color.Transparent,
         shape = CircleShape,
         border = if (tonal) BorderStroke(1.dp, chrome.subtleBorder) else null,
         shadowElevation = 0.dp,
@@ -3265,6 +3288,7 @@ private fun QueuedDraftIconAction(
     ) {
         Box(
             modifier = Modifier
+                .then(modifier)
                 .size(buttonSize)
                 .clickable(enabled = enabled, onClick = onClick),
             contentAlignment = Alignment.Center,
@@ -3284,10 +3308,12 @@ private fun QueuedDraftPillAction(
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val chrome = remodexConversationChrome()
+    val pillSurfaceColor = chrome.mutedSurface.copy(alpha = if (chrome.mutedSurface.luminance() > 0.5f) 0.78f else 0.92f)
     Surface(
-        color = chrome.mutedSurface,
+        color = pillSurfaceColor,
         shape = RemodexConversationShapes.pill,
         border = BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
@@ -3296,8 +3322,9 @@ private fun QueuedDraftPillAction(
         Text(
             text = label,
             modifier = Modifier
+                .then(modifier)
                 .clickable(enabled = enabled, onClick = onClick)
-                .padding(horizontal = 10.dp, vertical = 5.dp),
+                .padding(horizontal = 12.dp, vertical = 5.dp),
             style = MaterialTheme.typography.labelSmall,
             color = if (enabled) chrome.titleText else chrome.tertiaryText,
         )
@@ -3314,7 +3341,7 @@ private fun ComposerQueueBadge(
     modifier: Modifier = Modifier,
 ) {
     Surface(
-        modifier = modifier,
+        modifier = modifier.testTag(ComposerQueueBadgeTag),
         shape = RemodexConversationShapes.pill,
         color = if (isQueuePaused) PausedQueueBadgeColor else ActiveQueueBadgeColor,
         shadowElevation = 0.dp,

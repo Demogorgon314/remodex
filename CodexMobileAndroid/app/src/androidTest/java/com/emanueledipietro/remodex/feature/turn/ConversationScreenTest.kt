@@ -41,6 +41,7 @@ import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
+import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.ui.theme.RemodexTheme
@@ -457,6 +458,135 @@ class ConversationScreenTest {
         }
 
         composeRule.onNodeWithTag(ComposerVoiceRecordingCapsuleTag).assertIsDisplayed()
+    }
+
+    @Test
+    fun queuedDraftsRenderInDedicatedSectionWithRowsAndBadge() {
+        val drafts = listOf(
+            queuedDraft(id = "draft-1", text = "Fix bugs"),
+            queuedDraft(id = "draft-2", text = "Add regression coverage"),
+        )
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        isRunning = true,
+                        canStop = true,
+                        queuedDraftItems = drafts,
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(QueuedDraftsSectionTag).assertIsDisplayed()
+        composeRule.onAllNodesWithTag(queuedDraftRowTag("draft-1")).assertCountEquals(1)
+        composeRule.onAllNodesWithTag(queuedDraftRowTag("draft-2")).assertCountEquals(1)
+        composeRule.onNodeWithTag(ComposerInputFieldTag).assertIsDisplayed()
+        composeRule.onAllNodesWithTag(ComposerQueueBadgeTag).assertCountEquals(1)
+    }
+
+    @Test
+    fun steeringQueuedDraftDisablesRestoreSteerAndRemoveActions() {
+        val draft = queuedDraft(id = "draft-1", text = "Focus the active run on failing tests")
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        isRunning = true,
+                        canStop = true,
+                        queuedDraftItems = listOf(draft),
+                        canRestoreQueuedDrafts = false,
+                        steeringQueuedDraftId = draft.id,
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(queuedDraftRestoreTag(draft.id)).assertIsNotEnabled()
+        composeRule.onNodeWithTag(queuedDraftSteerTag(draft.id)).assertIsNotEnabled()
+        composeRule.onNodeWithTag(queuedDraftRemoveTag(draft.id)).assertIsNotEnabled()
     }
 
     @Test
@@ -1494,6 +1624,10 @@ class ConversationScreenTest {
         voice: ComposerVoiceUiState = ComposerVoiceUiState(isConnected = true),
         commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
         backgroundTerminalSheetSignal: Long = 0L,
+        queuedDraftItems: List<RemodexQueuedDraft> = emptyList(),
+        canRestoreQueuedDrafts: Boolean = false,
+        steeringQueuedDraftId: String? = null,
+        isQueuePaused: Boolean = false,
     ): AppUiState {
         val thread = RemodexThreadSummary(
             id = "thread-1",
@@ -1502,7 +1636,7 @@ class ConversationScreenTest {
             projectPath = "/tmp/project",
             lastUpdatedLabel = "Updated now",
             isRunning = isRunning,
-            queuedDrafts = 0,
+            queuedDrafts = queuedDraftItems.size,
             runtimeLabel = "Auto",
             messages = messages,
         )
@@ -1515,9 +1649,21 @@ class ConversationScreenTest {
                 canStop = canStop,
                 voice = voice,
                 autocomplete = autocompleteState,
+                queuedDrafts = queuedDraftItems,
+                canRestoreQueuedDrafts = canRestoreQueuedDrafts,
+                steeringQueuedDraftId = steeringQueuedDraftId,
+                isQueuePaused = isQueuePaused,
             ),
             commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
             backgroundTerminalSheetSignal = backgroundTerminalSheetSignal,
+        )
+    }
+
+    private fun queuedDraft(id: String, text: String): RemodexQueuedDraft {
+        return RemodexQueuedDraft(
+            id = id,
+            text = text,
+            createdAtEpochMs = 1L,
         )
     }
 
