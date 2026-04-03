@@ -79,21 +79,22 @@ test("voice/transcribe returns transcribed text without exposing auth tokens", a
 
 test("voice/transcribe retries once after a 401 response", async () => {
   const responses = [];
-  let authRequestCount = 0;
+  const authRequests = [];
   let fetchCount = 0;
   const handler = createVoiceHandler({
-    sendCodexRequest: async () => {
-      authRequestCount += 1;
+    sendCodexRequest: async (method, params) => {
+      authRequests.push({ method, params });
       return {
         authMethod: "chatgpt",
         authToken: makeJWT({
           "https://api.openai.com/auth": {
-            chatgpt_account_id: `acct-${authRequestCount}`,
+            chatgpt_account_id: `acct-${authRequests.length}`,
           },
         }),
         requiresOpenaiAuth: false,
       };
     },
+    readLocalAuthToken: async () => null,
     fetchImpl: async () => {
       fetchCount += 1;
       if (fetchCount === 1) {
@@ -131,7 +132,22 @@ test("voice/transcribe retries once after a 401 response", async () => {
 
   await tick();
 
-  assert.equal(authRequestCount, 2);
+  assert.deepEqual(authRequests, [
+    {
+      method: "getAuthStatus",
+      params: {
+        includeToken: true,
+        refreshToken: false,
+      },
+    },
+    {
+      method: "getAuthStatus",
+      params: {
+        includeToken: true,
+        refreshToken: true,
+      },
+    },
+  ]);
   assert.equal(fetchCount, 2);
   assert.equal(responses[0].result?.text, "second try works");
 });
@@ -145,6 +161,7 @@ test("voice/transcribe rejects API-key auth because voice remains ChatGPT-only",
       authToken: "sk-test",
       requiresOpenaiAuth: false,
     }),
+    readLocalAuthToken: async () => null,
     fetchImpl: async () => {
       fetchCalled = true;
       throw new Error("fetch should not run for API-key auth");
@@ -179,6 +196,7 @@ test("voice/transcribe returns a user-facing auth error when Mac auth is missing
       authToken: null,
       requiresOpenaiAuth: true,
     }),
+    readLocalAuthToken: async () => null,
     fetchImpl: async () => {
       throw new Error("fetch should not run");
     },
@@ -268,7 +286,7 @@ test("resolveVoiceAuth returns token for ChatGPT sessions", async () => {
       authToken: "chatgpt-token-abc",
       requiresOpenaiAuth: false,
     };
-  });
+  }, null, { readLocalAuthToken: async () => null });
 
   assert.deepEqual(requests, [
     {
@@ -277,6 +295,55 @@ test("resolveVoiceAuth returns token for ChatGPT sessions", async () => {
     },
   ]);
   assert.deepEqual(result, { token: "chatgpt-token-abc" });
+});
+
+test("resolveVoiceAuth can force a refresh after the provider rejects the current token", async () => {
+  const requests = [];
+  const result = await resolveVoiceAuth(async (method, params) => {
+    requests.push({ method, params });
+    assert.equal(method, "getAuthStatus");
+    return {
+      authMethod: "chatgpt",
+      authToken: requests.length === 1 ? "chatgpt-token-refreshed" : "unused-token",
+      requiresOpenaiAuth: true,
+    };
+  }, { forceRefresh: true }, { readLocalAuthToken: async () => null });
+
+  assert.deepEqual(requests, [
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: true },
+    },
+  ]);
+  assert.deepEqual(result, { token: "chatgpt-token-refreshed" });
+});
+
+test("resolveVoiceAuth falls back to local auth when forced refresh omits the token", async () => {
+  const requests = [];
+  const result = await resolveVoiceAuth(async (method, params) => {
+    requests.push({ method, params });
+    assert.equal(method, "getAuthStatus");
+    return {
+      authMethod: "chatgpt",
+      authToken: null,
+      requiresOpenaiAuth: true,
+    };
+  }, { forceRefresh: true }, {
+    readLocalAuthToken: async () => ({
+      authMethod: "chatgpt",
+      token: "chatgpt-token-local",
+      isChatGPT: true,
+      requiresOpenaiAuth: true,
+    }),
+  });
+
+  assert.deepEqual(requests, [
+    {
+      method: "getAuthStatus",
+      params: { includeToken: true, refreshToken: true },
+    },
+  ]);
+  assert.deepEqual(result, { token: "chatgpt-token-local" });
 });
 
 test("resolveVoiceAuth refreshes only after the current token is unavailable", async () => {
@@ -296,7 +363,7 @@ test("resolveVoiceAuth refreshes only after the current token is unavailable", a
       authToken: "chatgpt-token-refreshed",
       requiresOpenaiAuth: true,
     };
-  });
+  }, null, { readLocalAuthToken: async () => null });
 
   assert.deepEqual(requests, [
     {
@@ -321,7 +388,7 @@ test("resolveVoiceAuth rejects when no token is available regardless of requires
         authToken: null,
         requiresOpenaiAuth: true,
       };
-    }),
+    }, null, { readLocalAuthToken: async () => null }),
     (error) => {
       assert.equal(error.errorCode, "token_missing");
       return true;
@@ -349,7 +416,7 @@ test("resolveVoiceAuth rejects when Mac has no token", async () => {
         authToken: null,
         requiresOpenaiAuth: false,
       };
-    }),
+    }, null, { readLocalAuthToken: async () => null }),
     (error) => {
       assert.match(error.message, /No ChatGPT session token/);
       assert.equal(error.errorCode, "token_missing");

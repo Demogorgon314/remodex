@@ -528,7 +528,7 @@ function startBridge({
       case "account/login/openOnMac":
         return openPendingAuthLoginOnMac(params);
       case "voice/resolveAuth":
-        return resolveVoiceAuth(sendCodexRequest);
+        return resolveVoiceAuth(sendCodexRequest, params);
       default:
         throw new Error(`Unsupported bridge-managed account method: ${method}`);
     }

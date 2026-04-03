@@ -4,6 +4,10 @@
 // Exports: createVoiceHandler
 // Depends on: global fetch/FormData/Blob, local codex app-server auth via sendCodexRequest
 
+const fs = require("fs/promises");
+const os = require("os");
+const path = require("path");
+
 const CHATGPT_TRANSCRIPTIONS_URL = "https://chatgpt.com/backend-api/transcribe";
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_DURATION_MS = 60_000;
@@ -13,6 +17,7 @@ function createVoiceHandler({
   fetchImpl = globalThis.fetch,
   FormDataImpl = globalThis.FormData,
   BlobImpl = globalThis.Blob,
+  readLocalAuthToken = readLocalChatGPTAuthTokenFromDisk,
   logPrefix = "[remodex]",
 } = {}) {
   function handleVoiceRequest(rawMessage, sendResponse) {
@@ -36,6 +41,7 @@ function createVoiceHandler({
       fetchImpl,
       FormDataImpl,
       BlobImpl,
+      readLocalAuthToken,
     })
       .then((result) => {
         sendResponse(JSON.stringify({ id, result }));
@@ -67,7 +73,7 @@ function createVoiceHandler({
 // Validates iPhone-owned audio input and proxies it to the official transcription endpoint.
 async function transcribeVoice(
   params,
-  { sendCodexRequest, fetchImpl, FormDataImpl, BlobImpl }
+  { sendCodexRequest, fetchImpl, FormDataImpl, BlobImpl, readLocalAuthToken }
 ) {
   if (typeof sendCodexRequest !== "function") {
     throw voiceError("bridge_not_ready", "Voice transcription is not available right now.");
@@ -99,7 +105,7 @@ async function transcribeVoice(
     throw voiceError("audio_too_large", "Voice messages are limited to 10 MB.");
   }
 
-  const authContext = await loadAuthContext(sendCodexRequest);
+  const authContext = await loadAuthContext(sendCodexRequest, { readLocalAuthToken });
   return requestTranscription({
     authContext,
     audioBuffer,
@@ -108,6 +114,7 @@ async function transcribeVoice(
     FormDataImpl,
     BlobImpl,
     sendCodexRequest,
+    readLocalAuthToken,
   });
 }
 
@@ -119,6 +126,7 @@ async function requestTranscription({
   FormDataImpl,
   BlobImpl,
   sendCodexRequest,
+  readLocalAuthToken,
 }) {
   const makeAttempt = async (activeAuthContext) => {
     const formData = new FormDataImpl();
@@ -137,7 +145,10 @@ async function requestTranscription({
 
   let response = await makeAttempt(authContext);
   if (response.status === 401) {
-    const refreshedAuthContext = await loadAuthContext(sendCodexRequest);
+    const refreshedAuthContext = await loadAuthContext(sendCodexRequest, {
+      forceRefresh: true,
+      readLocalAuthToken,
+    });
     response = await makeAttempt(refreshedAuthContext);
   }
 
@@ -170,8 +181,17 @@ async function requestTranscription({
 }
 
 // Reads the current bridge-owned auth state from the local codex app-server and refreshes if needed.
-async function loadAuthContext(sendCodexRequest) {
-  const { authMethod, token, isChatGPT } = await resolveCurrentOrRefreshedAuthStatus(sendCodexRequest);
+async function loadAuthContext(
+  sendCodexRequest,
+  {
+    forceRefresh = false,
+    readLocalAuthToken = readLocalChatGPTAuthTokenFromDisk,
+  } = {}
+) {
+  const { authMethod, token, isChatGPT } = await resolveCurrentOrRefreshedAuthStatus(sendCodexRequest, {
+    forceRefresh,
+    readLocalAuthToken,
+  });
 
   if (!token) {
     throw voiceError("not_authenticated", "Sign in with ChatGPT before using voice transcription.");
@@ -277,8 +297,15 @@ function voiceError(errorCode, userMessage) {
 
 // Returns an ephemeral ChatGPT token so the phone can call the transcription API directly.
 // Uses its own token resolution instead of loadAuthContext so errors are specific and actionable.
-async function resolveVoiceAuth(sendCodexRequest) {
+async function resolveVoiceAuth(
+  sendCodexRequest,
+  params = null,
+  { readLocalAuthToken = readLocalChatGPTAuthTokenFromDisk } = {}
+) {
+  const forceRefresh = Boolean(params?.forceRefresh);
   const { authMethod, token, isChatGPT, requiresOpenaiAuth } = await resolveCurrentOrRefreshedAuthStatus(sendCodexRequest, {
+    forceRefresh,
+    readLocalAuthToken,
     rpcErrorCode: "auth_unavailable",
     rpcErrorMessage: "Could not read ChatGPT session from the Mac runtime. Is the bridge running?",
   });
@@ -301,25 +328,82 @@ async function resolveVoiceAuth(sendCodexRequest) {
 async function resolveCurrentOrRefreshedAuthStatus(
   sendCodexRequest,
   {
+    forceRefresh = false,
+    readLocalAuthToken = readLocalChatGPTAuthTokenFromDisk,
     rpcErrorCode = "not_authenticated",
     rpcErrorMessage = "Sign in with ChatGPT before using voice transcription.",
   } = {}
 ) {
-  const currentStatus = await readAuthStatus(sendCodexRequest, {
-    refreshToken: false,
-    rpcErrorCode,
-    rpcErrorMessage,
-  });
+  if (forceRefresh) {
+    const refreshedStatus = await readAuthStatus(sendCodexRequest, {
+      refreshToken: true,
+      rpcErrorCode,
+      rpcErrorMessage,
+    });
+    return withLocalAuthFallback(refreshedStatus, readLocalAuthToken);
+  }
+
+  const currentStatus = await withLocalAuthFallback(
+    await readAuthStatus(sendCodexRequest, {
+      refreshToken: false,
+      rpcErrorCode,
+      rpcErrorMessage,
+    }),
+    readLocalAuthToken
+  );
 
   if (currentStatus.token) {
     return currentStatus;
   }
 
-  return readAuthStatus(sendCodexRequest, {
+  const refreshedStatus = await readAuthStatus(sendCodexRequest, {
     refreshToken: true,
     rpcErrorCode,
     rpcErrorMessage,
   });
+
+  return withLocalAuthFallback(refreshedStatus, readLocalAuthToken);
+}
+
+async function withLocalAuthFallback(status, readLocalAuthToken) {
+  if (status?.token || typeof readLocalAuthToken !== "function") {
+    return status;
+  }
+
+  const localAuthStatus = await readLocalAuthToken().catch(() => null);
+  if (!localAuthStatus?.token || !localAuthStatus?.isChatGPT) {
+    return status;
+  }
+
+  return {
+    authMethod: localAuthStatus.authMethod || status.authMethod || "chatgpt",
+    token: localAuthStatus.token,
+    isChatGPT: true,
+    requiresOpenaiAuth: localAuthStatus.requiresOpenaiAuth ?? status.requiresOpenaiAuth,
+  };
+}
+
+async function readLocalChatGPTAuthTokenFromDisk({
+  readFileImpl = fs.readFile,
+  codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+} = {}) {
+  const authFile = path.join(codexHome, "auth.json");
+  const contents = await readFileImpl(authFile, "utf8");
+  const auth = JSON.parse(contents);
+  const authMethod = readString(auth?.auth_mode);
+  const tokenContainer = auth?.tokens && typeof auth.tokens === "object" ? auth.tokens : auth;
+  const token = readString(tokenContainer?.access_token);
+  const isChatGPT = token != null
+    && authMethod !== "apikey"
+    && authMethod !== "api_key"
+    && authMethod !== "apiKey";
+
+  return {
+    authMethod: authMethod || (isChatGPT ? "chatgpt" : null),
+    token,
+    isChatGPT,
+    requiresOpenaiAuth: isChatGPT,
+  };
 }
 
 async function readAuthStatus(
