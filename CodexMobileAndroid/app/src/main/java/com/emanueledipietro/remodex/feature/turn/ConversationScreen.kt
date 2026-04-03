@@ -101,10 +101,13 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
@@ -191,6 +194,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
@@ -1520,26 +1524,30 @@ fun ConversationScreen(
                                 )
                             }
 
-                            if (uiState.composer.queuedDrafts.isNotEmpty()) {
-                                QueuedDraftsCard(
-                                    queuedDrafts = uiState.composer.queuedDrafts,
-                                    isThreadRunning = uiState.selectedThread?.isRunning == true,
-                                    canRestoreDrafts = uiState.composer.canRestoreQueuedDrafts,
-                                    steeringDraftId = uiState.composer.steeringQueuedDraftId,
-                                    onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
-                                    onRestoreQueuedDraft = onRestoreQueuedDraft,
-                                    onSteerQueuedDraft = onSteerQueuedDraft,
-                                    onRemoveQueuedDraft = onRemoveQueuedDraft,
-                                )
-                            }
-
-                            Box(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(0.dp),
                             ) {
-                                Column(
+                                if (uiState.composer.queuedDrafts.isNotEmpty()) {
+                                    QueuedDraftsCard(
+                                        queuedDrafts = uiState.composer.queuedDrafts,
+                                        isThreadRunning = uiState.selectedThread?.isRunning == true,
+                                        canRestoreDrafts = uiState.composer.canRestoreQueuedDrafts,
+                                        steeringDraftId = uiState.composer.steeringQueuedDraftId,
+                                        onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
+                                        onRestoreQueuedDraft = onRestoreQueuedDraft,
+                                        onSteerQueuedDraft = onSteerQueuedDraft,
+                                        onRemoveQueuedDraft = onRemoveQueuedDraft,
+                                    )
+                                }
+
+                                Box(
                                     modifier = Modifier.fillMaxWidth(),
-                                    verticalArrangement = Arrangement.spacedBy(0.dp),
                                 ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                                    ) {
                                     AnimatedVisibility(
                                         visible = uiState.composer.voice.isRecording,
                                         enter = fadeIn(animationSpec = tween(durationMillis = 160)) +
@@ -1604,38 +1612,39 @@ fun ConversationScreen(
                                         )
                                     }
 
-                                    ComposerCard(
-                                        uiState = uiState,
-                                        onComposerInputChanged = onComposerInputChanged,
-                                        onSendPrompt = onSendPrompt,
-                                        onStopTurn = onStopTurn,
-                                        onResumeQueue = onResumeQueue,
-                                        onSelectModel = onSelectModel,
-                                        onSelectPlanningMode = onSelectPlanningMode,
-                                        onSelectReasoningEffort = onSelectReasoningEffort,
-                                        onSelectAccessMode = onSelectAccessMode,
-                                        onSelectServiceTier = onSelectServiceTier,
-                                        onOpenAttachmentPicker = onOpenAttachmentPicker,
-                                        onOpenCameraCapture = onOpenCameraCapture,
-                                        onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
-                                        onTapVoiceButton = onTapVoiceButton,
-                                        onRemoveAttachment = onRemoveAttachment,
-                                        onSelectFileAutocomplete = onSelectFileAutocomplete,
-                                        onRemoveMentionedFile = onRemoveMentionedFile,
-                                        onSelectSkillAutocomplete = onSelectSkillAutocomplete,
-                                        onRemoveMentionedSkill = onRemoveMentionedSkill,
-                                        onSelectSlashCommand = handleSelectSlashCommand,
-                                        onSelectCodeReviewTarget = onSelectCodeReviewTarget,
-                                        onSelectCodeReviewBranch = onSelectCodeReviewBranch,
-                                        onSelectCodeReviewCommit = onSelectCodeReviewCommit,
-                                        onClearReviewSelection = onClearReviewSelection,
-                                        onClearSubagentsSelection = onClearSubagentsSelection,
-                                        onCloseComposerAutocomplete = onCloseComposerAutocomplete,
-                                        onForkThread = handleForkThread,
-                                        onComposerFocusChanged = { isFocused ->
-                                            composerFocused = isFocused
-                                        },
-                                    )
+                                        ComposerCard(
+                                            uiState = uiState,
+                                            onComposerInputChanged = onComposerInputChanged,
+                                            onSendPrompt = onSendPrompt,
+                                            onStopTurn = onStopTurn,
+                                            onResumeQueue = onResumeQueue,
+                                            onSelectModel = onSelectModel,
+                                            onSelectPlanningMode = onSelectPlanningMode,
+                                            onSelectReasoningEffort = onSelectReasoningEffort,
+                                            onSelectAccessMode = onSelectAccessMode,
+                                            onSelectServiceTier = onSelectServiceTier,
+                                            onOpenAttachmentPicker = onOpenAttachmentPicker,
+                                            onOpenCameraCapture = onOpenCameraCapture,
+                                            onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
+                                            onTapVoiceButton = onTapVoiceButton,
+                                            onRemoveAttachment = onRemoveAttachment,
+                                            onSelectFileAutocomplete = onSelectFileAutocomplete,
+                                            onRemoveMentionedFile = onRemoveMentionedFile,
+                                            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                            onRemoveMentionedSkill = onRemoveMentionedSkill,
+                                            onSelectSlashCommand = handleSelectSlashCommand,
+                                            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+                                            onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+                                            onSelectCodeReviewCommit = onSelectCodeReviewCommit,
+                                            onClearReviewSelection = onClearReviewSelection,
+                                            onClearSubagentsSelection = onClearSubagentsSelection,
+                                            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+                                            onForkThread = handleForkThread,
+                                            onComposerFocusChanged = { isFocused ->
+                                                composerFocused = isFocused
+                                            },
+                                        )
+                                    }
                                 }
                             }
 
@@ -2787,10 +2796,10 @@ private fun QueuedDraftsCard(
     onRemoveQueuedDraft: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    val latestDraftId = queuedDrafts.lastOrNull()?.id
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         color = chrome.panelSurface,
-        shape = RemodexConversationShapes.card,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
         border = BorderStroke(1.dp, chrome.subtleBorder),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
@@ -2798,10 +2807,9 @@ private fun QueuedDraftsCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+                .padding(top = 5.dp),
         ) {
-            queuedDrafts.forEach { draft ->
+            queuedDrafts.forEachIndexed { index, draft ->
                 val actionState = resolveQueuedDraftRowActionState(
                     draftId = draft.id,
                     isThreadRunning = isThreadRunning,
@@ -2811,71 +2819,164 @@ private fun QueuedDraftsCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp),
+                        .padding(horizontal = 10.dp, vertical = 2.5.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
                         text = "↩",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = chrome.tertiaryText,
+                    )
+                    Text(
+                        text = draft.text.ifBlank {
+                            when (draft.attachments.size) {
+                                0 -> "Queued follow-up"
+                                1 -> "Queued follow-up with 1 attachment"
+                                else -> "Queued follow-up with ${draft.attachments.size} attachments"
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = chrome.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(
-                            text = draft.text.ifBlank {
-                                when (draft.attachments.size) {
-                                    0 -> "Saved Android follow-up"
-                                    1 -> "Saved follow-up with 1 image"
-                                    else -> "Saved follow-up with ${draft.attachments.size} images"
-                                }
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = chrome.bodyText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (draft.attachments.isNotEmpty()) {
-                            Text(
-                                text = "${draft.attachments.size} attachment(s)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = chrome.secondaryText,
-                            )
-                        }
-                    }
-                    if (draft.id == latestDraftId) {
-                        SecondaryBarAction(
-                            label = "Edit",
-                            onClick = onRestoreLatestQueuedDraft,
-                            enabled = actionState.restoreEnabled,
-                        )
-                    } else {
-                        TextButton(
-                            onClick = { onRestoreQueuedDraft(draft.id) },
-                            enabled = actionState.restoreEnabled,
-                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
-                        ) {
-                            Text(text = "↓")
-                        }
-                    }
+                    QueuedDraftIconAction(
+                        icon = Icons.Outlined.ArrowDownward,
+                        contentDescription = "Move draft into input",
+                        enabled = actionState.restoreEnabled,
+                        onClick = {
+                            if (draft == queuedDrafts.lastOrNull()) {
+                                onRestoreLatestQueuedDraft()
+                            } else {
+                                onRestoreQueuedDraft(draft.id)
+                            }
+                        },
+                    )
                     if (actionState.showsSteer) {
-                        SecondaryBarAction(
+                        QueuedDraftPillAction(
                             label = "Steer",
-                            onClick = { onSteerQueuedDraft(draft.id) },
                             enabled = actionState.steerEnabled,
+                            onClick = { onSteerQueuedDraft(draft.id) },
                         )
                     }
-                    TextButton(
-                        onClick = { onRemoveQueuedDraft(draft.id) },
+                    QueuedDraftIconAction(
+                        icon = Icons.Outlined.DeleteOutline,
+                        contentDescription = "Delete queued draft",
                         enabled = actionState.removeEnabled,
-                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
-                    ) {
-                        Text(text = "Delete")
-                    }
+                        buttonSize = 28.dp,
+                        iconSize = 15.dp,
+                        tonal = false,
+                        onClick = { onRemoveQueuedDraft(draft.id) },
+                    )
+                }
+                if (index < queuedDrafts.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = chrome.subtleBorder,
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun QueuedDraftIconAction(
+    icon: ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    buttonSize: Dp = 24.dp,
+    iconSize: Dp = 12.dp,
+    tonal: Boolean = true,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = modifier,
+        color = if (tonal) chrome.mutedSurface else Color.Transparent,
+        shape = CircleShape,
+        border = if (tonal) BorderStroke(1.dp, chrome.subtleBorder) else null,
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(buttonSize)
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                modifier = Modifier.size(iconSize),
+                tint = if (enabled) chrome.titleText else chrome.tertiaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueuedDraftPillAction(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        color = chrome.mutedSurface,
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) chrome.titleText else chrome.tertiaryText,
+        )
+    }
+}
+
+private val ActiveQueueBadgeColor = Color(0xFF29C7F6)
+private val PausedQueueBadgeColor = Color(0xFFF59E0B)
+
+@Composable
+private fun ComposerQueueBadge(
+    queuedCount: Int,
+    isQueuePaused: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RemodexConversationShapes.pill,
+        color = if (isQueuePaused) PausedQueueBadgeColor else ActiveQueueBadgeColor,
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isQueuePaused) {
+                Icon(
+                    imageVector = Icons.Outlined.Pause,
+                    contentDescription = null,
+                    modifier = Modifier.size(8.dp),
+                    tint = Color.White,
+                )
+            }
+            Text(
+                text = queuedCount.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+            )
         }
     }
 }
@@ -4186,13 +4287,6 @@ private fun ComposerCard(
                     color = chrome.destructive,
                 )
             }
-            if (composer.isQueuePaused && !composer.queuePauseMessage.isNullOrBlank()) {
-                ComposerInlineNotice(
-                    text = "Queue paused: ${composer.queuePauseMessage}",
-                    color = chrome.warning,
-                )
-            }
-
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -4367,24 +4461,13 @@ private fun ComposerCard(
                                 hapticOnClick = true,
                             )
                             if (queuedCount > 0) {
-                                Surface(
+                                ComposerQueueBadge(
+                                    queuedCount = queuedCount,
+                                    isQueuePaused = composer.isQueuePaused,
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
                                         .offset(x = 8.dp, y = (-6).dp),
-                                    shape = CircleShape,
-                                    color = if (composer.canStop) {
-                                        chrome.warning
-                                    } else {
-                                        chrome.accent
-                                    },
-                                ) {
-                                    Text(
-                                        text = queuedCount.toString(),
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = chrome.sendIcon,
-                                    )
-                                }
+                                )
                             }
                         }
                     }
