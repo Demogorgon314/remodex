@@ -8064,9 +8064,6 @@ private fun FileChangeInlineGroup(
     chrome: RemodexConversationChrome,
     onTap: (() -> Unit)? = null,
 ) {
-    val (totalAdditions, totalDeletions) = remember(group.entries) {
-        aggregateFileChangeDiffCounts(group.entries)
-    }
     val groupModifier = if (onTap != null) {
         Modifier.clickable(onClick = onTap)
     } else {
@@ -8087,18 +8084,12 @@ private fun FileChangeInlineGroup(
                 text = group.key,
                 style = MaterialTheme.typography.labelSmall,
                 color = chrome.secondaryText.copy(alpha = 0.6f),
-                modifier = Modifier.weight(1f),
-            )
-            FileChangeDiffCounts(
-                additions = totalAdditions,
-                deletions = totalDeletions,
             )
         }
         group.entries.forEach { entry ->
             FileChangeInlineActionRow(
                 entry = entry,
                 showActionLabel = false,
-                showsCounts = false,
                 chrome = chrome,
             )
         }
