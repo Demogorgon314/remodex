@@ -27,6 +27,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
@@ -463,6 +464,80 @@ class BridgeThreadSyncServiceTest {
         assertEquals("turn-v2-metrics", metrics?.turnId)
         assertEquals(9, metrics?.outputTokens)
         assertTrue((metrics?.tokensPerSecond ?: 0.0) > 0.0)
+    }
+
+    @Test
+    fun `thread token usage updated publishes context window usage`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleThreadTokenUsageUpdatedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-usage"))
+                put(
+                    "usage",
+                    buildJsonObject {
+                        put("tokensUsed", JsonPrimitive(173_033))
+                        put("tokenLimit", JsonPrimitive(258_400))
+                    },
+                )
+            },
+        )
+
+        assertEquals(
+            RemodexContextWindowUsage(tokensUsed = 173_033, tokenLimit = 258_400),
+            service.contextWindowUsageByThreadId.value["thread-usage"],
+        )
+    }
+
+    @Test
+    fun `legacy token count publishes context window usage`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleLegacyTokenCountEvent",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-legacy-usage"))
+                put(
+                    "info",
+                    buildJsonObject {
+                        put(
+                            "last_token_usage",
+                            buildJsonObject {
+                                put("total_tokens", JsonPrimitive(200_930))
+                            },
+                        )
+                        put("model_context_window", JsonPrimitive(258_400))
+                    },
+                )
+            },
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-legacy-usage"))
+            },
+        )
+
+        assertEquals(
+            RemodexContextWindowUsage(tokensUsed = 200_930, tokenLimit = 258_400),
+            service.contextWindowUsageByThreadId.value["thread-legacy-usage"],
+        )
     }
 
     @Test

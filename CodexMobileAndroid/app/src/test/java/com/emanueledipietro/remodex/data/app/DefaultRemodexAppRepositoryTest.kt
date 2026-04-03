@@ -33,6 +33,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitState
@@ -73,6 +74,68 @@ import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DefaultRemodexAppRepositoryTest {
+    @Test
+    fun `live context window usage updates selected thread usage status`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = createRepository(scope = backgroundScope, syncService = syncService)
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        setLiveContextWindowUsage(
+            repository = repository,
+            usageByThread = mapOf(
+                "thread-notifications" to
+                    RemodexContextWindowUsage(tokensUsed = 173_033, tokenLimit = 258_400),
+            ),
+        )
+        invokePrivateMethod<Unit>(
+            repository,
+            "publishSelectedThreadContextWindowUsage",
+            "thread-notifications",
+        )
+
+        assertEquals(173_033, repository.usageStatus.value.contextWindowUsage?.tokensUsed)
+        assertEquals(258_400, repository.usageStatus.value.contextWindowUsage?.tokenLimit)
+    }
+
+    @Test
+    fun `selected thread switch remaps cached context window usage`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = createRepository(scope = backgroundScope, syncService = syncService)
+        advanceUntilIdle()
+
+        setLiveContextWindowUsage(
+            repository = repository,
+            usageByThread = mapOf(
+                "thread-notifications" to
+                    RemodexContextWindowUsage(tokensUsed = 173_033, tokenLimit = 258_400),
+                "thread-reconnect" to
+                    RemodexContextWindowUsage(tokensUsed = 91_000, tokenLimit = 128_000),
+            ),
+        )
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        invokePrivateMethod<Unit>(
+            repository,
+            "publishSelectedThreadContextWindowUsage",
+            "thread-notifications",
+        )
+        assertEquals(173_033, repository.usageStatus.value.contextWindowUsage?.tokensUsed)
+
+        repository.selectThread("thread-reconnect")
+        advanceUntilIdle()
+        invokePrivateMethod<Unit>(
+            repository,
+            "publishSelectedThreadContextWindowUsage",
+            "thread-reconnect",
+        )
+        assertEquals(91_000, repository.usageStatus.value.contextWindowUsage?.tokensUsed)
+        assertEquals(128_000, repository.usageStatus.value.contextWindowUsage?.tokenLimit)
+    }
+
     @Test
     fun `complete onboarding updates persisted preferences`() = runTest {
         val preferencesRepository = TestAppPreferencesRepository()
@@ -2677,6 +2740,17 @@ class DefaultRemodexAppRepositoryTest {
         } ?: error("Missing method $methodName with ${args.size} parameters")
         method.isAccessible = true
         return method.invoke(target, *args) as T
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setLiveContextWindowUsage(
+        repository: DefaultRemodexAppRepository,
+        usageByThread: Map<String, RemodexContextWindowUsage>,
+    ) {
+        val field = repository.javaClass.getDeclaredField("liveContextWindowUsageByThreadState")
+        field.isAccessible = true
+        val state = field.get(repository) as MutableStateFlow<Map<String, RemodexContextWindowUsage>>
+        state.value = usageByThread
     }
 
     @Suppress("UNCHECKED_CAST")

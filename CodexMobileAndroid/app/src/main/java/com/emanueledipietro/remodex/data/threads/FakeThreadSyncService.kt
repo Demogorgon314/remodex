@@ -15,6 +15,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
@@ -56,6 +57,8 @@ class FakeThreadSyncService(
     private val backingCommandExecutionDetails = MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
     private val backingAssistantResponseMetricsByThreadId =
         MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
+    private val backingContextWindowUsageByThreadId =
+        MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
@@ -71,6 +74,8 @@ class FakeThreadSyncService(
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> = backingCommandExecutionDetails
     override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> =
         backingAssistantResponseMetricsByThreadId
+    override val contextWindowUsageByThreadId: StateFlow<Map<String, RemodexContextWindowUsage>> =
+        backingContextWindowUsageByThreadId
     override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
@@ -93,6 +98,23 @@ class FakeThreadSyncService(
 
     fun updateThreads(threads: List<ThreadSyncSnapshot>) {
         backingThreads.value = threads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+    }
+
+    fun updateContextWindowUsage(
+        threadId: String,
+        usage: RemodexContextWindowUsage?,
+    ) {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return
+        }
+        backingContextWindowUsageByThreadId.update { existing ->
+            if (usage == null) {
+                existing - normalizedThreadId
+            } else {
+                existing + (normalizedThreadId to usage)
+            }
+        }
     }
 
     override suspend fun createThread(

@@ -35,6 +35,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -231,6 +232,10 @@ class DefaultRemodexAppRepository(
     private val gptAccountErrorMessageState = MutableStateFlow<String?>(null)
     private val bridgeVersionStatusState = MutableStateFlow(RemodexBridgeVersionStatus())
     private val usageStatusState = MutableStateFlow(RemodexUsageStatus())
+    private val liveContextWindowUsageByThreadState =
+        MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
+    private val fetchedContextWindowUsageByThreadState =
+        MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
 
     override val session: StateFlow<RemodexSessionSnapshot> = sessionState
     override val commandExecutionDetails: StateFlow<Map<String, RemodexCommandExecutionDetails>> =
@@ -296,6 +301,21 @@ class DefaultRemodexAppRepository(
                     suppressBridgeScopedThreadsUntilNextSync = false
                 }
                 syncThreads(snapshots)
+            }
+        }
+
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            threadSyncService.contextWindowUsageByThreadId.collect { usageByThread ->
+                liveContextWindowUsageByThreadState.value = usageByThread
+                publishSelectedThreadContextWindowUsage()
+            }
+        }
+
+        repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            sessionState.collect {
+                publishSelectedThreadContextWindowUsage(
+                    selectedThreadId = it.selectedThread?.id ?: it.selectedThreadId,
+                )
             }
         }
 
@@ -920,6 +940,26 @@ class DefaultRemodexAppRepository(
                 put("threadId", JsonPrimitive(threadId))
             },
         ).result?.jsonObjectOrNull?.let(::decodeContextWindowUsage)
+
+    private fun publishSelectedThreadContextWindowUsage(
+        selectedThreadId: String? = sessionState.value.selectedThread?.id ?: sessionState.value.selectedThreadId,
+    ) {
+        usageStatusState.value = usageStatusState.value.copy(
+            contextWindowUsage = resolveContextWindowUsage(threadId = selectedThreadId),
+        )
+    }
+
+    private fun currentSelectedThreadContextWindowUsage(): RemodexContextWindowUsage? {
+        return resolveContextWindowUsage(
+            threadId = sessionState.value.selectedThread?.id ?: sessionState.value.selectedThreadId,
+        )
+    }
+
+    private fun resolveContextWindowUsage(threadId: String?): RemodexContextWindowUsage? {
+        val normalizedThreadId = threadId?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        return liveContextWindowUsageByThreadState.value[normalizedThreadId]
+            ?: fetchedContextWindowUsageByThreadState.value[normalizedThreadId]
+    }
 
     private fun hydrationService(): ThreadHydrationService? {
         return threadHydrationService ?: (threadSyncService as? ThreadHydrationService)
@@ -1779,22 +1819,26 @@ class DefaultRemodexAppRepository(
         }
 
         val normalizedThreadId = threadId?.trim().takeUnless { it.isNullOrEmpty() }
-        val contextWindowUsage = normalizedThreadId?.let { resolvedThreadId ->
+        normalizedThreadId?.let { resolvedThreadId ->
             runCatching { readContextWindowUsage(resolvedThreadId) }
                 .getOrNull()
+                ?.let { usage ->
+                    fetchedContextWindowUsageByThreadState.value =
+                        fetchedContextWindowUsageByThreadState.value + (resolvedThreadId to usage)
+                }
         }
         val rateLimitResponse = runCatching { fetchRateLimitsWithCompatRetry() }
         usageStatusState.value = if (rateLimitResponse.isSuccess) {
             val rateLimitsObject = rateLimitResponse.getOrThrow().result?.jsonObjectOrNull
                 ?: JsonObject(emptyMap())
             RemodexUsageStatus(
-                contextWindowUsage = contextWindowUsage,
+                contextWindowUsage = currentSelectedThreadContextWindowUsage(),
                 rateLimitBuckets = decodeRateLimitBuckets(rateLimitsObject),
                 rateLimitsErrorMessage = null,
             )
         } else {
             RemodexUsageStatus(
-                contextWindowUsage = contextWindowUsage,
+                contextWindowUsage = currentSelectedThreadContextWindowUsage(),
                 rateLimitBuckets = emptyList(),
                 rateLimitsErrorMessage = rateLimitResponse.exceptionOrNull()?.message?.trim()
                     ?.takeUnless(String::isEmpty)
@@ -2115,6 +2159,8 @@ class DefaultRemodexAppRepository(
         gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
         gptAccountErrorMessageState.value = null
         bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
+        liveContextWindowUsageByThreadState.value = emptyMap()
+        fetchedContextWindowUsageByThreadState.value = emptyMap()
         usageStatusState.value = RemodexUsageStatus()
     }
 

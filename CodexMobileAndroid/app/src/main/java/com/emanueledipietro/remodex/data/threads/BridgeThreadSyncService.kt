@@ -34,6 +34,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
+import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
@@ -252,6 +253,8 @@ class BridgeThreadSyncService(
         MutableStateFlow<Map<String, RemodexCommandExecutionDetails>>(emptyMap())
     private val backingAssistantResponseMetricsByThreadId =
         MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
+    private val backingContextWindowUsageByThreadId =
+        MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
@@ -283,6 +286,8 @@ class BridgeThreadSyncService(
         backingCommandExecutionDetails
     override val assistantResponseMetricsByThreadId: StateFlow<Map<String, RemodexAssistantResponseMetrics>> =
         backingAssistantResponseMetricsByThreadId
+    override val contextWindowUsageByThreadId: StateFlow<Map<String, RemodexContextWindowUsage>> =
+        backingContextWindowUsageByThreadId
     override val pendingApprovalRequest: StateFlow<RemodexApprovalRequest?> = backingPendingApprovalRequest
     override val bridgeUpdatePrompt: StateFlow<RemodexBridgeUpdatePrompt?> = backingBridgeUpdatePrompt
     override val supportsThreadFork: StateFlow<Boolean> = backingSupportsThreadFork
@@ -338,6 +343,7 @@ class BridgeThreadSyncService(
                     backingThreads.value = emptyList()
                     backingCommandExecutionDetails.value = emptyMap()
                     backingAssistantResponseMetricsByThreadId.value = emptyMap()
+                    backingContextWindowUsageByThreadId.value = emptyMap()
                     backingPendingApprovalRequest.value = null
                 }
             }
@@ -2567,20 +2573,26 @@ class BridgeThreadSyncService(
         payload: JsonObject,
         paramsObject: JsonObject,
     ): Boolean {
-        val outputTokenUsage = extractLegacyCodexOutputTokens(payload) ?: return false
         val turnId = payload.firstString("turnId", "turn_id", "id")
             ?: extractAssistantTurnId(paramsObject = paramsObject, eventObject = payload)
             ?: extractTurnId(paramsObject)
         val threadId = payload.firstString("threadId", "thread_id", "conversationId", "conversation_id")
             ?: resolveThreadId(paramsObject, turnIdHint = turnId)
             ?: return false
-        recordAssistantOutputTokens(
-            threadId = threadId,
-            turnId = turnId,
-            totalOutputTokens = outputTokenUsage.totalOutputTokens,
-            lastOutputTokens = outputTokenUsage.lastOutputTokens,
-        )
-        return true
+        val contextWindowUsage = extractContextWindowUsageFromTokenCountPayload(payload)
+        contextWindowUsage?.let { usage ->
+            updateThreadContextWindowUsage(threadId = threadId, usage = usage)
+        }
+        val outputTokenUsage = extractLegacyCodexOutputTokens(payload)
+        if (outputTokenUsage != null) {
+            recordAssistantOutputTokens(
+                threadId = threadId,
+                turnId = turnId,
+                totalOutputTokens = outputTokenUsage.totalOutputTokens,
+                lastOutputTokens = outputTokenUsage.lastOutputTokens,
+            )
+        }
+        return outputTokenUsage != null || contextWindowUsage != null
     }
 
     private suspend fun handleRequest(message: RpcMessage) {
@@ -2710,14 +2722,122 @@ class BridgeThreadSyncService(
 
     private fun handleThreadTokenUsageUpdatedNotification(paramsObject: JsonObject) {
         val threadId = resolveThreadId(paramsObject) ?: return
+        extractThreadContextWindowUsageUpdated(paramsObject)?.let { usage ->
+            updateThreadContextWindowUsage(threadId = threadId, usage = usage)
+        }
         val turnId = extractTurnId(paramsObject)
-        val outputTokenUsage = extractThreadTokenUsageUpdatedOutputTokens(paramsObject) ?: return
-        recordAssistantOutputTokens(
-            threadId = threadId,
-            turnId = turnId,
-            totalOutputTokens = outputTokenUsage.totalOutputTokens,
-            lastOutputTokens = outputTokenUsage.lastOutputTokens,
+        extractThreadTokenUsageUpdatedOutputTokens(paramsObject)?.let { outputTokenUsage ->
+            recordAssistantOutputTokens(
+                threadId = threadId,
+                turnId = turnId,
+                totalOutputTokens = outputTokenUsage.totalOutputTokens,
+                lastOutputTokens = outputTokenUsage.lastOutputTokens,
+            )
+        }
+    }
+
+    private fun updateThreadContextWindowUsage(
+        threadId: String,
+        usage: RemodexContextWindowUsage,
+    ) {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return
+        }
+        backingContextWindowUsageByThreadId.value =
+            backingContextWindowUsageByThreadId.value + (normalizedThreadId to usage)
+    }
+
+    private fun extractContextWindowUsage(
+        root: JsonObject?,
+    ): RemodexContextWindowUsage? {
+        val usageObject = root ?: return null
+        val tokensUsed = usageObject.firstInt(
+            "tokensUsed",
+            "tokens_used",
+            "totalTokens",
+            "total_tokens",
+            "usedTokens",
+            "used_tokens",
         )
+        val tokensRemaining = usageObject.firstInt(
+            "tokensRemaining",
+            "tokens_remaining",
+            "remainingTokens",
+            "remaining_tokens",
+            "remainingInputTokens",
+            "remaining_input_tokens",
+        )
+        val tokenLimit = usageObject.firstInt(
+            "tokenLimit",
+            "token_limit",
+            "maxTokens",
+            "max_tokens",
+            "contextWindow",
+            "context_window",
+            "modelContextWindow",
+            "model_context_window",
+        ) ?: tokensRemaining?.let { remaining ->
+            (tokensUsed ?: 0).coerceAtLeast(0) + remaining.coerceAtLeast(0)
+        }
+
+        if (tokenLimit == null || tokenLimit <= 0) {
+            return null
+        }
+
+        return RemodexContextWindowUsage(
+            tokensUsed = (tokensUsed ?: 0).coerceAtLeast(0).coerceAtMost(tokenLimit),
+            tokenLimit = tokenLimit,
+        )
+    }
+
+    private fun extractContextWindowUsageFromTokenCountPayload(
+        payload: JsonObject,
+    ): RemodexContextWindowUsage? {
+        val infoObject = payload.firstObject("info") ?: payload
+        val lastUsageObject = infoObject.firstObject("last_token_usage", "lastTokenUsage")
+        val totalUsageObject = infoObject.firstObject(
+            "total_token_usage",
+            "totalTokenUsage",
+            "last_token_usage",
+            "lastTokenUsage",
+        ) ?: infoObject
+        val preferredUsageObject = lastUsageObject ?: totalUsageObject
+        val explicitTotal = preferredUsageObject.firstInt("total_tokens", "totalTokens")
+        val inputTokens = preferredUsageObject.firstInt("input_tokens", "inputTokens") ?: 0
+        val outputTokens = preferredUsageObject.firstInt("output_tokens", "outputTokens") ?: 0
+        val reasoningTokens = preferredUsageObject.firstInt(
+            "reasoning_output_tokens",
+            "reasoningOutputTokens",
+        ) ?: 0
+        val tokenLimit = infoObject.firstInt(
+            "model_context_window",
+            "modelContextWindow",
+            "context_window",
+            "contextWindow",
+            "tokenLimit",
+            "token_limit",
+        ) ?: return null
+        if (tokenLimit <= 0) {
+            return null
+        }
+
+        val tokensUsed = explicitTotal ?: (inputTokens + outputTokens + reasoningTokens)
+        return RemodexContextWindowUsage(
+            tokensUsed = tokensUsed.coerceAtLeast(0).coerceAtMost(tokenLimit),
+            tokenLimit = tokenLimit,
+        )
+    }
+
+    private fun extractThreadContextWindowUsageUpdated(
+        paramsObject: JsonObject,
+    ): RemodexContextWindowUsage? {
+        val eventObject = envelopeEventObject(paramsObject)
+        val usageObject = paramsObject.firstObject("usage")
+            ?: eventObject?.firstObject("usage")
+            ?: paramsObject.firstObject("event")?.firstObject("usage")
+            ?: paramsObject
+        return extractContextWindowUsage(usageObject)
     }
 
     private fun handleThreadStatusChangedNotification(paramsObject: JsonObject) {
