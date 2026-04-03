@@ -1149,7 +1149,6 @@ final class TurnViewModel {
 
         isPlanModeArmed = false
         clearComposerAutocomplete()
-
         Task { @MainActor in
             defer {
                 dismissingStructuredPlanPromptRequestKeys.remove(requestKey)

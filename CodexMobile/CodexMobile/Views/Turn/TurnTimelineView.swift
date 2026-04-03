@@ -631,6 +631,11 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                     debugTimelineLog("visibleTailCount changed value=\(visibleTailCount) totalMessages=\(messages.count)")
                     recomputeBlockInfoIfNeeded()
                 }
+                .onChange(of: visibleTailCount) { _, _ in
+                    // Loading older rows changes the visible slice even when the underlying
+                    // timeline revision is unchanged, so refresh slice-scoped accessories now.
+                    recomputeBlockInfoIfNeeded()
+                }
                 .onChange(of: shouldAnchorToAssistantResponse) { _, newValue in
                     if newValue {
                         autoScrollMode = .anchorAssistantResponse
