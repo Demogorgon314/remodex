@@ -17,9 +17,9 @@ class ConversationDiffRendererTest {
     }
 
     @Test
-    fun cleanDisplayText_strips_diff_prefixes_for_visible_rows() {
-        assertEquals("added", ConversationDiffLineKind.ADDITION.cleanDisplayText("+added"))
-        assertEquals("removed", ConversationDiffLineKind.DELETION.cleanDisplayText("-removed"))
+    fun cleanDisplayText_preserves_add_delete_prefixes_for_visible_rows() {
+        assertEquals("+added", ConversationDiffLineKind.ADDITION.cleanDisplayText("+added"))
+        assertEquals("-removed", ConversationDiffLineKind.DELETION.cleanDisplayText("-removed"))
         assertEquals("context", ConversationDiffLineKind.NEUTRAL.cleanDisplayText(" context"))
         assertEquals("plain", ConversationDiffLineKind.NEUTRAL.cleanDisplayText("plain"))
     }

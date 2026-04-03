@@ -6998,6 +6998,115 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `file change progress notifications do not create duplicate timeline rows`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-filechange-live",
+                    title = "Live file change thread",
+                    preview = "",
+                    projectPath = "/tmp/project-filechange-live",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-filechange-live"))
+                put("turnId", JsonPrimitive("turn-filechange-live"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("patch-item-1"))
+                        put("type", JsonPrimitive("fileChange"))
+                        put("status", JsonPrimitive("in_progress"))
+                        put(
+                            "changes",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("path", JsonPrimitive("app/src/Main.kt"))
+                                        put("kind", JsonPrimitive("add"))
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendFileChangeDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-filechange-live"))
+                put("turnId", JsonPrimitive("turn-filechange-live"))
+                put("itemId", JsonPrimitive("patch-item-1"))
+                put("delta", JsonPrimitive("Edited app/src/Main.kt\n"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnDiffUpdatedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-filechange-live"))
+                put("turnId", JsonPrimitive("turn-filechange-live"))
+                put(
+                    "diff",
+                    JsonPrimitive(
+                        """
+                        diff --git a/app/src/Main.kt b/app/src/Main.kt
+                        new file mode 100644
+                        --- /dev/null
+                        +++ b/app/src/Main.kt
+                        @@ -0,0 +1 @@
+                        +hello
+                        """.trimIndent(),
+                    ),
+                )
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-filechange-live" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val fileChangeItems = projected.filter { item -> item.kind == ConversationItemKind.FILE_CHANGE }
+
+        assertEquals(1, fileChangeItems.size)
+        assertEquals("patch-item-1", fileChangeItems.single().itemId)
+        assertEquals(
+            """
+            Status: in_progress
+
+            Path: app/src/Main.kt
+            Kind: add
+            """.trimIndent(),
+            fileChangeItems.single().text,
+        )
+        assertTrue(fileChangeItems.single().isStreaming)
+    }
+
+    @Test
     fun `hydrate thread decodes file change items and file change toolcalls into rendered file rows`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

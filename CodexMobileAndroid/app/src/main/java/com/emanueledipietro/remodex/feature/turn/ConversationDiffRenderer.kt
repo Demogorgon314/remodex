@@ -62,7 +62,7 @@ internal enum class ConversationDiffLineKind {
 
     fun cleanDisplayText(line: String): String {
         return when (this) {
-            ADDITION, DELETION -> line.drop(1)
+            ADDITION, DELETION -> line
             NEUTRAL -> if (line.startsWith(" ")) line.drop(1) else line
             HUNK, META -> line
         }

@@ -2347,6 +2347,7 @@ class BridgeThreadSyncService(
             "item/reasoning/textDelta" -> paramsObject?.let(::appendReasoningDelta)
 
             "item/fileChange/outputDelta" -> paramsObject?.let(::appendFileChangeDelta)
+            "turn/diff/updated" -> paramsObject?.let(::handleTurnDiffUpdatedNotification)
 
             "item/toolCall/outputDelta",
             "item/toolCall/output_delta",
@@ -3036,11 +3037,15 @@ class BridgeThreadSyncService(
     }
 
     private fun appendFileChangeDelta(paramsObject: JsonObject) {
-        appendSystemTextDelta(
-            paramsObject = paramsObject,
-            kind = ConversationItemKind.FILE_CHANGE,
-            fallbackPrefix = "filechange",
-        )
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (resolvedTurnId != null) {
+            threadIdByTurnId[resolvedTurnId] = threadId
+        }
+        // Codex treats file-change deltas as ephemeral progress, not transcript rows.
+        // Keep the thread warm without synthesizing placeholder "Edited" lines.
+        touchThread(threadId, isRunning = true)
     }
 
     private fun appendToolCallDelta(paramsObject: JsonObject) {
@@ -4283,6 +4288,10 @@ class BridgeThreadSyncService(
         paramsObject: JsonObject,
     ): Boolean {
         val normalizedMethod = normalizeMethod(method)
+        if (normalizedMethod.contains("turndiff")) {
+            handleTurnDiffUpdatedNotification(paramsObject)
+            return true
+        }
         val isDiffMethod = normalizedMethod.contains("turndiff")
             || normalizedMethod.contains("/diff/")
             || normalizedMethod.startsWith("diff/")
@@ -4292,6 +4301,17 @@ class BridgeThreadSyncService(
             return false
         }
         return handleStructuredFallback(paramsObject, itemType = "diff", isCompleted = true)
+    }
+
+    private fun handleTurnDiffUpdatedNotification(paramsObject: JsonObject) {
+        val turnId = extractTurnId(paramsObject)
+        val threadId = resolveThreadId(paramsObject, turnIdHint = turnId) ?: return
+        if (!turnId.isNullOrBlank()) {
+            threadIdByTurnId[turnId] = threadId
+        }
+        // The desktop client uses turn-level diffs to refresh auxiliary diff UI only.
+        // Avoid materializing them as standalone timeline rows on Android.
+        touchThread(threadId)
     }
 
     private fun handleStructuredFallback(
