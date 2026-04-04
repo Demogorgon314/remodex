@@ -84,6 +84,31 @@ class CommandExecutionStatusPresentationTest {
     }
 
     @Test
+    fun `humanized command uses present tense while command is running and past tense when completed`() {
+        val runningSearch = humanizeCommand(
+            raw = "rg stateflow app/src/main",
+            isRunning = true,
+        )
+        val completedSearch = humanizeCommand(
+            raw = "rg stateflow app/src/main",
+            isRunning = false,
+        )
+        val runningRead = humanizeCommand(
+            raw = "cat app/src/main/Example.kt",
+            isRunning = true,
+        )
+        val completedRead = humanizeCommand(
+            raw = "cat app/src/main/Example.kt",
+            isRunning = false,
+        )
+
+        assertEquals("Searching", runningSearch.verb)
+        assertEquals("Searched", completedSearch.verb)
+        assertEquals("Reading", runningRead.verb)
+        assertEquals("Read", completedRead.verb)
+    }
+
+    @Test
     fun `background terminal presentations keep only running command executions`() {
         val runningItem = RemodexConversationItem(
             id = "message-running",

@@ -2381,7 +2381,7 @@ private fun LazyListScope.conversationTimelineItems(
         }
         items(
             items = timelineItems,
-            key = { it.id },
+            key = ::conversationTimelineItemKey,
             contentType = { item -> "${item.speaker.name}:${item.kind.name}" },
         ) { message ->
             if (message.id in animatedLoadEarlierMessageIds) {
@@ -2433,6 +2433,26 @@ private fun LazyListScope.conversationTimelineItems(
                     .height(ConversationBottomAnchorHeight),
             )
         }
+    }
+}
+
+internal fun conversationTimelineItemKey(
+    item: RemodexConversationItem,
+): String {
+    if (
+        item.speaker == ConversationSpeaker.ASSISTANT &&
+        item.kind == ConversationItemKind.CHAT &&
+        item.orderIndex >= 0L
+    ) {
+        return "assistant-chat:${item.orderIndex}"
+    }
+    item.itemId?.trim()?.takeIf(String::isNotEmpty)?.let { itemId ->
+        return "${item.speaker.name}:${item.kind.name}:item:$itemId"
+    }
+    return if (item.orderIndex >= 0L) {
+        "${item.id}:${item.orderIndex}"
+    } else {
+        item.id
     }
 }
 
@@ -8333,9 +8353,29 @@ private fun AssistantConversationRow(
 ) {
     val chrome = remodexConversationChrome()
     val hasLiveStreamingText = item.isStreaming && streamingTextState != null
+    val liveStreamingText = remember(streamingTextState, hasLiveStreamingText) {
+        if (hasLiveStreamingText) {
+            streamingTextState?.handle?.snapshot().orEmpty()
+        } else {
+            ""
+        }
+    }
+    var lastNonBlankAssistantText by remember(item.id) { mutableStateOf("") }
+    val resolvedAssistantText = remember(item.text, liveStreamingText, hasLiveStreamingText, lastNonBlankAssistantText) {
+        resolveAssistantDisplayedText(
+            itemText = item.text,
+            liveStreamingText = liveStreamingText.takeIf { hasLiveStreamingText },
+            lastNonBlankText = lastNonBlankAssistantText,
+        )
+    }
+    LaunchedEffect(item.id, resolvedAssistantText) {
+        if (resolvedAssistantText.isNotBlank()) {
+            lastNonBlankAssistantText = resolvedAssistantText
+        }
+    }
     val textRenderMode = rememberAssistantTextRenderMode(
         itemId = item.id,
-        text = if (hasLiveStreamingText) "streaming" else item.text,
+        text = if (hasLiveStreamingText) "streaming" else resolvedAssistantText,
         isStreaming = item.isStreaming,
     )
     val rowRenderModel = remember(
@@ -8353,14 +8393,10 @@ private fun AssistantConversationRow(
     val blockDiffPresentation = rowRenderModel.assistantBlockDiffPresentation
     val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
     ConversationMessageActionContainer(
-        text = item.text,
-        hasActionableTextOverride = item.text.isNotEmpty() || hasLiveStreamingText,
+        text = resolvedAssistantText,
+        hasActionableTextOverride = resolvedAssistantText.isNotEmpty(),
         resolveTextForActions = {
-            if (hasLiveStreamingText) {
-                streamingTextState?.handle?.snapshot().orEmpty()
-            } else {
-                item.text
-            }
+            resolvedAssistantText
         },
         messageRole = ConversationSpeaker.ASSISTANT,
         usesMarkdownSelection = true,
@@ -8371,19 +8407,20 @@ private fun AssistantConversationRow(
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (item.text.isNotBlank() || hasLiveStreamingText) {
+            if (resolvedAssistantText.isNotBlank()) {
                 when (textRenderMode) {
                     AssistantTextRenderMode.LIGHTWEIGHT_PLAIN -> {
                         LightweightStreamingAssistantMarkdownText(
-                            text = item.text,
+                            text = resolvedAssistantText,
                             streamingTextState = streamingTextState.takeIf { hasLiveStreamingText },
                             chrome = chrome,
                         )
                     }
 
                     AssistantTextRenderMode.RICH_MARKDOWN -> {
-                        ConversationMarkdownText(
-                            text = item.text,
+                        AssistantCompletedMarkdownText(
+                            text = resolvedAssistantText,
+                            fallbackText = lastNonBlankAssistantText,
                             style = MaterialTheme.typography.bodyMedium,
                             color = chrome.bodyText,
                             onLongPress = showContextMenuAt,
@@ -8417,6 +8454,56 @@ private fun AssistantConversationRow(
                 ConversationCopyBlockButton(text = copyText)
             }
         }
+    }
+}
+
+internal fun resolveAssistantDisplayedText(
+    itemText: String,
+    liveStreamingText: String?,
+    lastNonBlankText: String,
+): String {
+    if (!liveStreamingText.isNullOrBlank()) {
+        return liveStreamingText
+    }
+    if (itemText.isNotBlank()) {
+        return itemText
+    }
+    return lastNonBlankText
+}
+
+@Composable
+private fun AssistantCompletedMarkdownText(
+    text: String,
+    fallbackText: String,
+    style: androidx.compose.ui.text.TextStyle,
+    color: Color,
+    onLongPress: ((IntOffset) -> Unit)?,
+) {
+    var richRenderReady by remember(text) { mutableStateOf(false) }
+    LaunchedEffect(text) {
+        richRenderReady = false
+        withFrameNanos { }
+        richRenderReady = true
+    }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        if (!richRenderReady) {
+            Text(
+                text = fallbackText.ifBlank { text },
+                modifier = Modifier.fillMaxWidth(),
+                style = style,
+                color = color,
+                softWrap = true,
+            )
+        }
+        ConversationMarkdownText(
+            text = text,
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer { alpha = if (richRenderReady) 1f else 0f },
+            style = style,
+            color = color,
+            onLongPress = onLongPress,
+        )
     }
 }
 

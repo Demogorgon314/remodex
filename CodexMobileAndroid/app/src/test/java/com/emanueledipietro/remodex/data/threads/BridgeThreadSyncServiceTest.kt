@@ -46,6 +46,7 @@ import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -1127,6 +1128,292 @@ class BridgeThreadSyncServiceTest {
             },
         )
         assertTrue(assistantMessages.single().isStreaming)
+    }
+
+    @Test
+    fun `late assistant delta for the already completed turn does not revive running state`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-late-completed-delta",
+                    title = "Late completed delta thread",
+                    preview = "Finished response",
+                    projectPath = "/tmp/project-late-completed-delta",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    activeTurnId = null,
+                    latestTurnTerminalState = RemodexTurnTerminalState.COMPLETED,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-turn-late-completed-delta",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Finished response",
+                                turnId = "turn-late-completed-delta",
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setLatestTurnTerminalState",
+            "thread-late-completed-delta",
+            RemodexTurnTerminalState.COMPLETED,
+            "turn-late-completed-delta",
+        )
+        invokePrivateMethod(
+            service,
+            "clearThreadRunningState",
+            "thread-late-completed-delta",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-late-completed-delta"))
+                put("turnId", JsonPrimitive("turn-late-completed-delta"))
+                put("delta", JsonPrimitive("\nLate tail"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-late-completed-delta" }
+        val assistantMessages = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .filter { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertFalse(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+        assertEquals(listOf("Finished response\nLate tail"), assistantMessages.map(RemodexConversationItem::text))
+        assertFalse(assistantMessages.single().isStreaming)
+    }
+
+    @Test
+    fun `late review completion after turn completion still renders the final review text`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-review-late-completion",
+                    title = "Late review completion",
+                    preview = "",
+                    projectPath = "/tmp/project-review-late-completion",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-review-late-completion",
+            "turn-review-late-completion",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnCompletedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-late-completion"))
+                put("turnId", JsonPrimitive("turn-review-late-completion"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-late-completion"))
+                put("turnId", JsonPrimitive("turn-review-late-completion"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("turn-review-late-completion"))
+                        put("type", JsonPrimitive("exitedReviewMode"))
+                        put("review", JsonPrimitive("Late review findings"))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-review-late-completion" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val reviewResult = projected.single {
+            it.speaker == ConversationSpeaker.ASSISTANT &&
+                it.kind == ConversationItemKind.CHAT
+        }
+
+        assertFalse(thread.isRunning)
+        assertNull(thread.activeTurnId)
+        assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+        assertEquals("assistant-turn-review-late-completion", reviewResult.id)
+        assertEquals("Late review findings", reviewResult.text)
+        assertFalse(reviewResult.isStreaming)
+    }
+
+    @Test
+    fun `review summary suppresses later assistant output on the same turn`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-review-summary-authoritative",
+                    title = "Review summary authoritative",
+                    preview = "",
+                    projectPath = "/tmp/project-review-summary-authoritative",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-review-summary-authoritative",
+            "turn-review-summary-authoritative",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-summary-authoritative"))
+                put("turnId", JsonPrimitive("turn-review-summary-authoritative"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("turn-review-summary-authoritative"))
+                        put("type", JsonPrimitive("enteredReviewMode"))
+                        put("review", JsonPrimitive("current changes"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-summary-authoritative"))
+                put("turnId", JsonPrimitive("turn-review-summary-authoritative"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("turn-review-summary-authoritative"))
+                        put("type", JsonPrimitive("exitedReviewMode"))
+                        put("review", JsonPrimitive("Authoritative review summary"))
+                    },
+                )
+            },
+            true,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-summary-authoritative"))
+                put("turnId", JsonPrimitive("turn-review-summary-authoritative"))
+                put("delta", JsonPrimitive("Duplicate streamed review"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-summary-authoritative"))
+                put("turnId", JsonPrimitive("turn-review-summary-authoritative"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-review-followup"))
+                        put("type", JsonPrimitive("agent_message"))
+                        put("text", JsonPrimitive("Duplicate streamed review"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-summary-authoritative"))
+                put("turnId", JsonPrimitive("turn-review-summary-authoritative"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-review-followup"))
+                        put("type", JsonPrimitive("agent_message"))
+                        put("text", JsonPrimitive("Duplicate streamed review"))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-review-summary-authoritative" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val reviewRows = projected.filter { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+                item.kind == ConversationItemKind.CHAT
+        }
+        val commandRows = projected.filter { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.kind == ConversationItemKind.COMMAND_EXECUTION
+        }
+
+        assertEquals(1, reviewRows.size)
+        assertEquals("Authoritative review summary", reviewRows.single().text)
+        assertEquals(1, commandRows.size)
+        assertEquals("Reviewing current changes...", commandRows.single().text)
     }
 
     @Test
@@ -2499,6 +2786,138 @@ class BridgeThreadSyncServiceTest {
             coordinator.disconnect()
             advanceUntilIdle()
         }
+    }
+
+    @Test
+    fun `history exited review mode stays authoritative over duplicate assistant review output`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+        val threadObject = buildJsonObject {
+            put("id", JsonPrimitive("thread-review-history-authoritative"))
+            put("cwd", JsonPrimitive("/tmp/project-review-history-authoritative"))
+            put(
+                "turns",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("id", JsonPrimitive("turn-review-history-authoritative"))
+                            put(
+                                "items",
+                                buildJsonArray {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("review-user"))
+                                            put("type", JsonPrimitive("user_message"))
+                                            put(
+                                                "text",
+                                                JsonPrimitive(
+                                                    "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+                                                ),
+                                            )
+                                        },
+                                    )
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("review-enter"))
+                                            put("type", JsonPrimitive("enteredReviewMode"))
+                                            put("review", JsonPrimitive("current changes"))
+                                        },
+                                    )
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("review-exit"))
+                                            put("type", JsonPrimitive("exitedReviewMode"))
+                                            put("review", JsonPrimitive("Hydrated review summary"))
+                                        },
+                                    )
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("assistant-review-followup"))
+                                            put("type", JsonPrimitive("agent_message"))
+                                            put("text", JsonPrimitive("Duplicate review from persisted agent message"))
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            )
+        }
+        @Suppress("UNCHECKED_CAST")
+        val decodedMutations = invokePrivateMethod(
+            service,
+            "decodeHistoryItems",
+            "thread-review-history-authoritative",
+            threadObject,
+        ) as List<TimelineMutation>
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-review-history-authoritative",
+                    title = "Review history authoritative",
+                    preview = "",
+                    projectPath = "/tmp/project-review-history-authoritative",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = decodedMutations,
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-history-authoritative"))
+                put("turnId", JsonPrimitive("turn-review-history-authoritative"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-review-late"))
+                        put("type", JsonPrimitive("agent_message"))
+                        put("text", JsonPrimitive("Late duplicate review"))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-review-history-authoritative" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val userRows = projected.filter { item ->
+            item.speaker == ConversationSpeaker.USER &&
+                item.kind == ConversationItemKind.CHAT
+        }
+        val commandRows = projected.filter { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.kind == ConversationItemKind.COMMAND_EXECUTION
+        }
+        val assistantRows = projected.filter { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+                item.kind == ConversationItemKind.CHAT
+        }
+
+        assertEquals(1, userRows.size)
+        assertEquals(
+            "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            userRows.single().text,
+        )
+        assertEquals(1, commandRows.size)
+        assertEquals("Reviewing current changes...", commandRows.single().text)
+        assertEquals(1, assistantRows.size)
+        assertEquals("Hydrated review summary", assistantRows.single().text)
     }
 
     @Test
@@ -6722,6 +7141,89 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `exited review mode keeps the review activity row and the final assistant review text when both share the turn id`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-review-exit",
+                    title = "Review exit thread",
+                    preview = "",
+                    projectPath = "/tmp/project-review-exit",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-exit"))
+                put("turnId", JsonPrimitive("turn-review-exit"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("turn-review-exit"))
+                        put("type", JsonPrimitive("enteredReviewMode"))
+                        put("review", JsonPrimitive("current changes"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-exit"))
+                put("turnId", JsonPrimitive("turn-review-exit"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("turn-review-exit"))
+                        put("type", JsonPrimitive("exitedReviewMode"))
+                        put("review", JsonPrimitive("Prioritized finding: fix the null branch."))
+                    },
+                )
+            },
+            true,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-review-exit" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val reviewActivity = projected.single {
+            it.speaker == ConversationSpeaker.SYSTEM &&
+                it.kind == ConversationItemKind.COMMAND_EXECUTION &&
+                it.text == "Reviewing current changes..."
+        }
+        val reviewResult = projected.single {
+            it.speaker == ConversationSpeaker.ASSISTANT &&
+                it.kind == ConversationItemKind.CHAT
+        }
+
+        assertEquals("turn-review-exit", reviewActivity.id)
+        assertEquals("assistant-turn-review-exit", reviewResult.id)
+        assertEquals("Prioritized finding: fix the null branch.", reviewResult.text)
+        assertFalse(reviewResult.isStreaming)
+    }
+
+    @Test
     fun `context compaction finalizes the current assistant segment before later assistant deltas`() = runTest {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
@@ -7381,6 +7883,147 @@ class BridgeThreadSyncServiceTest {
             )
         } finally {
             connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `thread status idle schedules catchup for the active turn and clears stale thinking when thread read confirms completion`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-idle-active-catchup",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-idle-active-catchup"))
+                                            put("title", JsonPrimitive("Idle active catchup thread"))
+                                            put("cwd", JsonPrimitive("/tmp/project-idle-active-catchup"))
+                                            put("updatedAt", JsonPrimitive(1_713_222_620))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-idle-active-catchup"))
+                                put("title", JsonPrimitive("Idle active catchup thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-idle-active-catchup"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-idle-active-catchup"))
+                                                put("status", JsonPrimitive("completed"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-item-idle-active-catchup"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put("text", JsonPrimitive("Recovered final answer"))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-idle-active-catchup",
+                        title = "Idle active catchup thread",
+                        preview = "Still thinking",
+                        projectPath = "/tmp/project-idle-active-catchup",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = true,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+            invokePrivateMethod(
+                service,
+                "setActiveTurnId",
+                "thread-idle-active-catchup",
+                "turn-idle-active-catchup",
+            )
+
+            invokePrivateMethod(
+                service,
+                "handleThreadStatusChangedNotification",
+                buildJsonObject {
+                    put("threadId", JsonPrimitive("thread-idle-active-catchup"))
+                    put("status", JsonPrimitive("idle"))
+                },
+            )
+            advanceTimeBy(1_000L)
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-idle-active-catchup" }
+            val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+            assertFalse(thread.isRunning)
+            assertNull(thread.activeTurnId)
+            assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
+            assertEquals(listOf("Recovered final answer"), projected.map(RemodexConversationItem::text))
+            assertEquals(
+                1,
+                relayFactory.receivedRequests.count { request -> request.method == "thread/read" },
+            )
+        } finally {
+            coordinator.disconnect()
             advanceUntilIdle()
         }
     }
@@ -9253,6 +9896,74 @@ class BridgeThreadSyncServiceTest {
             projected.map(RemodexConversationItem::id),
         )
         assertEquals("Searched the web", projected.last().text)
+    }
+
+    @Test
+    fun `web search start lifecycle keeps visible running state in the timeline`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-web-search-running",
+                    title = "Web search running thread",
+                    preview = "Search",
+                    projectPath = "/tmp/project-web-search-running",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-web-search-running"))
+                put("turnId", JsonPrimitive("turn-web-search-running"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("search-item-running"))
+                        put("type", JsonPrimitive("webSearch"))
+                        put("query", JsonPrimitive("kotlin stateflow"))
+                        put(
+                            "action",
+                            buildJsonObject {
+                                put("type", JsonPrimitive("search"))
+                                put(
+                                    "queries",
+                                    buildJsonArray {
+                                        add(JsonPrimitive("kotlin stateflow"))
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+            false,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-web-search-running" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val webSearchItem = projected.single { item -> item.kind == ConversationItemKind.WEB_SEARCH }
+
+        assertEquals("Searching the web", webSearchItem.text)
+        assertTrue(webSearchItem.isStreaming)
+        assertTrue(webSearchItem.supportingText.orEmpty().contains("kotlin stateflow"))
     }
 
     @Test

@@ -517,7 +517,10 @@ internal object ThreadHistoryReconciler {
             return false
         }
         if (!historyText.equals("usermessage", ignoreCase = true)) {
-            return false
+            return shouldReplaceOptimisticReviewPromptValue(
+                localText = localItem.text,
+                incomingText = historyItem.text,
+            )
         }
         return localText == normalizedText(androidUserMessageFallbackText(localItem.attachments.size))
     }

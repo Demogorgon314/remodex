@@ -316,4 +316,74 @@ class ConversationStreamingRenderHeuristicsTest {
 
         assertTrue(revealed.isEmpty())
     }
+
+    @Test
+    fun `assistant displayed text prefers live streaming text over timeline and cached text`() {
+        val resolved = resolveAssistantDisplayedText(
+            itemText = "completed text",
+            liveStreamingText = "streaming text",
+            lastNonBlankText = "cached text",
+        )
+
+        assertEquals("streaming text", resolved)
+    }
+
+    @Test
+    fun `assistant displayed text falls back to last non blank text when completion snapshot is briefly empty`() {
+        val resolved = resolveAssistantDisplayedText(
+            itemText = "",
+            liveStreamingText = null,
+            lastNonBlankText = "cached text",
+        )
+
+        assertEquals("cached text", resolved)
+    }
+
+    @Test
+    fun `conversation timeline item key stays stable when an assistant item id is rebound after streaming`() {
+        val streamingItem = RemodexConversationItem(
+            id = "assistant-turn-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "Partial answer",
+            turnId = "turn-1",
+            orderIndex = 7L,
+            isStreaming = true,
+        )
+        val completedItem = streamingItem.copy(
+            id = "assistant-item-1",
+            itemId = "assistant-item-1",
+            text = "Final answer",
+            isStreaming = false,
+        )
+
+        assertEquals(
+            conversationTimelineItemKey(streamingItem),
+            conversationTimelineItemKey(completedItem),
+        )
+    }
+
+    @Test
+    fun `conversation timeline item key stays unique for system rows that share an order index`() {
+        val first = RemodexConversationItem(
+            id = "review-enter",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+            itemId = "review-enter",
+            text = "Reviewing current changes...",
+            orderIndex = 7L,
+        )
+        val second = RemodexConversationItem(
+            id = "command-1",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.COMMAND_EXECUTION,
+            itemId = "command-1",
+            text = "Ran git diff",
+            orderIndex = 7L,
+        )
+
+        assertFalse(
+            conversationTimelineItemKey(first) == conversationTimelineItemKey(second),
+        )
+    }
 }

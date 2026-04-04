@@ -705,4 +705,44 @@ class ThreadHistoryReconcilerTest {
         assertEquals("turn-1", merged.single().turnId)
         assertEquals("data:image/jpeg;base64,LOCAL", merged.single().attachments.single().previewDataUrl)
     }
+
+    @Test
+    fun `merge history items folds persisted review prompt into optimistic local review request`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "user-local-review",
+                speaker = ConversationSpeaker.USER,
+                text = "Review current changes",
+                turnId = "turn-review-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                orderIndex = 20L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "user-history-review",
+                speaker = ConversationSpeaker.USER,
+                text = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+                turnId = "turn-review-1",
+                deliveryState = RemodexMessageDeliveryState.CONFIRMED,
+                orderIndex = 10L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("user-local-review", merged.single().id)
+        assertEquals(
+            "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            merged.single().text,
+        )
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, merged.single().deliveryState)
+        assertEquals("turn-review-1", merged.single().turnId)
+    }
 }

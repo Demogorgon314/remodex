@@ -645,6 +645,8 @@ class BridgeThreadSyncService(
 
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
+    private val ambiguousTerminalThreadReadCatchupDelayMs = 350L
+    private val initializeSessionRetryDelaysMs = listOf(80L, 160L, 320L, 640L)
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
@@ -660,6 +662,7 @@ class BridgeThreadSyncService(
     private val backingSupportsThreadFork = MutableStateFlow(true)
     private val activeTurnIdByThread = mutableMapOf<String, String>()
     private val threadIdByTurnId = mutableMapOf<String, String>()
+    private val completedReviewSummaryTurnIds = mutableSetOf<String>()
     private val reviewDebugTurnIds = mutableSetOf<String>()
     private val reviewDebugThreadIds = mutableSetOf<String>()
     private val assistantResponseTraceByThread = mutableMapOf<String, AssistantResponseTrace>()
@@ -670,8 +673,10 @@ class BridgeThreadSyncService(
     private val locallyCompletedAssistantStreamingMessageKeys = mutableSetOf<AssistantStreamingTextBufferKey>()
     private val timelineCacheByThread = mutableMapOf<String, ThreadTimelineCache>()
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
+    private val latestTerminalTurnIdByThread = mutableMapOf<String, String>()
     private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
     private val pendingThreadReadRunningClearConfirmation = mutableSetOf<String>()
+    private val pendingAmbiguousTerminalThreadReadJobs = mutableMapOf<String, Job>()
     private val resumedThreadIds = mutableSetOf<String>()
     @Volatile
     private var activeThreadIdHint: String? = null
@@ -746,8 +751,11 @@ class BridgeThreadSyncService(
                     backingStreamingAssistantTextsByMessageId.value = emptyMap()
                     timelineCacheByThread.clear()
                     latestTurnTerminalStateByThread.clear()
+                    latestTerminalTurnIdByThread.clear()
                     stoppedTurnIdsByThread.clear()
                     pendingThreadReadRunningClearConfirmation.clear()
+                    pendingAmbiguousTerminalThreadReadJobs.values.forEach(Job::cancel)
+                    pendingAmbiguousTerminalThreadReadJobs.clear()
                     resumedThreadIds.clear()
                     backingThreads.value = emptyList()
                     backingCommandExecutionDetails.value = emptyMap()
@@ -2113,50 +2121,59 @@ class BridgeThreadSyncService(
             )
         }
 
-        val initialized = runCatching {
-            secureConnectionCoordinator.sendRequest(
-                method = "initialize",
-                params = modernParams,
-            )
-        }.recoverCatching {
-            secureConnectionCoordinator.sendRequest(
-                method = "initialize",
-                params = buildJsonObject {
-                    put("clientInfo", clientInfo)
-                },
-            )
-        }.fold(
-            onSuccess = { true },
-            onFailure = { error ->
-                if (error is CancellationException || error is SecureTransportException) {
-                    Log.d(logTag, "initializeSession skipped: ${error.message.orEmpty()}")
-                    false
-                } else {
-                    throw error
-                }
-            },
-        )
+        val initialized = retryInitializeSessionTransport {
+            runCatching {
+                secureConnectionCoordinator.sendRequest(
+                    method = "initialize",
+                    params = modernParams,
+                )
+            }.recoverCatching {
+                secureConnectionCoordinator.sendRequest(
+                    method = "initialize",
+                    params = buildJsonObject {
+                        put("clientInfo", clientInfo)
+                    },
+                )
+            }.getOrThrow()
+            true
+        }
 
         if (!initialized) {
             return false
         }
 
-        return runCatching {
+        return retryInitializeSessionTransport {
             secureConnectionCoordinator.sendNotification(
                 method = "initialized",
                 params = null,
             )
-        }.fold(
-            onSuccess = { true },
-            onFailure = { error ->
-                if (error is CancellationException || error is SecureTransportException) {
-                    Log.d(logTag, "initialized notification skipped: ${error.message.orEmpty()}")
-                    false
-                } else {
+            true
+        }
+    }
+
+    private suspend fun retryInitializeSessionTransport(
+        block: suspend () -> Boolean,
+    ): Boolean {
+        var attempt = 0
+        while (true) {
+            try {
+                return block()
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
                     throw error
                 }
-            },
-        )
+                if (error !is SecureTransportException) {
+                    throw error
+                }
+                val retryDelayMs = initializeSessionRetryDelaysMs.getOrNull(attempt)
+                if (retryDelayMs == null) {
+                    Log.d(logTag, "initializeSession skipped: ${error.message.orEmpty()}")
+                    return false
+                }
+                attempt += 1
+                delay(retryDelayMs)
+            }
+        }
     }
 
     private suspend fun refreshAvailableModels() {
@@ -3370,7 +3387,9 @@ class BridgeThreadSyncService(
                     // Match iOS: preserve the visible running fallback until a concrete
                     // turn lifecycle event arrives instead of forcing an immediate catch-up
                     // that can briefly hide Stop/thinking mid-run.
+                    scheduleAmbiguousTerminalThreadReadCatchup(threadId)
                 } else {
+                    cancelAmbiguousTerminalThreadReadCatchup(threadId)
                     terminalStateForNormalizedStatus(normalizedStatus)?.let { state ->
                         setLatestTurnTerminalState(
                             threadId = threadId,
@@ -3431,6 +3450,13 @@ class BridgeThreadSyncService(
         val normalizedTurnId = resolvedTurnId?.trim()?.takeIf(String::isNotEmpty)
         val hasKnownRunningState = threadHasKnownRunningState(threadId)
         if (normalizedTurnId != null) {
+            if (
+                activeTurnIdByThread[threadId] == null &&
+                latestTurnTerminalStateByThread[threadId] != null &&
+                latestTerminalTurnIdByThread[threadId] == normalizedTurnId
+            ) {
+                return
+            }
             if (activeTurnIdByThread[threadId] == normalizedTurnId) {
                 return
             }
@@ -3442,6 +3468,36 @@ class BridgeThreadSyncService(
         if (!hasKnownRunningState || latestTurnTerminalStateByThread[threadId] != null) {
             markThreadAsRunningFallback(threadId)
         }
+    }
+
+    private fun shouldSuppressRunningRevivalForLateAssistantDelta(
+        threadId: String,
+        resolvedTurnId: String,
+    ): Boolean {
+        val normalizedTurnId = resolvedTurnId.trim().takeIf(String::isNotEmpty) ?: return false
+        return activeTurnIdByThread[threadId] == null &&
+            latestTurnTerminalStateByThread[threadId] != null &&
+            latestTerminalTurnIdByThread[threadId] == normalizedTurnId
+    }
+
+    private fun appendLateAssistantDeltaText(
+        existingText: String,
+        delta: String,
+    ): String {
+        if (existingText.isEmpty()) {
+            return delta
+        }
+        return existingText + delta
+    }
+
+    private fun hasCompletedReviewSummaryTurn(turnId: String?): Boolean {
+        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        return completedReviewSummaryTurnIds.contains(normalizedTurnId)
+    }
+
+    private fun markCompletedReviewSummaryTurn(turnId: String?) {
+        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty) ?: return
+        completedReviewSummaryTurnIds += normalizedTurnId
     }
 
     private fun appendAssistantDelta(paramsObject: JsonObject) {
@@ -3456,10 +3512,25 @@ class BridgeThreadSyncService(
         if (resolvedTurnId.isNullOrBlank()) {
             return
         }
-        restoreRunningStateFromStreamingEvent(
+        if (hasCompletedReviewSummaryTurn(turnId = resolvedTurnId)) {
+            runCatching {
+                Log.d(
+                    logTag,
+                    "event=suppressReviewAssistantDelta threadId=$threadId turnId=$resolvedTurnId",
+                )
+            }
+            return
+        }
+        val suppressRunningRevival = shouldSuppressRunningRevivalForLateAssistantDelta(
             threadId = threadId,
             resolvedTurnId = resolvedTurnId,
         )
+        if (!suppressRunningRevival) {
+            restoreRunningStateFromStreamingEvent(
+                threadId = threadId,
+                resolvedTurnId = resolvedTurnId,
+            )
+        }
         val itemId = extractItemId(
             paramsObject = paramsObject,
             eventObject = eventObject,
@@ -3476,6 +3547,14 @@ class BridgeThreadSyncService(
             itemId = itemId,
             preferredMessageId = baseMessageId,
         )
+        if (existingItem == null && suppressRunningRevival) {
+            existingItem = latestAssistantSegmentItem(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+                itemId = itemId,
+                baseMessageId = baseMessageId,
+            )
+        }
         if (existingItem == null) {
             finalizeLocallyCompletedAssistantStreamingMessagesForTurn(
                 threadId = threadId,
@@ -3494,6 +3573,42 @@ class BridgeThreadSyncService(
             itemId = itemId,
         )
         val effectiveItemId = itemId ?: existingItem?.itemId
+        if (suppressRunningRevival) {
+            val completedText = appendLateAssistantDeltaText(
+                existingText = existingItem?.text.orEmpty(),
+                delta = delta,
+            )
+            runCatching {
+                Log.d(
+                    logTag,
+                    "event=lateAssistantDeltaNoRevive threadId=$threadId turnId=$resolvedTurnId messageId=$effectiveMessageId itemId=${effectiveItemId.orEmpty()}",
+                )
+            }
+            val updatedItem = existingItem?.copy(
+                text = completedText,
+                turnId = resolvedTurnId,
+                itemId = effectiveItemId,
+                isStreaming = false,
+            ) ?: timelineItem(
+                id = effectiveMessageId,
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = completedText,
+                kind = ConversationItemKind.CHAT,
+                turnId = resolvedTurnId,
+                itemId = effectiveItemId,
+                isStreaming = false,
+                orderIndex = resolveAssistantOrderIndex(
+                    threadId = threadId,
+                    existingItem = existingItem,
+                ),
+            )
+            upsertAssistantTimelineItem(
+                threadId = threadId,
+                item = updatedItem,
+                isRunning = false,
+            )
+            return
+        }
         appendAssistantStreamingTextDelta(
             threadId = threadId,
             messageId = effectiveMessageId,
@@ -4216,6 +4331,14 @@ class BridgeThreadSyncService(
             return
         }
         val resolvedTurnId = turnId ?: activeTurnIdByThread[threadId]
+        if (hasCompletedReviewSummaryTurn(turnId = resolvedTurnId)) {
+            if (threadId in reviewDebugThreadIds) {
+                emitReviewDebugLog(
+                    "stage=assistantFallbackSuppressedAfterReviewSummary threadId=$threadId turnId=${resolvedTurnId.orEmpty()} fallbackText=${text.take(120)}",
+                )
+            }
+            return
+        }
         logReviewDebug(
             stage = "assistantFallback",
             method = "codex/event/agent_message",
@@ -4303,6 +4426,17 @@ class BridgeThreadSyncService(
             paramsObject = paramsObject,
             extra = "itemType=$normalizedItemType resolvedThreadId=$threadId resolvedTurnId=${resolvedTurnId.orEmpty()} itemId=${itemId.orEmpty()} body=$debugBody",
         )
+        if (
+            normalizedItemType != "exitedreviewmode" &&
+            hasCompletedReviewSummaryTurn(turnId = resolvedTurnId)
+        ) {
+            if (threadId in reviewDebugThreadIds) {
+                emitReviewDebugLog(
+                    "stage=assistantSuppressedAfterReviewSummary threadId=$threadId turnId=${resolvedTurnId.orEmpty()} itemType=$normalizedItemType completed=$isCompleted itemId=${itemId.orEmpty()}",
+                )
+            }
+            return
+        }
         if (resolvedTurnId != null) {
             threadIdByTurnId[resolvedTurnId] = threadId
         }
@@ -4342,6 +4476,9 @@ class BridgeThreadSyncService(
             itemType = normalizeItemType(itemObject.firstString("type").orEmpty()),
             itemObject = itemObject,
         )
+        if (normalizedItemType == "exitedreviewmode") {
+            markCompletedReviewSummaryTurn(resolvedTurnId)
+        }
         if (body.isNotBlank()) {
             if (shouldSuppressAssistantCompletion(threadId = threadId, turnId = resolvedTurnId, itemId = itemId, text = body)) {
                 return
@@ -6120,11 +6257,18 @@ class BridgeThreadSyncService(
     private fun assistantBaseMessageId(
         turnId: String?,
         itemId: String?,
-    ): String = streamingMessageId(
-        itemId = itemId,
-        turnId = turnId,
-        fallbackPrefix = "assistant",
-    )
+    ): String {
+        val normalizedItemId = itemId?.trim()?.takeIf(String::isNotEmpty)
+        return if (normalizedItemId != null) {
+            "assistant-$normalizedItemId"
+        } else {
+            streamingMessageId(
+                itemId = null,
+                turnId = turnId,
+                fallbackPrefix = "assistant",
+            )
+        }
+    }
 
     private fun nextAssistantSegmentMessageId(
         threadId: String,
@@ -8306,6 +8450,13 @@ class BridgeThreadSyncService(
             val turnId = turnObject.firstString("id", "turnId", "turn_id")
             val turnTimestampMs = decodeHistoryTimestampMillis(turnObject)
             val items = turnObject.firstArray("items").orEmpty()
+            val turnContainsExitedReviewMode = items.any { itemValue ->
+                val itemObject = itemValue.jsonObjectOrNull ?: return@any false
+                normalizeItemType(itemObject.firstString("type").orEmpty()) == "exitedreviewmode"
+            }
+            if (turnContainsExitedReviewMode) {
+                markCompletedReviewSummaryTurn(turnId)
+            }
             val assistantMessageId = items.mapNotNull { itemValue ->
                 val itemObject = itemValue.jsonObjectOrNull ?: return@mapNotNull null
                 val itemType = normalizeItemType(itemObject.firstString("type").orEmpty())
@@ -8326,6 +8477,12 @@ class BridgeThreadSyncService(
             items.forEach { itemValue ->
                 val itemObject = itemValue.jsonObjectOrNull ?: return@forEach
                 val itemType = normalizeItemType(itemObject.firstString("type").orEmpty())
+                if (
+                    turnContainsExitedReviewMode &&
+                    (itemType == "agentmessage" || itemType == "assistantmessage")
+                ) {
+                    return@forEach
+                }
                 val itemId = itemObject.firstString("id")
                 val syntheticTimestampMs = (turnTimestampMs ?: baseTimestampMs) + syntheticOffsetMs
                 val resolvedTimestampMs = decodeHistoryTimestampMillis(itemObject) ?: syntheticTimestampMs
@@ -9068,6 +9225,68 @@ class BridgeThreadSyncService(
         pendingThreadReadRunningClearConfirmation.remove(threadId)
     }
 
+    private fun shouldScheduleAmbiguousTerminalThreadReadCatchup(
+        threadId: String,
+    ): Boolean {
+        if (threadId.isBlank()) {
+            return false
+        }
+        return activeThreadIdHint == threadId || activeTurnIdByThread[threadId] != null
+    }
+
+    private fun resolvedTerminalTurnIdForReadClear(
+        threadId: String,
+        turnReadState: TurnReadState,
+    ): String? {
+        return activeTurnIdByThread[threadId]
+            ?: turnReadState.terminalTurnIds.lastOrNull()
+    }
+
+    private fun resolvedTerminalTurnStateForReadClear(
+        threadId: String,
+        turnReadState: TurnReadState,
+    ): RemodexTurnTerminalState? {
+        val existing = latestTurnTerminalStateByThread[threadId]
+        if (existing == RemodexTurnTerminalState.STOPPED || existing == RemodexTurnTerminalState.FAILED) {
+            return existing
+        }
+        return if (turnReadState.terminalTurnIds.isNotEmpty() || turnReadState.hasTerminalTurnWithoutId) {
+            RemodexTurnTerminalState.COMPLETED
+        } else {
+            existing
+        }
+    }
+
+    private fun scheduleAmbiguousTerminalThreadReadCatchup(threadId: String) {
+        if (!shouldScheduleAmbiguousTerminalThreadReadCatchup(threadId)) {
+            return
+        }
+        val existingJob = pendingAmbiguousTerminalThreadReadJobs[threadId]
+        if (existingJob?.isActive == true) {
+            return
+        }
+        pendingAmbiguousTerminalThreadReadJobs[threadId] = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                delay(ambiguousTerminalThreadReadCatchupDelayMs)
+                repeat(3) { attempt ->
+                    if (isConnected()) {
+                        hydrateThread(threadId)
+                        return@launch
+                    }
+                    if (attempt < 2) {
+                        delay(250L)
+                    }
+                }
+            } finally {
+                pendingAmbiguousTerminalThreadReadJobs.remove(threadId)
+            }
+        }
+    }
+
+    private fun cancelAmbiguousTerminalThreadReadCatchup(threadId: String) {
+        pendingAmbiguousTerminalThreadReadJobs.remove(threadId)?.cancel()
+    }
+
     private fun applyTurnReadState(
         threadId: String,
         turnReadState: TurnReadState,
@@ -9075,11 +9294,13 @@ class BridgeThreadSyncService(
     ) {
         when {
             turnReadState.interruptibleTurnId != null -> {
+                cancelAmbiguousTerminalThreadReadCatchup(threadId)
                 resetPendingThreadReadRunningClear(threadId)
                 setActiveTurnId(threadId = threadId, turnId = turnReadState.interruptibleTurnId)
             }
 
             turnReadState.hasInterruptibleTurnWithoutId -> {
+                cancelAmbiguousTerminalThreadReadCatchup(threadId)
                 resetPendingThreadReadRunningClear(threadId)
                 markThreadAsRunningFallback(threadId)
             }
@@ -9095,6 +9316,25 @@ class BridgeThreadSyncService(
             shouldDeferThreadReadRunningClear(threadId, turnReadState) -> Unit
 
             else -> {
+                val terminalTurnId = resolvedTerminalTurnIdForReadClear(
+                    threadId = threadId,
+                    turnReadState = turnReadState,
+                )
+                completeStreamingItemsForThread(
+                    threadId = threadId,
+                    turnId = terminalTurnId,
+                )
+                resolvedTerminalTurnStateForReadClear(
+                    threadId = threadId,
+                    turnReadState = turnReadState,
+                )?.let { state ->
+                    setLatestTurnTerminalState(
+                        threadId = threadId,
+                        state = state,
+                        turnId = terminalTurnId,
+                    )
+                }
+                cancelAmbiguousTerminalThreadReadCatchup(threadId)
                 resetPendingThreadReadRunningClear(threadId)
                 clearThreadRunningState(threadId)
             }
@@ -9203,6 +9443,9 @@ class BridgeThreadSyncService(
         turnId: String?,
     ) {
         latestTurnTerminalStateByThread[threadId] = state
+        turnId?.trim()?.takeIf(String::isNotEmpty)?.let { normalizedTurnId ->
+            latestTerminalTurnIdByThread[threadId] = normalizedTurnId
+        }
         if (state != RemodexTurnTerminalState.COMPLETED) {
             assistantResponseTraceByThread.remove(threadId)
         }
@@ -9216,6 +9459,7 @@ class BridgeThreadSyncService(
         threadId: String,
         turnId: String,
     ) {
+        cancelAmbiguousTerminalThreadReadCatchup(threadId)
         resetPendingThreadReadRunningClear(threadId)
         activeTurnIdByThread[threadId] = turnId
         threadIdByTurnId[turnId] = threadId
@@ -9231,19 +9475,23 @@ class BridgeThreadSyncService(
         }
         runningThreadFallbackIds.remove(threadId)
         latestTurnTerminalStateByThread.remove(threadId)
+        latestTerminalTurnIdByThread.remove(threadId)
         stoppedTurnIdsByThread[threadId] = stoppedTurnIdsByThread[threadId].orEmpty() - turnId
         syncThreadLifecycleState(threadId = threadId, isRunning = true)
     }
 
     private fun markThreadAsRunningFallback(threadId: String) {
+        cancelAmbiguousTerminalThreadReadCatchup(threadId)
         resetPendingThreadReadRunningClear(threadId)
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.add(threadId)
         latestTurnTerminalStateByThread.remove(threadId)
+        latestTerminalTurnIdByThread.remove(threadId)
         syncThreadLifecycleState(threadId = threadId, isRunning = true)
     }
 
     private fun clearThreadRunningState(threadId: String) {
+        cancelAmbiguousTerminalThreadReadCatchup(threadId)
         resetPendingThreadReadRunningClear(threadId)
         activeTurnIdByThread.remove(threadId)
         runningThreadFallbackIds.remove(threadId)
