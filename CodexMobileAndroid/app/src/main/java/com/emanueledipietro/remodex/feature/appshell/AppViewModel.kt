@@ -164,6 +164,7 @@ data class AppUiState(
     val completionHapticSignal: Long = 0L,
     val composerSendDismissSignal: Long = 0L,
     val composerSendAnchorSignal: Long = 0L,
+    val statusSheetSignal: Long = 0L,
     val backgroundTerminalSheetSignal: Long = 0L,
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
@@ -309,6 +310,7 @@ private data class PendingComposerSendState(
 private data class ComposerSendUiSignals(
     val dismissSignal: Long = 0L,
     val anchorSignal: Long = 0L,
+    val statusSheetSignal: Long = 0L,
     val backgroundTerminalSheetSignal: Long = 0L,
 )
 
@@ -629,6 +631,7 @@ class AppViewModel(
                 ),
                 composerSendDismissSignal = selectedThreadSendSignals.dismissSignal,
                 composerSendAnchorSignal = selectedThreadSendSignals.anchorSignal,
+                statusSheetSignal = selectedThreadSendSignals.statusSheetSignal,
                 backgroundTerminalSheetSignal = selectedThreadSendSignals.backgroundTerminalSheetSignal,
                 assistantRevertSheet = overlayState.gitUiState.assistantRevertSheet,
                 commandExecutionDetailsByItemId = sessionRenderState.commandExecutionDetails,
@@ -1119,6 +1122,24 @@ class AppViewModel(
                 return@launch
             }
 
+            val isStatusCommandRequest =
+                composer.attachments.isEmpty() &&
+                    composer.mentionedFiles.isEmpty() &&
+                    composer.mentionedSkills.isEmpty() &&
+                    !composer.isSubagentsSelectionArmed &&
+                    composer.reviewSelection == null &&
+                    RemodexComposerCommandLogic.isStandaloneSlashCommand(
+                        text = composer.draftText,
+                        commandToken = RemodexSlashCommand.STATUS.token,
+                    )
+            if (isStatusCommandRequest) {
+                bumpComposerSendDismissSignal(threadId)
+                clearComposer(threadId)
+                refreshUsageStatus(threadId = threadId)
+                bumpStatusSheetSignal(threadId)
+                return@launch
+            }
+
             val isCompactCommandRequest =
                 composer.attachments.isEmpty() &&
                     composer.mentionedFiles.isEmpty() &&
@@ -1605,6 +1626,9 @@ class AppViewModel(
                     }
                 }
                 clearComposerAutocomplete()
+                bumpComposerSendDismissSignal(threadId)
+                refreshUsageStatus(threadId = threadId)
+                bumpStatusSheetSignal(threadId)
             }
 
             RemodexSlashCommand.PS -> {
@@ -3458,6 +3482,17 @@ class AppViewModel(
             signalsByThread.toMutableMap().apply {
                 this[threadId] = current.copy(
                     backgroundTerminalSheetSignal = current.backgroundTerminalSheetSignal + 1,
+                )
+            }
+        }
+    }
+
+    private fun bumpStatusSheetSignal(threadId: String) {
+        composerSendUiSignals.update { signalsByThread ->
+            val current = signalsByThread[threadId] ?: ComposerSendUiSignals()
+            signalsByThread.toMutableMap().apply {
+                this[threadId] = current.copy(
+                    statusSheetSignal = current.statusSheetSignal + 1,
                 )
             }
         }

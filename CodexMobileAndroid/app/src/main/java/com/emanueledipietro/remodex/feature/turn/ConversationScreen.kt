@@ -1393,6 +1393,8 @@ fun ConversationScreen(
     var worktreeSheetMode by remember(thread.id) { mutableStateOf(WorktreeSheetMode.HANDOFF) }
     var selectedPlanSheetItemId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var handledStatusSheetSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
+    var usageStatusPopoverExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var commandDetailsMessageId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var backgroundTerminalSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var handledBackgroundTerminalSheetSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
@@ -1489,14 +1491,12 @@ fun ConversationScreen(
     val bottomAnchorIndex = visibleTimelineWindow.bottomAnchorIndex
     val handleSelectSlashCommand: (RemodexSlashCommand) -> Unit = remember(
         onSelectSlashCommand,
-        onRefreshUsageStatus,
     ) {
         { command ->
             onSelectSlashCommand(command)
             when (command) {
                 RemodexSlashCommand.STATUS -> {
-                    statusSheetExpanded = true
-                    onRefreshUsageStatus()
+                    usageStatusPopoverExpanded = true
                 }
                 RemodexSlashCommand.PS -> {
                     backgroundTerminalSheetExpanded = true
@@ -1686,6 +1686,15 @@ fun ConversationScreen(
         backgroundTerminalSheetExpanded = true
     }
 
+    LaunchedEffect(thread.id, uiState.statusSheetSignal) {
+        val signal = uiState.statusSheetSignal
+        if (signal == 0L || signal == handledStatusSheetSignal) {
+            return@LaunchedEffect
+        }
+        handledStatusSheetSignal = signal
+        usageStatusPopoverExpanded = true
+    }
+
     LaunchedEffect(thread.id, uiState.composerSendAnchorSignal) {
         val signal = uiState.composerSendAnchorSignal
         if (signal == 0L || signal == handledComposerAnchorSignal) {
@@ -1870,6 +1879,7 @@ fun ConversationScreen(
                 composerFocused = composerFocused,
                 composerSawImeWhileFocused = composerSawImeWhileFocused,
                 imeBottomPx = imeBottomPx,
+                usageStatusPopoverExpanded = usageStatusPopoverExpanded,
                 planComposerTakeoverRequest = planComposerTakeoverRequest,
                 planComposerFollowUpItem = planComposerFollowUpItem,
                 pinnedPlanItem = pinnedPlanItem,
@@ -1921,6 +1931,7 @@ fun ConversationScreen(
                     worktreeSheetMode = WorktreeSheetMode.HANDOFF
                     worktreeHandoffSheetExpanded = true
                 },
+                onUsageStatusPopoverExpandedChange = { usageStatusPopoverExpanded = it },
                 onRefreshUsageStatus = onRefreshUsageStatus,
                 onRequestContinueOnMac = onRequestContinueOnMac,
             )
@@ -2104,6 +2115,7 @@ private fun ConversationComposerPane(
     composerFocused: Boolean,
     composerSawImeWhileFocused: Boolean,
     imeBottomPx: Int,
+    usageStatusPopoverExpanded: Boolean,
     planComposerTakeoverRequest: RemodexStructuredUserInputRequest?,
     planComposerFollowUpItem: RemodexConversationItem?,
     pinnedPlanItem: RemodexConversationItem?,
@@ -2146,6 +2158,7 @@ private fun ConversationComposerPane(
     onComposerFocusChanged: (Boolean) -> Unit,
     onOpenGitSheet: () -> Unit,
     onOpenWorktreeHandoff: () -> Unit,
+    onUsageStatusPopoverExpandedChange: (Boolean) -> Unit,
     onRefreshUsageStatus: () -> Unit,
     onRequestContinueOnMac: () -> Unit,
 ) {
@@ -2326,10 +2339,12 @@ private fun ConversationComposerPane(
                             gitState = uiState.composer.gitState,
                             usageStatus = uiState.usageStatus,
                             isRefreshingUsage = uiState.isRefreshingUsage,
+                            usageExpanded = usageStatusPopoverExpanded,
                             isConnectedToMac = uiState.isConnected,
                             isHandingOffToMac = uiState.isHandingOffToMac,
                             accessMode = uiState.composer.runtimeConfig.accessMode,
                             onSelectAccessMode = onSelectAccessMode,
+                            onUsageExpandedChange = onUsageStatusPopoverExpandedChange,
                             onRefreshUsageStatus = onRefreshUsageStatus,
                             onRequestContinueOnMac = onRequestContinueOnMac,
                             onOpenGitSheet = onOpenGitSheet,
@@ -4520,10 +4535,12 @@ private fun ComposerSecondaryBar(
     gitState: RemodexGitState,
     usageStatus: RemodexUsageStatus,
     isRefreshingUsage: Boolean,
+    usageExpanded: Boolean,
     isConnectedToMac: Boolean,
     isHandingOffToMac: Boolean,
     accessMode: RemodexAccessMode,
     onSelectAccessMode: (RemodexAccessMode) -> Unit,
+    onUsageExpandedChange: (Boolean) -> Unit,
     onRefreshUsageStatus: () -> Unit,
     onRequestContinueOnMac: () -> Unit,
     onOpenGitSheet: () -> Unit,
@@ -4544,7 +4561,6 @@ private fun ComposerSecondaryBar(
     val isEmptyThread = thread.messages.isEmpty()
     val runtimeMenuState = rememberComposerMenuState(thread.id, "runtime")
     val accessMenuState = rememberComposerMenuState(thread.id, "access")
-    var usageExpanded by remember(thread.id) { mutableStateOf(false) }
     val usageRingSize = 34.dp
     val branchPillMaxWidth = 168.dp
 
@@ -4762,11 +4778,11 @@ private fun ComposerSecondaryBar(
                     ContextWindowStatusRing(
                         usage = usageStatus.contextWindowUsage,
                         isRefreshing = isRefreshingUsage,
-                        onClick = { usageExpanded = true },
+                        onClick = { onUsageExpandedChange(true) },
                     )
                     ComposerStatusPopover(
                         expanded = usageExpanded,
-                        onDismissRequest = { usageExpanded = false },
+                        onDismissRequest = { onUsageExpandedChange(false) },
                     ) {
                         ComposerUsageStatusSummaryContent(
                             contextWindowUsage = usageStatus.contextWindowUsage,
@@ -4774,6 +4790,7 @@ private fun ComposerSecondaryBar(
                             rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
                             isRefreshing = isRefreshingUsage,
                             onRefresh = onRefreshUsageStatus,
+                            showRefreshButton = false,
                         )
                     }
                 }

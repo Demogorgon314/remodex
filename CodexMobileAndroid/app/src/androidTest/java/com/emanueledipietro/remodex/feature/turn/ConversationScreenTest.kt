@@ -714,7 +714,7 @@ class ConversationScreenTest {
     }
 
     @Test
-    fun selectingStatusSlashCommandOpensStatusSheet() {
+    fun selectingStatusSlashCommandOpensUsagePopover() {
         composeRule.setContent {
             RemodexTheme {
                 var autocompleteState by remember {
@@ -777,7 +777,8 @@ class ConversationScreenTest {
         }
 
         composeRule.onNodeWithText("Status").performClick()
-        composeRule.onAllNodesWithTag(ConversationStatusSheetTag).assertCountEquals(1)
+        composeRule.onAllNodesWithText("Rate limits").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Context window").assertCountEquals(1)
     }
 
     @Test
@@ -1412,6 +1413,63 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun statusSignalOpensExistingUsagePopover() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        statusSheetSignal = 1L,
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onRefreshUsageStatus = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onAllNodesWithText("Rate limits").assertCountEquals(1)
+        composeRule.onAllNodesWithText("Context window").assertCountEquals(1)
+    }
+
+    @Test
     fun psSignalShowsEmptyStateWhenNoBackgroundTerminalsAreRunning() {
         composeRule.setContent {
             RemodexTheme {
@@ -1623,6 +1681,7 @@ class ConversationScreenTest {
         messages: List<RemodexConversationItem> = emptyList(),
         voice: ComposerVoiceUiState = ComposerVoiceUiState(isConnected = true),
         commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
+        statusSheetSignal: Long = 0L,
         backgroundTerminalSheetSignal: Long = 0L,
         queuedDraftItems: List<RemodexQueuedDraft> = emptyList(),
         canRestoreQueuedDrafts: Boolean = false,
@@ -1655,6 +1714,7 @@ class ConversationScreenTest {
                 isQueuePaused = isQueuePaused,
             ),
             commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+            statusSheetSignal = statusSheetSignal,
             backgroundTerminalSheetSignal = backgroundTerminalSheetSignal,
         )
     }

@@ -1197,8 +1197,32 @@ class AppViewModelTest {
         viewModel.selectSlashCommand(RemodexSlashCommand.STATUS)
         advanceUntilIdle()
 
+        assertEquals(listOf("thread-1"), repository.refreshUsageStatusRequests)
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+        assertEquals(1L, viewModel.uiState.value.statusSheetSignal)
+    }
+
+    @Test
+    fun `send prompt routes standalone status command to the existing usage popover`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Commands thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/status")
+        advanceUntilIdle()
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-1"), repository.refreshUsageStatusRequests)
+        assertTrue(repository.sentPrompts.isEmpty())
+        assertEquals("", viewModel.uiState.value.composer.draftText)
+        assertEquals(1L, viewModel.uiState.value.statusSheetSignal)
     }
 
     @Test
