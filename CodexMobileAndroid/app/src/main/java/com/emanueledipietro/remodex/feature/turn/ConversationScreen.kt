@@ -17,6 +17,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
@@ -366,15 +367,26 @@ internal fun buildVisibleConversationTimelineWindow(
     )
 }
 
-private fun renderedConversationTimelineIndexForMessageId(
-    window: VisibleConversationTimelineWindow,
-    messageId: String,
-): Int? {
-    val localIndex = window.items.indexOfFirst { it.id == messageId }
-    if (localIndex < 0) {
-        return null
+internal fun newlyRevealedConversationTimelineItems(
+    timelineItems: List<RemodexConversationItem>,
+    previousVisibleTailCount: Int,
+    nextVisibleTailCount: Int,
+): List<RemodexConversationItem> {
+    if (timelineItems.isEmpty()) {
+        return emptyList()
     }
-    return (if (window.hasEarlierMessages) 1 else 0) + localIndex
+    val previousEffectiveVisibleTailCount = previousVisibleTailCount
+        .coerceAtLeast(ConversationTimelinePageSize)
+        .coerceAtMost(timelineItems.size)
+    val nextEffectiveVisibleTailCount = nextVisibleTailCount
+        .coerceAtLeast(previousEffectiveVisibleTailCount)
+        .coerceAtMost(timelineItems.size)
+    val previousHiddenItemCount = (timelineItems.size - previousEffectiveVisibleTailCount).coerceAtLeast(0)
+    val nextHiddenItemCount = (timelineItems.size - nextEffectiveVisibleTailCount).coerceAtLeast(0)
+    if (nextHiddenItemCount >= previousHiddenItemCount) {
+        return emptyList()
+    }
+    return timelineItems.subList(nextHiddenItemCount, previousHiddenItemCount)
 }
 
 internal enum class ConversationMarkdownPrewarmStyle {
@@ -1405,6 +1417,8 @@ fun ConversationScreen(
     var userScrollCooldownUntilMs by rememberSaveable(thread.id) { mutableStateOf<Long?>(null) }
     var isUserScrollCooldownActive by rememberSaveable(thread.id) { mutableStateOf(false) }
     var visibleTailCount by rememberSaveable(thread.id) { mutableStateOf(ConversationTimelinePageSize) }
+    var animatedLoadEarlierMessageIds by remember(thread.id) { mutableStateOf(emptySet<String>()) }
+    var loadEarlierAnimationGeneration by remember(thread.id) { mutableStateOf(0) }
     var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
     var handledComposerAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     var pendingTurnAnchorSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
@@ -1521,21 +1535,12 @@ fun ConversationScreen(
         timelineItemsIdentity,
         visibleTailCount,
         hasEarlierTimelineItems,
-        activeTurnAnchorIndex,
-        timelineState,
         coroutineScope,
     ) {
         loadEarlier@{
             if (!hasEarlierTimelineItems) {
                 return@loadEarlier
             }
-            val previousVisibleAnchor = timelineState.layoutInfo.visibleItemsInfo
-                .firstOrNull { info ->
-                    info.key != ConversationLoadEarlierMessagesKey &&
-                        info.key != ConversationBottomAnchorKey
-                }
-            val previousAnchorMessageId = previousVisibleAnchor?.key as? String
-            val previousAnchorOffset = timelineState.firstVisibleItemScrollOffset
             val nextVisibleTailCount = minOf(
                 visibleTailCount + ConversationTimelinePageSize,
                 timelineItems.size,
@@ -1543,21 +1548,20 @@ fun ConversationScreen(
             if (nextVisibleTailCount == visibleTailCount) {
                 return@loadEarlier
             }
+            val revealedMessageIds = newlyRevealedConversationTimelineItems(
+                timelineItems = timelineItems,
+                previousVisibleTailCount = visibleTailCount,
+                nextVisibleTailCount = nextVisibleTailCount,
+            ).map(RemodexConversationItem::id).toSet()
+            loadEarlierAnimationGeneration += 1
+            val animationGeneration = loadEarlierAnimationGeneration
+            animatedLoadEarlierMessageIds = revealedMessageIds
+            visibleTailCount = nextVisibleTailCount
             coroutineScope.launch {
-                visibleTailCount = nextVisibleTailCount
-                withFrameNanos { }
-                previousAnchorMessageId
-                    ?.let { messageId ->
-                        val updatedWindow = buildVisibleConversationTimelineWindow(
-                            timelineItems = timelineItems,
-                            activeTurnAnchorIndex = derivedState.activeTurnAnchorIndex,
-                            visibleTailCount = nextVisibleTailCount,
-                        )
-                        renderedConversationTimelineIndexForMessageId(updatedWindow, messageId)
-                    }
-                    ?.let { targetIndex ->
-                        timelineState.scrollToItem(targetIndex, previousAnchorOffset)
-                    }
+                delay(220L)
+                if (loadEarlierAnimationGeneration == animationGeneration) {
+                    animatedLoadEarlierMessageIds = emptySet()
+                }
             }
         }
     }
@@ -1822,6 +1826,7 @@ fun ConversationScreen(
                 timelineState = timelineState,
                 timelineItems = visibleTimelineItems,
                 hasEarlierMessages = hasEarlierTimelineItems,
+                animatedLoadEarlierMessageIds = animatedLoadEarlierMessageIds,
                 blockAccessories = blockAccessories,
                 showsEmptyTimelineState = showsEmptyTimelineState,
                 emptyTimelineStatePresentation = emptyTimelineStatePresentation,
@@ -1976,6 +1981,7 @@ private fun ConversationTimelinePane(
     timelineState: LazyListState,
     timelineItems: List<RemodexConversationItem>,
     hasEarlierMessages: Boolean,
+    animatedLoadEarlierMessageIds: Set<String>,
     blockAccessories: Map<String, ConversationBlockAccessoryState>,
     showsEmptyTimelineState: Boolean,
     emptyTimelineStatePresentation: ConversationTimelineEmptyStatePresentation,
@@ -2034,6 +2040,7 @@ private fun ConversationTimelinePane(
                     conversationTimelineItems(
                         timelineItems = timelineItems,
                         hasEarlierMessages = hasEarlierMessages,
+                        animatedLoadEarlierMessageIds = animatedLoadEarlierMessageIds,
                         streamingAssistantTextsByMessageId = uiState.streamingAssistantTextsByMessageId,
                         blockAccessories = blockAccessories,
                         assistantRevertStatesByMessageId = uiState.assistantRevertStatesByMessageId,
@@ -2338,6 +2345,7 @@ private fun ConversationComposerPane(
 private fun LazyListScope.conversationTimelineItems(
     timelineItems: List<RemodexConversationItem>,
     hasEarlierMessages: Boolean,
+    animatedLoadEarlierMessageIds: Set<String>,
     streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState>,
     blockAccessories: Map<String, ConversationBlockAccessoryState>,
     assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
@@ -2376,39 +2384,43 @@ private fun LazyListScope.conversationTimelineItems(
             key = { it.id },
             contentType = { item -> "${item.speaker.name}:${item.kind.name}" },
         ) { message ->
-            when (message.speaker) {
-                ConversationSpeaker.USER -> UserConversationRow(item = message)
-                ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
-                    item = message,
-                    streamingTextState = streamingAssistantTextsByMessageId[message.id],
-                    accessoryState = blockAccessories[message.id],
-                    assistantRevertPresentation = assistantRevertStatesByMessageId[message.id],
-                    contextMenuFooterText = assistantResponseMetrics
-                        ?.takeIf { metrics -> metrics.messageId == message.id }
-                        ?.let(::formatAssistantResponseMetricsLabel),
-                    onTapAssistantRevert = onStartAssistantRevertPreview,
+            if (message.id in animatedLoadEarlierMessageIds) {
+                AnimatedLoadEarlierConversationRow(itemId = message.id) {
+                    ConversationTimelineMessageRow(
+                        message = message,
+                        streamingAssistantTextsByMessageId = streamingAssistantTextsByMessageId,
+                        blockAccessories = blockAccessories,
+                        assistantRevertStatesByMessageId = assistantRevertStatesByMessageId,
+                        assistantResponseMetrics = assistantResponseMetrics,
+                        commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+                        threads = threads,
+                        threadId = threadId,
+                        threadMessages = threadMessages,
+                        onStartAssistantRevertPreview = onStartAssistantRevertPreview,
+                        onOpenFileChangeDetails = onOpenFileChangeDetails,
+                        onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                        onOpenPlanDetails = onOpenPlanDetails,
+                        onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
+                        onOpenSubagentThread = onOpenSubagentThread,
+                        onHydrateSubagentThread = onHydrateSubagentThread,
+                    )
+                }
+            } else {
+                ConversationTimelineMessageRow(
+                    message = message,
+                    streamingAssistantTextsByMessageId = streamingAssistantTextsByMessageId,
+                    blockAccessories = blockAccessories,
+                    assistantRevertStatesByMessageId = assistantRevertStatesByMessageId,
+                    assistantResponseMetrics = assistantResponseMetrics,
+                    commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
+                    threads = threads,
+                    threadId = threadId,
+                    threadMessages = threadMessages,
+                    onStartAssistantRevertPreview = onStartAssistantRevertPreview,
                     onOpenFileChangeDetails = onOpenFileChangeDetails,
-                )
-
-                ConversationSpeaker.SYSTEM -> SystemConversationRow(
-                    item = message,
-                    accessoryState = blockAccessories[message.id],
                     onSubmitStructuredUserInput = onSubmitStructuredUserInput,
-                    commandExecutionDetails = message.itemId?.let(commandExecutionDetailsByItemId::get),
                     onOpenPlanDetails = onOpenPlanDetails,
-                    onOpenFileChangeDetails = onOpenFileChangeDetails,
                     onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
-                    parentThreadId = threadId,
-                    threads = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
-                        threads
-                    } else {
-                        emptyList()
-                    },
-                    parentThreadMessages = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
-                        threadMessages
-                    } else {
-                        emptyList()
-                    },
                     onOpenSubagentThread = onOpenSubagentThread,
                     onHydrateSubagentThread = onHydrateSubagentThread,
                 )
@@ -2421,6 +2433,86 @@ private fun LazyListScope.conversationTimelineItems(
                     .height(ConversationBottomAnchorHeight),
             )
         }
+    }
+}
+
+@Composable
+private fun AnimatedLoadEarlierConversationRow(
+    itemId: String,
+    content: @Composable () -> Unit,
+) {
+    val transitionState = remember(itemId) {
+        MutableTransitionState(false).apply {
+            targetState = true
+        }
+    }
+    androidx.compose.animation.AnimatedVisibility(
+        visibleState = transitionState,
+        enter = fadeIn(animationSpec = tween(durationMillis = 180)) +
+            expandVertically(
+                animationSpec = tween(durationMillis = 180),
+                expandFrom = Alignment.Top,
+            ),
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun ConversationTimelineMessageRow(
+    message: RemodexConversationItem,
+    streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState>,
+    blockAccessories: Map<String, ConversationBlockAccessoryState>,
+    assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
+    assistantResponseMetrics: RemodexAssistantResponseMetrics?,
+    commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    threads: List<RemodexThreadSummary>,
+    threadId: String,
+    threadMessages: List<RemodexConversationItem>,
+    onStartAssistantRevertPreview: (String) -> Unit,
+    onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
+    onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onOpenPlanDetails: (String) -> Unit,
+    onOpenCommandExecutionDetails: (String) -> Unit,
+    onOpenSubagentThread: (String) -> Unit,
+    onHydrateSubagentThread: (String) -> Unit,
+) {
+    when (message.speaker) {
+        ConversationSpeaker.USER -> UserConversationRow(item = message)
+        ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
+            item = message,
+            streamingTextState = streamingAssistantTextsByMessageId[message.id],
+            accessoryState = blockAccessories[message.id],
+            assistantRevertPresentation = assistantRevertStatesByMessageId[message.id],
+            contextMenuFooterText = assistantResponseMetrics
+                ?.takeIf { metrics -> metrics.messageId == message.id }
+                ?.let(::formatAssistantResponseMetricsLabel),
+            onTapAssistantRevert = onStartAssistantRevertPreview,
+            onOpenFileChangeDetails = onOpenFileChangeDetails,
+        )
+
+        ConversationSpeaker.SYSTEM -> SystemConversationRow(
+            item = message,
+            accessoryState = blockAccessories[message.id],
+            onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+            commandExecutionDetails = message.itemId?.let(commandExecutionDetailsByItemId::get),
+            onOpenPlanDetails = onOpenPlanDetails,
+            onOpenFileChangeDetails = onOpenFileChangeDetails,
+            onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
+            parentThreadId = threadId,
+            threads = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
+                threads
+            } else {
+                emptyList()
+            },
+            parentThreadMessages = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
+                threadMessages
+            } else {
+                emptyList()
+            },
+            onOpenSubagentThread = onOpenSubagentThread,
+            onHydrateSubagentThread = onHydrateSubagentThread,
+        )
     }
 }
 
@@ -2671,9 +2763,20 @@ private fun ConversationLoadEarlierMessagesButton(
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
-    TextButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+    val interactionSource = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                role = Role.Button
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = "Load earlier messages",

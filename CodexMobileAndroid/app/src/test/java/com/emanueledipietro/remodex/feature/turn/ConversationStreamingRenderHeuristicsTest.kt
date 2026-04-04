@@ -276,4 +276,44 @@ class ConversationStreamingRenderHeuristicsTest {
 
         assertEquals(null, window.activeTurnAnchorIndex)
     }
+
+    @Test
+    fun `newly revealed conversation timeline items returns the page inserted above the current tail`() {
+        val messages = (1..100).map { index ->
+            RemodexConversationItem(
+                id = "message-$index",
+                speaker = ConversationSpeaker.ASSISTANT,
+                text = "message $index",
+            )
+        }
+
+        val revealed = newlyRevealedConversationTimelineItems(
+            timelineItems = messages,
+            previousVisibleTailCount = 40,
+            nextVisibleTailCount = 80,
+        )
+
+        assertEquals(40, revealed.size)
+        assertEquals("message-21", revealed.first().id)
+        assertEquals("message-60", revealed.last().id)
+    }
+
+    @Test
+    fun `newly revealed conversation timeline items returns empty when the tail window does not grow`() {
+        val messages = (1..50).map { index ->
+            RemodexConversationItem(
+                id = "message-$index",
+                speaker = ConversationSpeaker.USER,
+                text = "message $index",
+            )
+        }
+
+        val revealed = newlyRevealedConversationTimelineItems(
+            timelineItems = messages,
+            previousVisibleTailCount = 40,
+            nextVisibleTailCount = 40,
+        )
+
+        assertTrue(revealed.isEmpty())
+    }
 }
