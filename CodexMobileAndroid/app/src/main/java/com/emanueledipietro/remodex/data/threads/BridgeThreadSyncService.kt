@@ -667,6 +667,7 @@ class BridgeThreadSyncService(
     private val runningThreadFallbackIds = mutableSetOf<String>()
     private val assistantCompletionFingerprintByThread = mutableMapOf<String, AssistantCompletionFingerprint>()
     private val assistantStreamingTextBuffers = mutableMapOf<AssistantStreamingTextBufferKey, AssistantStreamingTextBuffer>()
+    private val locallyCompletedAssistantStreamingMessageKeys = mutableSetOf<AssistantStreamingTextBufferKey>()
     private val timelineCacheByThread = mutableMapOf<String, ThreadTimelineCache>()
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
     private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
@@ -741,6 +742,7 @@ class BridgeThreadSyncService(
                     runningThreadFallbackIds.clear()
                     assistantCompletionFingerprintByThread.clear()
                     assistantStreamingTextBuffers.clear()
+                    locallyCompletedAssistantStreamingMessageKeys.clear()
                     backingStreamingAssistantTextsByMessageId.value = emptyMap()
                     timelineCacheByThread.clear()
                     latestTurnTerminalStateByThread.clear()
@@ -3468,12 +3470,24 @@ class BridgeThreadSyncService(
             turnId = resolvedTurnId,
             itemId = itemId,
         )
-        val existingItem = reusableAssistantStreamingItem(
+        var existingItem = reusableAssistantStreamingItem(
             threadId = threadId,
             turnId = resolvedTurnId,
             itemId = itemId,
             preferredMessageId = baseMessageId,
         )
+        if (existingItem == null) {
+            finalizeLocallyCompletedAssistantStreamingMessagesForTurn(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+            )
+            existingItem = reusableAssistantStreamingItem(
+                threadId = threadId,
+                turnId = resolvedTurnId,
+                itemId = itemId,
+                preferredMessageId = baseMessageId,
+            )
+        }
         val effectiveMessageId = existingItem?.id ?: nextAssistantSegmentMessageId(
             threadId = threadId,
             turnId = resolvedTurnId,
@@ -4249,6 +4263,12 @@ class BridgeThreadSyncService(
                 assistantChangeSet = existingItem?.assistantChangeSet,
             ),
         )
+        if (completionPresentation.isStreaming) {
+            markLocallyCompletedAssistantStreamingMessage(
+                threadId = threadId,
+                messageId = messageId,
+            )
+        }
         recordAssistantOutputObserved(
             threadId = threadId,
             turnId = effectiveTurnId,
@@ -4358,6 +4378,12 @@ class BridgeThreadSyncService(
                     assistantChangeSet = completionItem?.assistantChangeSet ?: existingItem?.assistantChangeSet,
                 ),
             )
+            if (completionPresentation.isStreaming) {
+                markLocallyCompletedAssistantStreamingMessage(
+                    threadId = threadId,
+                    messageId = completionMessageId,
+                )
+            }
             recordAssistantOutputObserved(
                 threadId = threadId,
                 turnId = effectiveTurnId,
@@ -4366,10 +4392,34 @@ class BridgeThreadSyncService(
             )
             recordAssistantCompletionFingerprint(threadId = threadId, text = body)
         } else {
-            appendTimelineMutation(
-                threadId = threadId,
-                mutation = TimelineMutation.Complete(messageId = resolvedMessageId),
-            )
+            val completionItem = existingItem?.takeIf { item -> item.isStreaming }
+                ?: projectedTimelineItem(
+                    threadId = threadId,
+                    messageId = resolvedMessageId,
+                    turnId = resolvedTurnId,
+                    itemId = effectiveItemId,
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                )?.takeIf { item -> item.isStreaming }
+            if (completionItem != null) {
+                upsertAssistantTimelineItem(
+                    threadId = threadId,
+                    item = completionItem.copy(
+                        text = resolvedAssistantDisplayText(
+                            threadId = threadId,
+                            item = completionItem,
+                        ),
+                        turnId = resolvedTurnId ?: completionItem.turnId,
+                        itemId = effectiveItemId ?: completionItem.itemId,
+                        isStreaming = false,
+                    ),
+                )
+            } else {
+                appendTimelineMutation(
+                    threadId = threadId,
+                    mutation = TimelineMutation.Complete(messageId = resolvedMessageId),
+                )
+            }
         }
     }
 
@@ -5399,6 +5449,10 @@ class BridgeThreadSyncService(
             }
         }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
         if (!item.isStreaming) {
+            clearLocallyCompletedAssistantStreamingMessage(
+                threadId = threadId,
+                messageId = item.id,
+            )
             clearAssistantStreamingTextBuffer(
                 threadId = threadId,
                 messageId = item.id,
@@ -5654,6 +5708,10 @@ class BridgeThreadSyncService(
         threadId: String,
         messageId: String,
     ) {
+        clearLocallyCompletedAssistantStreamingMessage(
+            threadId = threadId,
+            messageId = messageId,
+        )
         assistantStreamingTextBuffers.remove(
             AssistantStreamingTextBufferKey(
                 threadId = threadId,
@@ -6038,7 +6096,7 @@ class BridgeThreadSyncService(
             speaker = ConversationSpeaker.ASSISTANT,
             kind = ConversationItemKind.CHAT,
         )
-        if (exact?.isStreaming == true) {
+        if (exact?.isStreaming == true && !isLocallyCompletedAssistantStreamingMessage(threadId, exact.id)) {
             return exact
         }
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return null
@@ -6051,6 +6109,7 @@ class BridgeThreadSyncService(
                     candidate.kind == ConversationItemKind.CHAT &&
                     candidate.turnId == normalizedTurnId &&
                     candidate.isStreaming &&
+                    !isLocallyCompletedAssistantStreamingMessage(threadId, candidate.id) &&
                     (
                         candidate.itemId == null ||
                             (normalizedItemId != null && candidate.itemId == normalizedItemId)
@@ -6126,10 +6185,68 @@ class BridgeThreadSyncService(
         if (normalizedItemId != null) {
             return candidate.itemId == normalizedItemId
         }
-        if (!candidate.itemId.isNullOrBlank()) {
-            return false
-        }
         return candidate.id == baseMessageId || candidate.id.startsWith("$baseMessageId-seg-")
+    }
+
+    private fun markLocallyCompletedAssistantStreamingMessage(
+        threadId: String,
+        messageId: String,
+    ) {
+        locallyCompletedAssistantStreamingMessageKeys += AssistantStreamingTextBufferKey(
+            threadId = threadId,
+            messageId = messageId,
+        )
+    }
+
+    private fun clearLocallyCompletedAssistantStreamingMessage(
+        threadId: String,
+        messageId: String,
+    ) {
+        locallyCompletedAssistantStreamingMessageKeys.remove(
+            AssistantStreamingTextBufferKey(
+                threadId = threadId,
+                messageId = messageId,
+            ),
+        )
+    }
+
+    private fun isLocallyCompletedAssistantStreamingMessage(
+        threadId: String,
+        messageId: String,
+    ): Boolean {
+        return locallyCompletedAssistantStreamingMessageKeys.contains(
+            AssistantStreamingTextBufferKey(
+                threadId = threadId,
+                messageId = messageId,
+            ),
+        )
+    }
+
+    private fun finalizeLocallyCompletedAssistantStreamingMessagesForTurn(
+        threadId: String,
+        turnId: String,
+    ) {
+        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
+        val completionItems = projectedTimelineItems(snapshot)
+            .filter { item ->
+                item.speaker == ConversationSpeaker.ASSISTANT &&
+                    item.kind == ConversationItemKind.CHAT &&
+                    item.isStreaming &&
+                    item.turnId == turnId &&
+                    isLocallyCompletedAssistantStreamingMessage(threadId, item.id)
+            }
+        completionItems.forEach { item ->
+            upsertAssistantTimelineItem(
+                threadId = threadId,
+                item = item.copy(
+                    text = resolvedAssistantDisplayText(
+                        threadId = threadId,
+                        item = item,
+                    ),
+                    isStreaming = false,
+                ),
+            )
+        }
     }
 
     private fun resolveAssistantOrderIndex(
@@ -6211,6 +6328,10 @@ class BridgeThreadSyncService(
         turnId: String,
         itemId: String? = null,
     ) {
+        finalizeLocallyCompletedAssistantStreamingMessagesForTurn(
+            threadId = threadId,
+            turnId = turnId,
+        )
         val baseMessageId = assistantBaseMessageId(
             turnId = turnId,
             itemId = itemId,

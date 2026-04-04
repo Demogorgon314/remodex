@@ -29,14 +29,77 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
-    fun `assistant text render mode upgrades to rich markdown after settling`() {
+    fun `assistant text render mode stays lightweight for plain prose after settling`() {
         val mode = resolveAssistantTextRenderMode(
             text = "completed response",
             isStreaming = false,
             richRenderArmed = true,
         )
 
+        assertEquals(AssistantTextRenderMode.LIGHTWEIGHT_PLAIN, mode)
+    }
+
+    @Test
+    fun `assistant text render mode upgrades to rich markdown after settling for markdown content`() {
+        val mode = resolveAssistantTextRenderMode(
+            text = """
+            ## Summary
+            - first
+            - second
+            """.trimIndent(),
+            isStreaming = false,
+            richRenderArmed = true,
+        )
+
         assertEquals(AssistantTextRenderMode.RICH_MARKDOWN, mode)
+    }
+
+    @Test
+    fun `assistant rich markdown preference ignores plain prose`() {
+        assertFalse(assistantTextPrefersRichMarkdown("This is a normal paragraph."))
+    }
+
+    @Test
+    fun `assistant rich markdown preference detects markdown structure`() {
+        assertTrue(
+            assistantTextPrefersRichMarkdown(
+                """
+                ```kotlin
+                println("hi")
+                ```
+                """.trimIndent(),
+            ),
+        )
+        assertTrue(assistantTextPrefersRichMarkdown("1. first\n2. second"))
+    }
+
+    @Test
+    fun `rich render armed state is not reset for settled markdown content`() {
+        assertFalse(
+            shouldResetAssistantRichRenderArmed(
+                hasText = true,
+                isStreaming = false,
+                prefersRichMarkdown = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `rich render armed state resets while streaming or for non markdown content`() {
+        assertTrue(
+            shouldResetAssistantRichRenderArmed(
+                hasText = true,
+                isStreaming = true,
+                prefersRichMarkdown = true,
+            ),
+        )
+        assertTrue(
+            shouldResetAssistantRichRenderArmed(
+                hasText = true,
+                isStreaming = false,
+                prefersRichMarkdown = false,
+            ),
+        )
     }
 
     @Test

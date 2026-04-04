@@ -6815,6 +6815,171 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `blank assistant completion preserves the streamed segment before later assistant deltas`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-assistant-blank-completion",
+                    title = "Assistant blank completion",
+                    preview = "",
+                    projectPath = "/tmp/project-assistant-blank-completion",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-blank-completion"))
+                put("turnId", JsonPrimitive("turn-assistant-blank-completion"))
+                put("delta", JsonPrimitive("First streamed answer block"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-blank-completion"))
+                put("turnId", JsonPrimitive("turn-assistant-blank-completion"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-item-blank-completion"))
+                        put("type", JsonPrimitive("assistantMessage"))
+                    },
+                )
+            },
+            true,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-blank-completion"))
+                put("turnId", JsonPrimitive("turn-assistant-blank-completion"))
+                put("delta", JsonPrimitive("Second streamed answer block"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-assistant-blank-completion" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals(2, assistantItems.size)
+        assertEquals("assistant-turn-assistant-blank-completion", assistantItems[0].id)
+        assertFalse(assistantItems[0].isStreaming)
+        assertEquals("First streamed answer block", assistantItems[0].text)
+        assertEquals("assistant-turn-assistant-blank-completion-seg-1", assistantItems[1].id)
+        assertTrue(assistantItems[1].isStreaming)
+        assertEquals(
+            "Second streamed answer block",
+            assistantVisibleText(service = service, threadId = thread.id, item = assistantItems[1]),
+        )
+    }
+
+    @Test
+    fun `shorter assistant completion preserves local text without reusing the completed segment`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-assistant-short-completion",
+                    title = "Assistant short completion",
+                    preview = "",
+                    projectPath = "/tmp/project-assistant-short-completion",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-short-completion"))
+                put("turnId", JsonPrimitive("turn-assistant-short-completion"))
+                put("delta", JsonPrimitive("First streamed answer block with more detail"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-short-completion"))
+                put("turnId", JsonPrimitive("turn-assistant-short-completion"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("assistant-item-short-completion"))
+                        put("type", JsonPrimitive("assistantMessage"))
+                        put("text", JsonPrimitive("First streamed answer block"))
+                    },
+                )
+            },
+            true,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-assistant-short-completion"))
+                put("turnId", JsonPrimitive("turn-assistant-short-completion"))
+                put("delta", JsonPrimitive("Second streamed answer block"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-assistant-short-completion" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val assistantItems = projected.filter { it.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals(2, assistantItems.size)
+        assertEquals("assistant-turn-assistant-short-completion", assistantItems[0].id)
+        assertFalse(assistantItems[0].isStreaming)
+        assertEquals("First streamed answer block with more detail", assistantItems[0].text)
+        assertEquals("assistant-turn-assistant-short-completion-seg-1", assistantItems[1].id)
+        assertTrue(assistantItems[1].isStreaming)
+        assertEquals(
+            "Second streamed answer block",
+            assistantVisibleText(service = service, threadId = thread.id, item = assistantItems[1]),
+        )
+    }
+
+    @Test
     fun `hydrate thread clears stale active turn when history shows the turn completed`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

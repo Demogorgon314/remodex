@@ -2571,6 +2571,39 @@ internal fun formatStreamingPlainTextForDisplay(text: String): String {
     return text
 }
 
+internal fun assistantTextPrefersRichMarkdown(
+    text: String,
+): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) {
+        return true
+    }
+    if ("```" in text || Regex("""`[^`\n]+`""").containsMatchIn(text)) {
+        return true
+    }
+    if (Regex("""\[[^\]]+]\([^)]+\)""").containsMatchIn(text)) {
+        return true
+    }
+    if (Regex("""(\*\*|__)[^*_]+(\*\*|__)""").containsMatchIn(text)) {
+        return true
+    }
+    if (
+        text.lineSequence().any { line ->
+            val candidate = line.trimStart()
+            candidate.startsWith("# ") ||
+                candidate.startsWith("## ") ||
+                candidate.startsWith("### ") ||
+                candidate.startsWith("- ") ||
+                candidate.startsWith("* ") ||
+                candidate.startsWith("> ") ||
+                Regex("""\d+\.\s+.+""").matches(candidate)
+        }
+    ) {
+        return true
+    }
+    return false
+}
+
 internal fun resolveAssistantTextRenderMode(
     text: String,
     isStreaming: Boolean,
@@ -2579,11 +2612,22 @@ internal fun resolveAssistantTextRenderMode(
     if (text.isBlank()) {
         return AssistantTextRenderMode.RICH_MARKDOWN
     }
+    if (!assistantTextPrefersRichMarkdown(text)) {
+        return AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
+    }
     return if (isStreaming || !richRenderArmed) {
         AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
     } else {
         AssistantTextRenderMode.RICH_MARKDOWN
     }
+}
+
+internal fun shouldResetAssistantRichRenderArmed(
+    hasText: Boolean,
+    isStreaming: Boolean,
+    prefersRichMarkdown: Boolean,
+): Boolean {
+    return isStreaming || !hasText || !prefersRichMarkdown
 }
 
 @Composable
@@ -2593,9 +2637,22 @@ private fun rememberAssistantTextRenderMode(
     isStreaming: Boolean,
 ): AssistantTextRenderMode {
     var richRenderArmed by rememberSaveable(itemId) { mutableStateOf(false) }
-    LaunchedEffect(itemId, isStreaming, text) {
-        richRenderArmed = false
-        if (!isStreaming && text.isNotBlank()) {
+    val hasText = text.isNotBlank()
+    val prefersRichMarkdown = remember(text) {
+        assistantTextPrefersRichMarkdown(text)
+    }
+    LaunchedEffect(itemId, isStreaming, hasText, prefersRichMarkdown) {
+        if (
+            shouldResetAssistantRichRenderArmed(
+                hasText = hasText,
+                isStreaming = isStreaming,
+                prefersRichMarkdown = prefersRichMarkdown,
+            )
+        ) {
+            richRenderArmed = false
+            return@LaunchedEffect
+        }
+        if (!richRenderArmed) {
             delay(AssistantRichRenderSettleDelayMs)
             richRenderArmed = true
         }

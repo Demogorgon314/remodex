@@ -1,5 +1,6 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import android.text.Spanned
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -38,6 +39,11 @@ private data class CommandExecutionPresentationCacheKey(
     val durationMs: Int?,
 )
 
+private data class MarkdownCodeBlockHighlightedTextCacheKey(
+    val token: ConversationMarkdownCodeBlockRenderToken,
+    val normalizedLanguage: String?,
+)
+
 private object ConversationRenderCaches {
     val thinkingText = BoundedRenderCache<String, String>(maxEntries = 128)
     val thinkingActivityPreview = BoundedRenderCache<String, String?>(maxEntries = 128)
@@ -48,6 +54,9 @@ private object ConversationRenderCaches {
     val commandExecutionPresentations =
         BoundedRenderCache<CommandExecutionPresentationCacheKey, List<CommandExecutionStatusPresentation>>(maxEntries = 128)
     val markdownSegments = BoundedRenderCache<String, List<ConversationMarkdownSegment>>(maxEntries = 128)
+    val markdownSpans = BoundedRenderCache<ConversationMarkdownTextRenderToken, Spanned>(maxEntries = 96)
+    val markdownCodeBlockHighlightedText =
+        BoundedRenderCache<MarkdownCodeBlockHighlightedTextCacheKey, CharSequence>(maxEntries = 96)
 }
 
 internal fun cachedThinkingText(
@@ -153,3 +162,20 @@ internal fun cachedConversationMarkdownSegments(
 ): List<ConversationMarkdownSegment> = ConversationRenderCaches.markdownSegments.getOrPut(text) {
     parseConversationMarkdownSegments(text)
 }
+
+internal fun cachedConversationMarkdownSpanned(
+    token: ConversationMarkdownTextRenderToken,
+    block: () -> Spanned,
+): Spanned = ConversationRenderCaches.markdownSpans.getOrPut(token, block)
+
+internal fun cachedConversationMarkdownCodeBlockHighlightedText(
+    token: ConversationMarkdownCodeBlockRenderToken,
+    normalizedLanguage: String?,
+    block: () -> CharSequence,
+): CharSequence = ConversationRenderCaches.markdownCodeBlockHighlightedText.getOrPut(
+    MarkdownCodeBlockHighlightedTextCacheKey(
+        token = token,
+        normalizedLanguage = normalizedLanguage,
+    ),
+    block,
+)

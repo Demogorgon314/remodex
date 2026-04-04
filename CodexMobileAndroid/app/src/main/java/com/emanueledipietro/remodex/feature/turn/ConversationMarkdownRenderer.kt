@@ -156,7 +156,7 @@ private val mermaidFenceRegex = Regex(
 )
 private val markdownImageTitleRegex = Regex("""^(.*)\s+(?:"([^"]*)"|'([^']*)')$""")
 
-private data class ConversationMarkdownTextRenderToken(
+internal data class ConversationMarkdownTextRenderToken(
     val markdownToken: String,
     val textColorArgb: Int,
     val linkColorArgb: Int,
@@ -169,7 +169,7 @@ private data class ConversationMarkdownTextRenderToken(
     val enablesSelection: Boolean,
 )
 
-private data class ConversationMarkdownCodeBlockRenderToken(
+internal data class ConversationMarkdownCodeBlockRenderToken(
     val markdownToken: String,
     val textColorArgb: Int,
     val textSizePx: Float?,
@@ -764,6 +764,11 @@ private fun ConversationMarkdownTextSegment(
             )
             .build()
     }
+    val renderedMarkdown = remember(markdown, markwon, renderToken) {
+        cachedConversationMarkdownSpanned(renderToken) {
+            markwon.toMarkdown(markdown)
+        }
+    }
 
     AndroidView(
         modifier = Modifier.fillMaxWidth(),
@@ -827,7 +832,7 @@ private fun ConversationMarkdownTextSegment(
                 } else {
                     LinkMovementMethod.getInstance()
                 }
-                markwon.setMarkdown(textView, markdown)
+                markwon.setParsedMarkdown(textView, renderedMarkdown)
                 textView.tag = renderToken
             }
         },
@@ -972,8 +977,13 @@ private fun ConversationMarkdownCodeBlockSegment(
                     onLongPress = onLongPress,
                 )
             } else {
-                val highlightedCode = remember(code, normalizedLanguage, syntaxHighlight) {
-                    syntaxHighlight.highlight(normalizedLanguage, code)
+                val highlightedCode = remember(code, normalizedLanguage, syntaxHighlight, renderToken) {
+                    cachedConversationMarkdownCodeBlockHighlightedText(
+                        token = renderToken,
+                        normalizedLanguage = normalizedLanguage,
+                    ) {
+                        syntaxHighlight.highlight(normalizedLanguage, code)
+                    }
                 }
                 AndroidView(
                     modifier = Modifier

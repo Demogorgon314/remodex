@@ -14,7 +14,7 @@ object TurnTimelineReducer {
         val interleavable: Boolean,
         val preserveChronologyWhenLateAfterAssistant: Boolean,
     ) {
-        REASONING(leadingPriority = 1, interleavable = true, preserveChronologyWhenLateAfterAssistant = false),
+        REASONING(leadingPriority = 1, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         TOOL_ACTIVITY(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = false),
         MCP_TOOL_CALL(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
         WEB_SEARCH(leadingPriority = 2, interleavable = true, preserveChronologyWhenLateAfterAssistant = true),
