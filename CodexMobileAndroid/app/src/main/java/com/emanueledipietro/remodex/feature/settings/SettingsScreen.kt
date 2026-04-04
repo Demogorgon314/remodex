@@ -483,6 +483,7 @@ fun SettingsScreen(
             UsageSummaryCardContent(
                 contextWindowUsage = uiState.usageStatus.contextWindowUsage,
                 rateLimitBuckets = uiState.usageStatus.rateLimitBuckets,
+                availableModels = uiState.availableModels,
                 rateLimitsErrorMessage = uiState.usageStatus.rateLimitsErrorMessage,
                 isRefreshing = uiState.isRefreshingUsage,
             )
@@ -1078,9 +1079,14 @@ private fun SettingsRefreshHeader(
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(
-            onClick = onClick,
-            enabled = !isRefreshing,
+        Row(
+            modifier = Modifier
+                .clickable(
+                    enabled = !isRefreshing,
+                    onClick = onClick,
+                )
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 imageVector = Icons.Outlined.Refresh,
@@ -1100,11 +1106,15 @@ private fun SettingsRefreshHeader(
 private fun UsageSummaryCardContent(
     contextWindowUsage: RemodexContextWindowUsage?,
     rateLimitBuckets: List<RemodexRateLimitBucket>,
+    availableModels: List<com.emanueledipietro.remodex.model.RemodexModelOption>,
     rateLimitsErrorMessage: String?,
     isRefreshing: Boolean,
 ) {
-    val visibleRows = remember(rateLimitBuckets) {
-        RemodexRateLimitBucket.visibleDisplayRows(rateLimitBuckets)
+    val visibleSections = remember(rateLimitBuckets, availableModels) {
+        RemodexRateLimitBucket.visibleDisplaySections(
+            buckets = rateLimitBuckets,
+            availableModels = availableModels,
+        )
     }
 
     Text(
@@ -1115,10 +1125,20 @@ private fun UsageSummaryCardContent(
     )
 
     when {
-        visibleRows.isNotEmpty() -> {
+        visibleSections.isNotEmpty() -> {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                visibleRows.forEach { row ->
-                    RateLimitRow(row = row)
+                visibleSections.forEach { section ->
+                    section.title?.let { title ->
+                        Text(
+                            text = "$title:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    section.rows.forEach { row ->
+                        RateLimitRow(row = row)
+                    }
                 }
             }
         }
@@ -1163,7 +1183,7 @@ private fun UsageSummaryCardContent(
             value = "${contextWindowUsage.percentRemaining}% left",
             detail = "(${compactTokenCount(contextWindowUsage.tokensUsed)} used / ${compactTokenCount(contextWindowUsage.tokenLimit)})",
         )
-        UsageProgressBar(progress = contextWindowUsage.fractionUsed.toFloat())
+        UsageProgressBar(progress = contextWindowUsage.percentRemaining / 100f)
     } else {
         MetricRow(
             label = "Context",
@@ -1204,7 +1224,7 @@ private fun RateLimitRow(
                 )
             }
         }
-        UsageProgressBar(progress = row.window.clampedUsedPercent / 100f)
+        UsageProgressBar(progress = row.window.remainingPercent / 100f)
     }
 }
 

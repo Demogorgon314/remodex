@@ -1967,6 +1967,7 @@ fun ConversationScreen(
             onDismissPlanSheet = { selectedPlanSheetItemId = null },
             statusSheetExpanded = statusSheetExpanded,
             usageStatus = uiState.usageStatus,
+            availableModels = uiState.availableModels,
             isRefreshingUsage = uiState.isRefreshingUsage,
             onRefreshUsageStatus = onRefreshUsageStatus,
             onDismissStatusSheet = { statusSheetExpanded = false },
@@ -2338,6 +2339,7 @@ private fun ConversationComposerPane(
                             thread = thread,
                             gitState = uiState.composer.gitState,
                             usageStatus = uiState.usageStatus,
+                            availableModels = uiState.availableModels,
                             isRefreshingUsage = uiState.isRefreshingUsage,
                             usageExpanded = usageStatusPopoverExpanded,
                             isConnectedToMac = uiState.isConnected,
@@ -2572,6 +2574,7 @@ private fun ConversationScreenSheetOverlays(
     onDismissPlanSheet: () -> Unit,
     statusSheetExpanded: Boolean,
     usageStatus: RemodexUsageStatus,
+    availableModels: List<RemodexModelOption>,
     isRefreshingUsage: Boolean,
     onRefreshUsageStatus: () -> Unit,
     onDismissStatusSheet: () -> Unit,
@@ -2628,6 +2631,7 @@ private fun ConversationScreenSheetOverlays(
     if (statusSheetExpanded) {
         ConversationStatusSheet(
             usageStatus = usageStatus,
+            availableModels = availableModels,
             isRefreshingUsage = isRefreshingUsage,
             onRefreshUsageStatus = onRefreshUsageStatus,
             onDismiss = onDismissStatusSheet,
@@ -3912,6 +3916,7 @@ private fun WelcomeLoadingDot(
 @Composable
 private fun ConversationStatusSheet(
     usageStatus: RemodexUsageStatus,
+    availableModels: List<RemodexModelOption>,
     isRefreshingUsage: Boolean,
     onRefreshUsageStatus: () -> Unit,
     onDismiss: () -> Unit,
@@ -3949,10 +3954,11 @@ private fun ConversationStatusSheet(
                     ComposerUsageStatusSummaryContent(
                         contextWindowUsage = usageStatus.contextWindowUsage,
                         rateLimitBuckets = usageStatus.rateLimitBuckets,
+                        availableModels = availableModels,
                         rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
                         isRefreshing = isRefreshingUsage,
                         onRefresh = onRefreshUsageStatus,
-                        showRefreshButton = false,
+                        showRefreshButton = true,
                     )
                 }
             }
@@ -4530,6 +4536,7 @@ private fun ComposerSecondaryBar(
     thread: RemodexThreadSummary,
     gitState: RemodexGitState,
     usageStatus: RemodexUsageStatus,
+    availableModels: List<RemodexModelOption>,
     isRefreshingUsage: Boolean,
     usageExpanded: Boolean,
     isConnectedToMac: Boolean,
@@ -4783,10 +4790,11 @@ private fun ComposerSecondaryBar(
                         ComposerUsageStatusSummaryContent(
                             contextWindowUsage = usageStatus.contextWindowUsage,
                             rateLimitBuckets = usageStatus.rateLimitBuckets,
+                            availableModels = availableModels,
                             rateLimitsErrorMessage = usageStatus.rateLimitsErrorMessage,
                             isRefreshing = isRefreshingUsage,
                             onRefresh = onRefreshUsageStatus,
-                            showRefreshButton = false,
+                            showRefreshButton = true,
                         )
                     }
                 }
@@ -5012,14 +5020,18 @@ private fun ComposerStatusPopover(
 private fun ComposerUsageStatusSummaryContent(
     contextWindowUsage: RemodexContextWindowUsage?,
     rateLimitBuckets: List<RemodexRateLimitBucket>,
+    availableModels: List<com.emanueledipietro.remodex.model.RemodexModelOption>,
     rateLimitsErrorMessage: String?,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     showRefreshButton: Boolean = true,
 ) {
     val chrome = remodexConversationChrome()
-    val visibleRows = remember(rateLimitBuckets) {
-        RemodexRateLimitBucket.visibleDisplayRows(rateLimitBuckets)
+    val visibleSections = remember(rateLimitBuckets, availableModels) {
+        RemodexRateLimitBucket.visibleDisplaySections(
+            buckets = rateLimitBuckets,
+            availableModels = availableModels,
+        )
     }
 
     if (showRefreshButton) {
@@ -5027,9 +5039,14 @@ private fun ComposerUsageStatusSummaryContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(
-                onClick = onRefresh,
-                enabled = !isRefreshing,
+            Row(
+                modifier = Modifier
+                    .clickable(
+                        enabled = !isRefreshing,
+                        onClick = onRefresh,
+                    )
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (isRefreshing) {
                     CircularProgressIndicator(
@@ -5063,10 +5080,20 @@ private fun ComposerUsageStatusSummaryContent(
     )
 
     when {
-        visibleRows.isNotEmpty() -> {
+        visibleSections.isNotEmpty() -> {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                visibleRows.forEach { row ->
-                    ComposerUsageRateLimitRow(row = row)
+                visibleSections.forEach { section ->
+                    section.title?.let { title ->
+                        Text(
+                            text = "$title:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = chrome.titleText,
+                        )
+                    }
+                    section.rows.forEach { row ->
+                        ComposerUsageRateLimitRow(row = row)
+                    }
                 }
             }
         }
@@ -5111,7 +5138,7 @@ private fun ComposerUsageStatusSummaryContent(
             value = "${contextWindowUsage.percentRemaining}% left",
             detail = "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} used / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
         )
-        ComposerUsageProgressBar(progress = contextWindowUsage.fractionUsed.toFloat())
+        ComposerUsageProgressBar(progress = contextWindowUsage.percentRemaining / 100f)
     } else {
         ComposerUsageMetricRow(
             label = "Context",
@@ -5153,7 +5180,7 @@ private fun ComposerUsageRateLimitRow(
                 )
             }
         }
-        ComposerUsageProgressBar(progress = row.window.clampedUsedPercent / 100f)
+        ComposerUsageProgressBar(progress = row.window.remainingPercent / 100f)
     }
 }
 

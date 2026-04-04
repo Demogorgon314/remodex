@@ -18,6 +18,12 @@ data class RemodexRateLimitDisplayRow(
     val window: RemodexRateLimitWindow,
 )
 
+data class RemodexRateLimitDisplaySection(
+    val id: String,
+    val title: String?,
+    val rows: List<RemodexRateLimitDisplayRow>,
+)
+
 data class RemodexRateLimitBucket(
     val limitId: String,
     val limitName: String?,
@@ -59,19 +65,50 @@ data class RemodexRateLimitBucket(
 
     companion object {
         fun visibleDisplayRows(buckets: List<RemodexRateLimitBucket>): List<RemodexRateLimitDisplayRow> {
-            val dedupedByLabel = linkedMapOf<String, RemodexRateLimitDisplayRow>()
-            buckets.flatMap(RemodexRateLimitBucket::displayRows).forEach { row ->
-                val existing = dedupedByLabel[row.label]
-                if (existing == null) {
-                    dedupedByLabel[row.label] = row
-                } else {
-                    dedupedByLabel[row.label] = preferredDisplayRow(existing, row)
+            return visibleDisplaySections(buckets = buckets, availableModels = emptyList())
+                .flatMap(RemodexRateLimitDisplaySection::rows)
+        }
+
+        fun visibleDisplaySections(
+            buckets: List<RemodexRateLimitBucket>,
+            availableModels: List<RemodexModelOption>,
+        ): List<RemodexRateLimitDisplaySection> {
+            val sparkModelAvailable = availableModels.any { model ->
+                model.id.equals(SPARK_MODEL_ID, ignoreCase = true) ||
+                    model.model.equals(SPARK_MODEL_ID, ignoreCase = true)
+            }
+            val rowsBySection = linkedMapOf<String, LinkedHashMap<String, RemodexRateLimitDisplayRow>>()
+            val titlesBySection = linkedMapOf<String, String?>()
+
+            buckets.forEach { bucket ->
+                val sectionMetadata = displaySectionMetadata(bucket, sparkModelAvailable) ?: return@forEach
+                val sectionRows = rowsBySection.getOrPut(sectionMetadata.id) { linkedMapOf() }
+                titlesBySection.putIfAbsent(sectionMetadata.id, sectionMetadata.title)
+                bucket.displayRows.forEach { row ->
+                    val existing = sectionRows[row.label]
+                    sectionRows[row.label] = if (existing == null) {
+                        row
+                    } else {
+                        preferredDisplayRow(existing, row)
+                    }
                 }
             }
-            return dedupedByLabel.values.sortedWith(
-                compareBy<RemodexRateLimitDisplayRow> { it.window.windowDurationMins ?: Int.MAX_VALUE }
-                    .thenBy(String.CASE_INSENSITIVE_ORDER) { it.label },
-            )
+
+            return rowsBySection.mapNotNull { (sectionId, rowsByLabel) ->
+                val rows = rowsByLabel.values.sortedWith(
+                    compareBy<RemodexRateLimitDisplayRow> { it.window.windowDurationMins ?: Int.MAX_VALUE }
+                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it.label },
+                )
+                if (rows.isEmpty()) {
+                    null
+                } else {
+                    RemodexRateLimitDisplaySection(
+                        id = sectionId,
+                        title = titlesBySection[sectionId],
+                        rows = rows,
+                    )
+                }
+            }.sortedBy { section -> sectionOrder(section.id) }
         }
 
         private fun preferredDisplayRow(
@@ -99,6 +136,35 @@ data class RemodexRateLimitBucket(
             return durationLabel(window.windowDurationMins) ?: fallback
         }
 
+        private fun displaySectionMetadata(
+            bucket: RemodexRateLimitBucket,
+            sparkModelAvailable: Boolean,
+        ): DisplaySectionMetadata? {
+            return if (bucket.isSparkBucket) {
+                if (sparkModelAvailable) {
+                    DisplaySectionMetadata(
+                        id = "spark",
+                        title = "GPT-5.3-Codex-Spark limit",
+                    )
+                } else {
+                    null
+                }
+            } else {
+                DisplaySectionMetadata(
+                    id = "default",
+                    title = null,
+                )
+            }
+        }
+
+        private fun sectionOrder(sectionId: String): Int {
+            return when (sectionId) {
+                "default" -> 0
+                "spark" -> 1
+                else -> Int.MAX_VALUE
+            }
+        }
+
         fun durationLabel(minutes: Int?): String? {
             val value = minutes?.takeIf { it > 0 } ?: return null
             val weekMinutes = 7 * 24 * 60
@@ -110,5 +176,20 @@ data class RemodexRateLimitBucket(
                 else -> "${value}m"
             }
         }
+
+        private const val SPARK_MODEL_ID = "gpt-5.3-codex-spark"
     }
 }
+
+private data class DisplaySectionMetadata(
+    val id: String,
+    val title: String?,
+)
+
+private val RemodexRateLimitBucket.isSparkBucket: Boolean
+    get() = buildList {
+        add(limitId)
+        limitName?.let(::add)
+    }.any { value ->
+        value.contains("spark", ignoreCase = true)
+    }
