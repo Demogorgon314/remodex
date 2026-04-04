@@ -154,7 +154,7 @@ class AndroidRemodexNotificationManager(
                 requestId = event.requestId,
             ),
             NotificationCompat.Builder(context, event.channelId())
-                .setSmallIcon(R.drawable.ic_notification)
+                .setSmallIcon(R.drawable.app_logo)
                 .setContentTitle(event.title)
                 .setContentText(event.body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(event.body))
