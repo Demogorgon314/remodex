@@ -189,6 +189,87 @@ internal fun conversationMarkdownRenderToken(text: String): String {
     }
 }
 
+internal fun buildConversationMarkdownTextRenderToken(
+    markdown: String,
+    textColorArgb: Int,
+    linkColorArgb: Int,
+    codeBackgroundColorArgb: Int,
+    codeBlockBackgroundColorArgb: Int,
+    blockMarginPx: Int,
+    codeBlockMarginPx: Int,
+    textSizePx: Float?,
+    lineHeightExtra: Float,
+    enablesSelection: Boolean,
+): ConversationMarkdownTextRenderToken {
+    return ConversationMarkdownTextRenderToken(
+        markdownToken = conversationMarkdownRenderToken(markdown),
+        textColorArgb = textColorArgb,
+        linkColorArgb = linkColorArgb,
+        codeBackgroundColorArgb = codeBackgroundColorArgb,
+        codeBlockBackgroundColorArgb = codeBlockBackgroundColorArgb,
+        blockMarginPx = blockMarginPx,
+        codeBlockMarginPx = codeBlockMarginPx,
+        textSizePx = textSizePx,
+        lineHeightExtra = lineHeightExtra,
+        enablesSelection = enablesSelection,
+    )
+}
+
+internal fun buildConversationMarkdownCodeBlockRenderToken(
+    code: String,
+    language: String?,
+    textColorArgb: Int,
+    textSizePx: Float?,
+    lineHeightExtra: Float,
+    enablesSelection: Boolean,
+    usesDarkSyntaxTheme: Boolean,
+): ConversationMarkdownCodeBlockRenderToken {
+    return ConversationMarkdownCodeBlockRenderToken(
+        markdownToken = conversationMarkdownRenderToken(
+            fencedCodeBlockMarkdown(code = code, language = language),
+        ),
+        textColorArgb = textColorArgb,
+        textSizePx = textSizePx,
+        lineHeightExtra = lineHeightExtra,
+        enablesSelection = enablesSelection,
+        usesDarkSyntaxTheme = usesDarkSyntaxTheme,
+    )
+}
+
+internal fun buildConversationMarkdownMarkwon(
+    context: Context,
+    renderToken: ConversationMarkdownTextRenderToken,
+    onOpenUri: ((String) -> Unit)? = null,
+): Markwon {
+    return Markwon.builder(context)
+        .usePlugin(StrikethroughPlugin.create())
+        .usePlugin(TablePlugin.create(context))
+        .usePlugin(
+            object : AbstractMarkwonPlugin() {
+                override fun configureTheme(builder: MarkwonTheme.Builder) {
+                    builder
+                        .linkColor(renderToken.linkColorArgb)
+                        .codeTextColor(renderToken.textColorArgb)
+                        .codeBlockTextColor(renderToken.textColorArgb)
+                        .codeBackgroundColor(renderToken.codeBackgroundColorArgb)
+                        .codeBlockBackgroundColor(renderToken.codeBlockBackgroundColorArgb)
+                        .blockMargin(renderToken.blockMarginPx)
+                        .codeBlockMargin(renderToken.codeBlockMarginPx)
+                }
+
+                override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
+                    builder.linkResolver { _, link ->
+                        val scheme = Uri.parse(link).scheme
+                        if (!scheme.isNullOrBlank()) {
+                            onOpenUri?.invoke(link)
+                        }
+                    }
+                }
+            },
+        )
+        .build()
+}
+
 @Composable
 private fun rememberConversationMarkdownSaveController(): ConversationMarkdownSaveController {
     val context = LocalContext.current
@@ -713,8 +794,8 @@ private fun ConversationMarkdownTextSegment(
         lineHeightExtra,
         enablesSelection,
     ) {
-        ConversationMarkdownTextRenderToken(
-            markdownToken = conversationMarkdownRenderToken(markdown),
+        buildConversationMarkdownTextRenderToken(
+            markdown = markdown,
             textColorArgb = color.toArgb(),
             linkColorArgb = chrome.accent.toArgb(),
             codeBackgroundColorArgb = codeBackgroundColor.toArgb(),
@@ -736,33 +817,11 @@ private fun ConversationMarkdownTextSegment(
         renderToken.blockMarginPx,
         renderToken.codeBlockMarginPx,
     ) {
-        Markwon.builder(context)
-            .usePlugin(StrikethroughPlugin.create())
-            .usePlugin(TablePlugin.create(context))
-            .usePlugin(
-                object : AbstractMarkwonPlugin() {
-                    override fun configureTheme(builder: MarkwonTheme.Builder) {
-                        builder
-                            .linkColor(renderToken.linkColorArgb)
-                            .codeTextColor(renderToken.textColorArgb)
-                            .codeBlockTextColor(renderToken.textColorArgb)
-                            .codeBackgroundColor(renderToken.codeBackgroundColorArgb)
-                            .codeBlockBackgroundColor(renderToken.codeBlockBackgroundColorArgb)
-                            .blockMargin(renderToken.blockMarginPx)
-                            .codeBlockMargin(renderToken.codeBlockMarginPx)
-                    }
-
-                    override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
-                        builder.linkResolver { _, link ->
-                            val scheme = Uri.parse(link).scheme
-                            if (!scheme.isNullOrBlank()) {
-                                uriHandler.openUri(link)
-                            }
-                        }
-                    }
-                },
-            )
-            .build()
+        buildConversationMarkdownMarkwon(
+            context = context,
+            renderToken = renderToken,
+            onOpenUri = uriHandler::openUri,
+        )
     }
     val renderedMarkdown = remember(markdown, markwon, renderToken) {
         cachedConversationMarkdownSpanned(renderToken) {
@@ -786,6 +845,20 @@ private fun ConversationMarkdownTextSegment(
                 isFocusable = false
                 isClickable = false
                 isLongClickable = enablesSelection || onLongPress != null
+                setTextColor(renderToken.textColorArgb)
+                setLinkTextColor(renderToken.linkColorArgb)
+                renderToken.textSizePx?.let { resolvedTextSizePx ->
+                    setTextSize(TypedValue.COMPLEX_UNIT_PX, resolvedTextSizePx)
+                }
+                setLineSpacing(renderToken.lineHeightExtra, 1f)
+                setTextIsSelectable(renderToken.enablesSelection)
+                movementMethod = if (renderToken.enablesSelection) {
+                    null
+                } else {
+                    LinkMovementMethod.getInstance()
+                }
+                markwon.setParsedMarkdown(this, renderedMarkdown)
+                tag = renderToken
             }
         },
         update = { textView ->
@@ -885,10 +958,9 @@ private fun ConversationMarkdownCodeBlockSegment(
         enablesSelection,
         isDark,
     ) {
-        ConversationMarkdownCodeBlockRenderToken(
-            markdownToken = conversationMarkdownRenderToken(
-                fencedCodeBlockMarkdown(code = code, language = language),
-            ),
+        buildConversationMarkdownCodeBlockRenderToken(
+            code = code,
+            language = language,
             textColorArgb = chrome.bodyText.toArgb(),
             textSizePx = textSizePx.takeUnless(Float::isNaN),
             lineHeightExtra = lineHeightExtra,
@@ -1010,6 +1082,15 @@ private fun ConversationMarkdownCodeBlockSegment(
                             isFocusable = false
                             isClickable = false
                             isLongClickable = enablesSelection || onLongPress != null
+                            setTextColor(renderToken.textColorArgb)
+                            renderToken.textSizePx?.let { resolvedTextSizePx ->
+                                setTextSize(TypedValue.COMPLEX_UNIT_PX, resolvedTextSizePx)
+                            }
+                            setLineSpacing(renderToken.lineHeightExtra, 1f)
+                            setTextIsSelectable(renderToken.enablesSelection)
+                            movementMethod = null
+                            text = highlightedCode
+                            tag = renderToken
                         }
                     },
                     update = { textView ->

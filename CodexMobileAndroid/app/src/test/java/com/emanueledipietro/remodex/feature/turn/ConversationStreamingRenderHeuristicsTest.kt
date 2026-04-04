@@ -1,5 +1,9 @@
 package com.emanueledipietro.remodex.feature.turn
 
+import com.emanueledipietro.remodex.model.ConversationItemKind
+import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexConversationItem
+import com.emanueledipietro.remodex.model.RemodexPlanState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,25 +22,25 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
-    fun `assistant text render mode stays lightweight until settling completes`() {
-        val mode = resolveAssistantTextRenderMode(
-            text = "completed response",
-            isStreaming = false,
-            richRenderArmed = false,
-        )
-
-        assertEquals(AssistantTextRenderMode.LIGHTWEIGHT_PLAIN, mode)
-    }
-
-    @Test
-    fun `assistant text render mode stays lightweight for plain prose after settling`() {
+    fun `assistant text render mode upgrades to rich markdown as soon as streaming completes`() {
         val mode = resolveAssistantTextRenderMode(
             text = "completed response",
             isStreaming = false,
             richRenderArmed = true,
         )
 
-        assertEquals(AssistantTextRenderMode.LIGHTWEIGHT_PLAIN, mode)
+        assertEquals(AssistantTextRenderMode.RICH_MARKDOWN, mode)
+    }
+
+    @Test
+    fun `assistant text render mode renders completed plain prose as rich markdown`() {
+        val mode = resolveAssistantTextRenderMode(
+            text = "completed response",
+            isStreaming = false,
+            richRenderArmed = true,
+        )
+
+        assertEquals(AssistantTextRenderMode.RICH_MARKDOWN, mode)
     }
 
     @Test
@@ -74,7 +78,7 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
-    fun `rich render armed state is not reset for settled markdown content`() {
+    fun `rich render armed state is not reset for any settled assistant content`() {
         assertFalse(
             shouldResetAssistantRichRenderArmed(
                 hasText = true,
@@ -85,7 +89,7 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
-    fun `rich render armed state resets while streaming or for non markdown content`() {
+    fun `rich render armed state resets while streaming or when text is absent`() {
         assertTrue(
             shouldResetAssistantRichRenderArmed(
                 hasText = true,
@@ -95,7 +99,7 @@ class ConversationStreamingRenderHeuristicsTest {
         )
         assertTrue(
             shouldResetAssistantRichRenderArmed(
-                hasText = true,
+                hasText = false,
                 isStreaming = false,
                 prefersRichMarkdown = false,
             ),
@@ -145,5 +149,88 @@ class ConversationStreamingRenderHeuristicsTest {
         assertTrue(canRenderAttachmentThumbnail("content://media/external/images/media/1"))
         assertTrue(canRenderAttachmentThumbnail("https://example.com/image.png"))
         assertTrue(canRenderAttachmentThumbnail("file:///storage/emulated/0/Pictures/test.png"))
+    }
+
+    @Test
+    fun `markdown prewarm requests include stable assistant prose along with markdown history`() {
+        val requests = selectConversationMarkdownPrewarmRequests(
+            timelineItems = listOf(
+                RemodexConversationItem(
+                    id = "user-1",
+                    speaker = ConversationSpeaker.USER,
+                    text = "hello",
+                ),
+                RemodexConversationItem(
+                    id = "assistant-plain",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "plain prose only",
+                ),
+                RemodexConversationItem(
+                    id = "assistant-md",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "## Summary\n- one",
+                ),
+                RemodexConversationItem(
+                    id = "assistant-streaming",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    text = "```kotlin\nprintln(1)\n```",
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "system-plan",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.PLAN,
+                    text = "",
+                    planState = RemodexPlanState(
+                        steps = emptyList(),
+                        explanation = null,
+                    ),
+                    supportingText = "Plan body",
+                ),
+                RemodexConversationItem(
+                    id = "system-chat",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.CHAT,
+                    text = "```json\n{}\n```",
+                ),
+            ),
+            maxItems = 4,
+        )
+
+        assertEquals(listOf("assistant-plain", "assistant-md", "system-plan", "system-chat"), requests.map { it.messageId })
+        assertEquals(
+            listOf(
+                ConversationMarkdownPrewarmStyle.PRIMARY_BODY,
+                ConversationMarkdownPrewarmStyle.PRIMARY_BODY,
+                ConversationMarkdownPrewarmStyle.PRIMARY_BODY,
+                ConversationMarkdownPrewarmStyle.SECONDARY_BODY,
+            ),
+            requests.map { it.style },
+        )
+    }
+
+    @Test
+    fun `markdown prewarm requests expand detailed reasoning content`() {
+        val requests = selectConversationMarkdownPrewarmRequests(
+            timelineItems = listOf(
+                RemodexConversationItem(
+                    id = "reasoning",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = """
+                    Goal
+                    - do thing
+
+                    Detail
+                    ```kotlin
+                    println("hi")
+                    ```
+                    """.trimIndent(),
+                ),
+            ),
+        )
+
+        assertTrue(requests.isNotEmpty())
+        assertTrue(requests.all { it.messageId.startsWith("reasoning:") })
     }
 }

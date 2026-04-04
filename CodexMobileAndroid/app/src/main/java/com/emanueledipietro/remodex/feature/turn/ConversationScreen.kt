@@ -209,6 +209,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
@@ -270,12 +271,17 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.drawscope.Stroke
+import io.noties.markwon.syntax.Prism4jSyntaxHighlight
+import io.noties.markwon.syntax.Prism4jThemeDarkula
+import io.noties.markwon.syntax.Prism4jThemeDefault
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import com.emanueledipietro.remodex.R
 
 private val ComposerFollowBottomThreshold = 12.dp
@@ -284,7 +290,6 @@ private val ConversationScrollToLatestButtonOffset = 18.dp
 private val ComposerStopGlyphSize = 10.dp
 private val ComposerStopGlyphCornerRadius = 2.5.dp
 private const val StructuredSystemSummaryAutoCollapseDelayMs = 650L
-private const val AssistantRichRenderSettleDelayMs = 180L
 private val ComposerLeadingIconTapTarget = 24.dp
 private val ComposerAttachmentThumbnailSize = 70.dp
 private val ComposerAttachmentRemoveButtonSize = 22.dp
@@ -299,6 +304,7 @@ private val ComposerMentionFileTint = Color(0xFF2563EB)
 private val ComposerMentionSkillTint = Color(0xFF4F46E5)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
+private const val ThreadMarkdownPrewarmAllItems = Int.MAX_VALUE
 private fun isCodexManagedWorktreeProject(projectPath: String): Boolean =
     com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject(projectPath)
 
@@ -316,6 +322,17 @@ private data class TimelineBottomAnchorRequest(
     val autocompleteVisible: Boolean,
     val queuedDraftCount: Int,
     val pinnedPlanItemId: String?,
+)
+
+internal enum class ConversationMarkdownPrewarmStyle {
+    PRIMARY_BODY,
+    SECONDARY_BODY,
+}
+
+internal data class ConversationMarkdownPrewarmRequest(
+    val messageId: String,
+    val text: String,
+    val style: ConversationMarkdownPrewarmStyle,
 )
 
 private enum class ConversationCircleButtonStyle {
@@ -1375,6 +1392,9 @@ fun ConversationScreen(
     val selectedCommandExecutionItem = derivedState.selectedCommandExecutionItem
     val selectedCommandExecutionStatus = derivedState.selectedCommandExecutionStatus
     val backgroundTerminalSessions = derivedState.backgroundTerminalSessions
+    val markdownPrewarmRequests = remember(timelineItemsIdentity) {
+        selectConversationMarkdownPrewarmRequests(timelineItems)
+    }
     val showsEmptyTimelineState = timelineItems.isEmpty()
     val showsTimelineLoadingState =
         showsEmptyTimelineState &&
@@ -1421,6 +1441,11 @@ fun ConversationScreen(
             initialScrollApplied = true
         }
     }
+
+    PrewarmConversationMarkdownOnThreadSwitch(
+        threadId = thread.id,
+        requests = markdownPrewarmRequests,
+    )
 
     LaunchedEffect(thread.id, followBottomThresholdPx, initialScrollApplied, autoScrollMode) {
         snapshotFlow {
@@ -2567,8 +2592,321 @@ private fun ConversationMarkdownText(
     )
 }
 
+@Composable
+private fun PrewarmConversationMarkdownOnThreadSwitch(
+    threadId: String,
+    requests: List<ConversationMarkdownPrewarmRequest>,
+) {
+    if (requests.isEmpty()) {
+        return
+    }
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val chrome = remodexConversationChrome()
+    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val primaryBodyStyle = MaterialTheme.typography.bodyMedium
+    val secondaryBodyStyle = MaterialTheme.typography.bodySmall
+    val blockMarginPx = remember(density) { with(density) { 14.dp.roundToPx() } }
+    val codeBlockMarginPx = remember(density) { with(density) { 6.dp.roundToPx() } }
+    val codeBackgroundColor = remember(chrome, isDark) {
+        if (isDark) chrome.panelSurfaceStrong else chrome.nestedSurface
+    }
+    val codeBlockBackgroundColor = remember(chrome, isDark) {
+        if (isDark) chrome.panelSurfaceStrong else chrome.nestedSurface
+    }
+    val primarySpec = rememberConversationMarkdownPrewarmSpec(
+        style = primaryBodyStyle,
+        textColor = chrome.bodyText,
+        linkColor = chrome.accent,
+        codeBackgroundColor = codeBackgroundColor,
+        codeBlockBackgroundColor = codeBlockBackgroundColor,
+        blockMarginPx = blockMarginPx,
+        codeBlockMarginPx = codeBlockMarginPx,
+    )
+    val secondarySpec = rememberConversationMarkdownPrewarmSpec(
+        style = secondaryBodyStyle,
+        textColor = chrome.secondaryText,
+        linkColor = chrome.accent,
+        codeBackgroundColor = codeBackgroundColor,
+        codeBlockBackgroundColor = codeBlockBackgroundColor,
+        blockMarginPx = blockMarginPx,
+        codeBlockMarginPx = codeBlockMarginPx,
+    )
+
+    LaunchedEffect(threadId, requests, primarySpec, secondarySpec, isDark) {
+        val applicationContext = context.applicationContext
+        withContext(Dispatchers.Default) {
+            requests.forEach { request ->
+                val spec = when (request.style) {
+                    ConversationMarkdownPrewarmStyle.PRIMARY_BODY -> primarySpec
+                    ConversationMarkdownPrewarmStyle.SECONDARY_BODY -> secondarySpec
+                }
+                prewarmConversationMarkdownText(
+                    context = applicationContext,
+                    text = request.text,
+                    spec = spec,
+                    usesDarkSyntaxTheme = isDark,
+                )
+            }
+        }
+    }
+}
+
 internal fun formatStreamingPlainTextForDisplay(text: String): String {
     return text
+}
+
+private data class ConversationMarkdownPrewarmSpec(
+    val textColorArgb: Int,
+    val linkColorArgb: Int,
+    val codeBackgroundColorArgb: Int,
+    val codeBlockBackgroundColorArgb: Int,
+    val blockMarginPx: Int,
+    val codeBlockMarginPx: Int,
+    val textSizePx: Float?,
+    val lineHeightExtra: Float,
+)
+
+@Composable
+private fun rememberConversationMarkdownPrewarmSpec(
+    style: androidx.compose.ui.text.TextStyle,
+    textColor: Color,
+    linkColor: Color,
+    codeBackgroundColor: Color,
+    codeBlockBackgroundColor: Color,
+    blockMarginPx: Int,
+    codeBlockMarginPx: Int,
+): ConversationMarkdownPrewarmSpec {
+    val density = LocalDensity.current
+    val textSizePx = remember(style.fontSize, density) {
+        if (style.fontSize != TextUnit.Unspecified) {
+            with(density) { style.fontSize.toPx() }
+        } else {
+            Float.NaN
+        }
+    }
+    val lineHeightExtra = remember(style.lineHeight, textSizePx, density) {
+        if (style.lineHeight != TextUnit.Unspecified && !textSizePx.isNaN()) {
+            (with(density) { style.lineHeight.toPx() } - textSizePx).coerceAtLeast(0f)
+        } else {
+            0f
+        }
+    }
+    return remember(
+        textColor,
+        linkColor,
+        codeBackgroundColor,
+        codeBlockBackgroundColor,
+        blockMarginPx,
+        codeBlockMarginPx,
+        textSizePx,
+        lineHeightExtra,
+    ) {
+        ConversationMarkdownPrewarmSpec(
+            textColorArgb = textColor.toArgb(),
+            linkColorArgb = linkColor.toArgb(),
+            codeBackgroundColorArgb = codeBackgroundColor.toArgb(),
+            codeBlockBackgroundColorArgb = codeBlockBackgroundColor.toArgb(),
+            blockMarginPx = blockMarginPx,
+            codeBlockMarginPx = codeBlockMarginPx,
+            textSizePx = textSizePx.takeUnless(Float::isNaN),
+            lineHeightExtra = lineHeightExtra,
+        )
+    }
+}
+
+private fun prewarmConversationMarkdownText(
+    context: android.content.Context,
+    text: String,
+    spec: ConversationMarkdownPrewarmSpec,
+    usesDarkSyntaxTheme: Boolean,
+) {
+    val segments = cachedConversationMarkdownSegments(text)
+    if (segments.isEmpty()) {
+        return
+    }
+    val prism4jTheme = if (usesDarkSyntaxTheme) {
+        Prism4jThemeDarkula.create(android.graphics.Color.TRANSPARENT)
+    } else {
+        Prism4jThemeDefault.create(android.graphics.Color.TRANSPARENT)
+    }
+    val syntaxHighlight = Prism4jSyntaxHighlight.create(
+        RemodexPrism4jFactory.create(),
+        prism4jTheme,
+    )
+
+    segments.forEach { segment ->
+        when (segment) {
+            is ConversationMarkdownSegment.Markdown -> {
+                val renderToken = buildConversationMarkdownTextRenderToken(
+                    markdown = segment.text,
+                    textColorArgb = spec.textColorArgb,
+                    linkColorArgb = spec.linkColorArgb,
+                    codeBackgroundColorArgb = spec.codeBackgroundColorArgb,
+                    codeBlockBackgroundColorArgb = spec.codeBlockBackgroundColorArgb,
+                    blockMarginPx = spec.blockMarginPx,
+                    codeBlockMarginPx = spec.codeBlockMarginPx,
+                    textSizePx = spec.textSizePx,
+                    lineHeightExtra = spec.lineHeightExtra,
+                    enablesSelection = false,
+                )
+                val markwon = buildConversationMarkdownMarkwon(
+                    context = context,
+                    renderToken = renderToken,
+                )
+                cachedConversationMarkdownSpanned(renderToken) {
+                    markwon.toMarkdown(segment.text)
+                }
+            }
+
+            is ConversationMarkdownSegment.CodeBlock -> {
+                val normalizedLanguage = normalizeConversationMarkdownCodeLanguage(segment.language)
+                val renderToken = buildConversationMarkdownCodeBlockRenderToken(
+                    code = segment.code,
+                    language = segment.language,
+                    textColorArgb = spec.textColorArgb,
+                    textSizePx = spec.textSizePx,
+                    lineHeightExtra = spec.lineHeightExtra,
+                    enablesSelection = false,
+                    usesDarkSyntaxTheme = usesDarkSyntaxTheme,
+                )
+                cachedConversationMarkdownCodeBlockHighlightedText(
+                    token = renderToken,
+                    normalizedLanguage = normalizedLanguage,
+                ) {
+                    syntaxHighlight.highlight(normalizedLanguage, segment.code)
+                }
+            }
+
+            is ConversationMarkdownSegment.Image -> Unit
+            is ConversationMarkdownSegment.Mermaid -> Unit
+        }
+    }
+}
+
+internal fun selectConversationMarkdownPrewarmRequests(
+    timelineItems: List<RemodexConversationItem>,
+    maxItems: Int = ThreadMarkdownPrewarmAllItems,
+): List<ConversationMarkdownPrewarmRequest> {
+    if (maxItems == 0) {
+        return emptyList()
+    }
+    val effectiveLimit = if (maxItems < 0) Int.MAX_VALUE else maxItems
+    return buildList {
+        timelineItems.asReversed().forEach { item ->
+            if (size >= effectiveLimit) {
+                return@forEach
+            }
+            prewarmRequestsForConversationItem(item).forEach { request ->
+                if (size < effectiveLimit) {
+                    add(request)
+                }
+            }
+        }
+    }.asReversed()
+}
+
+private fun prewarmRequestsForConversationItem(
+    item: RemodexConversationItem,
+): List<ConversationMarkdownPrewarmRequest> {
+    if (item.isStreaming) {
+        return emptyList()
+    }
+    return when (item.speaker) {
+        ConversationSpeaker.ASSISTANT -> assistantMarkdownPrewarmRequests(item)
+        ConversationSpeaker.SYSTEM -> systemMarkdownPrewarmRequests(item)
+        ConversationSpeaker.USER -> emptyList()
+    }
+}
+
+private fun assistantMarkdownPrewarmRequests(
+    item: RemodexConversationItem,
+): List<ConversationMarkdownPrewarmRequest> {
+    if (item.kind != ConversationItemKind.CHAT) {
+        return emptyList()
+    }
+    val text = item.text.takeIf(String::isNotBlank) ?: return emptyList()
+    return listOf(
+        ConversationMarkdownPrewarmRequest(
+            messageId = item.id,
+            text = text,
+            style = ConversationMarkdownPrewarmStyle.PRIMARY_BODY,
+        ),
+    )
+}
+
+private fun systemMarkdownPrewarmRequests(
+    item: RemodexConversationItem,
+): List<ConversationMarkdownPrewarmRequest> {
+    return when (item.kind) {
+        ConversationItemKind.CHAT -> listOfNotNull(
+            item.text.takeIf(String::isNotBlank)?.let { text ->
+                ConversationMarkdownPrewarmRequest(
+                    messageId = item.id,
+                    text = text,
+                    style = ConversationMarkdownPrewarmStyle.SECONDARY_BODY,
+                )
+            },
+        )
+
+        ConversationItemKind.PLAN -> listOfNotNull(
+            (planPrimaryBodyText(item) ?: planAccessorySnapshot(item).summary)
+                .takeIf(String::isNotBlank)
+                ?.let { text ->
+                    ConversationMarkdownPrewarmRequest(
+                        messageId = item.id,
+                        text = text,
+                        style = ConversationMarkdownPrewarmStyle.PRIMARY_BODY,
+                    )
+                },
+        )
+
+        ConversationItemKind.REASONING -> {
+            val thinkingText = cachedThinkingText(item.text)
+            val activityPreview = cachedThinkingActivityPreview(thinkingText)
+            if (activityPreview != null || thinkingText.isBlank()) {
+                emptyList()
+            } else {
+                val content = cachedThinkingDisclosureContent(thinkingText)
+                buildList {
+                    content.sections.forEachIndexed { index, section ->
+                        section.detail.takeIf(String::isNotBlank)?.let { detail ->
+                            add(
+                                ConversationMarkdownPrewarmRequest(
+                                    messageId = "${item.id}:reasoning:$index",
+                                    text = detail,
+                                    style = ConversationMarkdownPrewarmStyle.SECONDARY_BODY,
+                                ),
+                            )
+                        }
+                    }
+                    if (isEmpty()) {
+                        content.fallbackText.takeIf(String::isNotBlank)?.let { fallbackText ->
+                            add(
+                                ConversationMarkdownPrewarmRequest(
+                                    messageId = "${item.id}:reasoning:fallback",
+                                    text = fallbackText,
+                                    style = ConversationMarkdownPrewarmStyle.SECONDARY_BODY,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        ConversationItemKind.COMMAND_EXECUTION -> listOfNotNull(
+            item.text.takeIf(String::isNotBlank)?.let { text ->
+                ConversationMarkdownPrewarmRequest(
+                    messageId = item.id,
+                    text = text,
+                    style = ConversationMarkdownPrewarmStyle.SECONDARY_BODY,
+                )
+            },
+        )
+
+        else -> emptyList()
+    }
 }
 
 internal fun assistantTextPrefersRichMarkdown(
@@ -2609,17 +2947,13 @@ internal fun resolveAssistantTextRenderMode(
     isStreaming: Boolean,
     richRenderArmed: Boolean,
 ): AssistantTextRenderMode {
+    if (isStreaming) {
+        return AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
+    }
     if (text.isBlank()) {
         return AssistantTextRenderMode.RICH_MARKDOWN
     }
-    if (!assistantTextPrefersRichMarkdown(text)) {
-        return AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
-    }
-    return if (isStreaming || !richRenderArmed) {
-        AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
-    } else {
-        AssistantTextRenderMode.RICH_MARKDOWN
-    }
+    return if (richRenderArmed) AssistantTextRenderMode.RICH_MARKDOWN else AssistantTextRenderMode.LIGHTWEIGHT_PLAIN
 }
 
 internal fun shouldResetAssistantRichRenderArmed(
@@ -2627,7 +2961,7 @@ internal fun shouldResetAssistantRichRenderArmed(
     isStreaming: Boolean,
     prefersRichMarkdown: Boolean,
 ): Boolean {
-    return isStreaming || !hasText || !prefersRichMarkdown
+    return isStreaming || !hasText
 }
 
 @Composable
@@ -2636,31 +2970,15 @@ private fun rememberAssistantTextRenderMode(
     text: String,
     isStreaming: Boolean,
 ): AssistantTextRenderMode {
-    var richRenderArmed by rememberSaveable(itemId) { mutableStateOf(false) }
     val hasText = text.isNotBlank()
-    val prefersRichMarkdown = remember(text) {
-        assistantTextPrefersRichMarkdown(text)
-    }
-    LaunchedEffect(itemId, isStreaming, hasText, prefersRichMarkdown) {
-        if (
-            shouldResetAssistantRichRenderArmed(
-                hasText = hasText,
-                isStreaming = isStreaming,
-                prefersRichMarkdown = prefersRichMarkdown,
-            )
-        ) {
-            richRenderArmed = false
-            return@LaunchedEffect
-        }
-        if (!richRenderArmed) {
-            delay(AssistantRichRenderSettleDelayMs)
-            richRenderArmed = true
-        }
-    }
     return resolveAssistantTextRenderMode(
         text = text,
         isStreaming = isStreaming,
-        richRenderArmed = richRenderArmed,
+        richRenderArmed = !shouldResetAssistantRichRenderArmed(
+            hasText = hasText,
+            isStreaming = isStreaming,
+            prefersRichMarkdown = true,
+        ),
     )
 }
 
