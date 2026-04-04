@@ -143,29 +143,59 @@ internal object ThreadHistoryReconciler {
             val turnId = normalizedIdentifier(historyItem.turnId)
             val incomingItemId = normalizedIdentifier(historyItem.itemId)
             if (turnId != null) {
-                if (incomingItemId == null) {
-                    merged.indexOfLast { candidate ->
-                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                            candidate.turnId == turnId &&
-                            normalizedIdentifier(candidate.itemId) == null
-                    }.takeIf { it >= 0 }?.let { return it }
+                val sameTurnCandidateIndices = merged.indices.filter { index ->
+                    val candidate = merged[index]
+                    candidate.speaker == ConversationSpeaker.ASSISTANT &&
+                        candidate.turnId == turnId
                 }
 
-                if (threadIsActive || threadIsRunning) {
-                    merged.indexOfLast { candidate ->
-                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                            candidate.turnId == turnId &&
-                            candidate.isStreaming
-                    }.takeIf { it >= 0 }?.let { return it }
+                val incomingText = normalizedText(historyItem.text)
+                if (incomingText.isNotEmpty()) {
+                    sameTurnCandidateIndices.lastOrNull { index ->
+                        normalizedText(merged[index].text) == incomingText
+                    }?.let { return it }
                 }
 
                 val threadIsStillActive = threadIsActive || threadIsRunning
+                if (incomingItemId != null) {
+                    sameTurnCandidateIndices.lastOrNull { index ->
+                        val candidateItemId = normalizedIdentifier(merged[index].itemId)
+                        candidateItemId == null || candidateItemId == incomingItemId
+                    }?.let { candidateIndex ->
+                        val candidate = merged[candidateIndex]
+                        val candidateItemId = normalizedIdentifier(candidate.itemId)
+                        if (
+                            threadIsStillActive ||
+                            candidate.isStreaming ||
+                            candidateItemId == null ||
+                            shouldReplaceClosedAssistantMessage(
+                                localItem = candidate,
+                                historyItem = historyItem,
+                            )
+                        ) {
+                            return candidateIndex
+                        }
+                        if (candidateItemId == incomingItemId) {
+                            return MatchSuppress
+                        }
+                    }
+                }
+
+                if (incomingItemId == null) {
+                    sameTurnCandidateIndices.lastOrNull { index ->
+                        normalizedIdentifier(merged[index].itemId) == null
+                    }?.let { return it }
+                }
+
+                if (threadIsActive || threadIsRunning) {
+                    sameTurnCandidateIndices.lastOrNull { index ->
+                        merged[index].isStreaming
+                    }?.let { return it }
+                }
+
                 if (!threadIsStillActive && assistantHistoryCountByTurn[turnId] == 1) {
-                    val candidateIndices = merged.indices.filter { index ->
-                        val candidate = merged[index]
-                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                            candidate.turnId == turnId &&
-                            !candidate.isStreaming
+                    val candidateIndices = sameTurnCandidateIndices.filter { index ->
+                        !merged[index].isStreaming
                     }
                     if (candidateIndices.size == 1) {
                         val candidateIndex = candidateIndices.single()
@@ -181,20 +211,6 @@ internal object ThreadHistoryReconciler {
                         }
                     }
                 }
-
-                if (incomingItemId != null) {
-                    merged.indexOfLast { candidate ->
-                        candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                            candidate.turnId == turnId &&
-                            normalizedIdentifier(candidate.itemId) == incomingItemId
-                    }.takeIf { it >= 0 }?.let { return it }
-                }
-
-                merged.indexOfLast { candidate ->
-                    candidate.speaker == ConversationSpeaker.ASSISTANT &&
-                        candidate.turnId == turnId &&
-                        normalizedText(candidate.text) == normalizedText(historyItem.text)
-                }.takeIf { it >= 0 }?.let { return it }
             }
         }
 

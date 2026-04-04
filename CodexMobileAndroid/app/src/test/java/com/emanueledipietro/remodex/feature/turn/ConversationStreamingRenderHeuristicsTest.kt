@@ -340,9 +340,9 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
-    fun `conversation timeline item key stays stable when an assistant item id is rebound after streaming`() {
+    fun `conversation timeline item key stays stable when assistant item metadata is rebound in place`() {
         val streamingItem = RemodexConversationItem(
-            id = "assistant-turn-1",
+            id = "assistant-local-row",
             speaker = ConversationSpeaker.ASSISTANT,
             kind = ConversationItemKind.CHAT,
             text = "Partial answer",
@@ -351,7 +351,6 @@ class ConversationStreamingRenderHeuristicsTest {
             isStreaming = true,
         )
         val completedItem = streamingItem.copy(
-            id = "assistant-item-1",
             itemId = "assistant-item-1",
             text = "Final answer",
             isStreaming = false,
@@ -360,6 +359,30 @@ class ConversationStreamingRenderHeuristicsTest {
         assertEquals(
             conversationTimelineItemKey(streamingItem),
             conversationTimelineItemKey(completedItem),
+        )
+    }
+
+    @Test
+    fun `conversation timeline item key stays unique for assistant rows that share an order index`() {
+        val first = RemodexConversationItem(
+            id = "assistant-stream-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "First reply",
+            turnId = "turn-1",
+            orderIndex = 25L,
+        )
+        val second = RemodexConversationItem(
+            id = "assistant-stream-2",
+            speaker = ConversationSpeaker.ASSISTANT,
+            kind = ConversationItemKind.CHAT,
+            text = "Second reply",
+            turnId = "turn-1",
+            orderIndex = 25L,
+        )
+
+        assertFalse(
+            conversationTimelineItemKey(first) == conversationTimelineItemKey(second),
         )
     }
 

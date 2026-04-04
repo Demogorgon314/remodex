@@ -2454,20 +2454,16 @@ private fun LazyListScope.conversationTimelineItems(
 internal fun conversationTimelineItemKey(
     item: RemodexConversationItem,
 ): String {
-    if (
-        item.speaker == ConversationSpeaker.ASSISTANT &&
-        item.kind == ConversationItemKind.CHAT &&
-        item.orderIndex >= 0L
-    ) {
-        return "assistant-chat:${item.orderIndex}"
+    item.id.trim().takeIf(String::isNotEmpty)?.let { messageId ->
+        return "${item.speaker.name}:${item.kind.name}:message:$messageId"
     }
     item.itemId?.trim()?.takeIf(String::isNotEmpty)?.let { itemId ->
         return "${item.speaker.name}:${item.kind.name}:item:$itemId"
     }
     return if (item.orderIndex >= 0L) {
-        "${item.id}:${item.orderIndex}"
+        "${item.speaker.name}:${item.kind.name}:order:${item.orderIndex}"
     } else {
-        item.id
+        "${item.speaker.name}:${item.kind.name}:fallback"
     }
 }
 
