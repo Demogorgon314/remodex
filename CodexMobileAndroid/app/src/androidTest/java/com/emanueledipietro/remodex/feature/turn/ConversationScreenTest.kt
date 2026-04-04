@@ -242,6 +242,135 @@ class ConversationScreenTest {
     }
 
     @Test
+    fun openingConversationRefreshesGitState() {
+        var refreshCalls = 0
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(RemodexComposerAutocompleteState()),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = { refreshCalls += 1 },
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+
+        assertEquals(1, refreshCalls)
+    }
+
+    @Test
+    fun repoRefreshSignalSchedulesGitRefresh() {
+        var scheduledRefreshCalls = 0
+        var uiState by mutableStateOf(conversationUiState(RemodexComposerAutocompleteState()))
+
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = uiState,
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onScheduleGitStateRefresh = { scheduledRefreshCalls += 1 },
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.runOnIdle {
+            uiState = conversationUiState(
+                autocompleteState = RemodexComposerAutocompleteState(),
+                messages = listOf(
+                    RemodexConversationItem(
+                        id = "file-change-1",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.FILE_CHANGE,
+                        text = "diff --git a/app.kt b/app.kt",
+                    ),
+                ),
+                repoRefreshSignal = "file-change-1|29|false",
+            )
+        }
+
+        composeRule.waitForIdle()
+
+        assertEquals(1, scheduledRefreshCalls)
+    }
+
+    @Test
     fun composerShowsVoiceButton() {
         composeRule.setContent {
             RemodexTheme {
@@ -1687,6 +1816,7 @@ class ConversationScreenTest {
         canRestoreQueuedDrafts: Boolean = false,
         steeringQueuedDraftId: String? = null,
         isQueuePaused: Boolean = false,
+        repoRefreshSignal: String? = null,
     ): AppUiState {
         val thread = RemodexThreadSummary(
             id = "thread-1",
@@ -1702,6 +1832,7 @@ class ConversationScreenTest {
         return AppUiState(
             selectedThread = thread,
             threads = listOf(thread),
+            repoRefreshSignal = repoRefreshSignal,
             isSelectedThreadHydrating = isSelectedThreadHydrating,
             composer = ComposerUiState(
                 draftText = "",

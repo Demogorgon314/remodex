@@ -37,6 +37,8 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewSelection
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.ConversationItemKind
+import com.emanueledipietro.remodex.model.ConversationSpeaker
+import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
@@ -133,6 +135,7 @@ data class AppUiState(
     val collapsedProjectGroupIds: Set<String> = emptySet(),
     val threads: List<RemodexThreadSummary> = emptyList(),
     val selectedThread: RemodexThreadSummary? = null,
+    val repoRefreshSignal: String? = null,
     val notificationRegistration: RemodexNotificationRegistrationState = RemodexNotificationRegistrationState(),
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
     val availableModels: List<RemodexModelOption> = emptyList(),
@@ -388,10 +391,12 @@ class AppViewModel(
     private var isManualScannerActive = false
     private var pendingGitBranchOperation: PendingGitBranchOperation? = null
     private var pendingDesktopHandoffThreadId: String? = null
+    private var gitStateRefreshJob: Job? = null
     private var suppressAutoReconnectUntilManualConnect = false
     internal var autoReconnectAttemptLimitOverride: Int? = null
     internal var autoReconnectBackoffMillisOverride: List<Long>? = null
     internal var reconnectSleepChunkMillisOverride: Long? = null
+    private val gitStateRefreshDebounceMillis = 350L
 
     private val composerRenderStateA =
         combine(
@@ -567,6 +572,7 @@ class AppViewModel(
                 collapsedProjectGroupIds = snapshot.collapsedProjectGroupIds,
                 threads = snapshot.threads,
                 selectedThread = selectedThread,
+                repoRefreshSignal = selectedThread?.messages?.let(::buildRepoRefreshSignal),
                 notificationRegistration = snapshot.notificationRegistration,
                 runtimeDefaults = snapshot.runtimeDefaults,
                 availableModels = snapshot.availableModels,
@@ -2097,6 +2103,10 @@ class AppViewModel(
         uiState.value.selectedThread?.id?.let(::refreshGitState)
     }
 
+    fun scheduleGitStateRefresh() {
+        uiState.value.selectedThread?.id?.let(::scheduleGitStateRefresh)
+    }
+
     fun loadRepositoryDiff(onLoaded: (RemodexGitRepoDiff) -> Unit) {
         val threadId = uiState.value.selectedThread?.id ?: return
         viewModelScope.launch {
@@ -3377,6 +3387,17 @@ class AppViewModel(
         }
     }
 
+    private fun scheduleGitStateRefresh(threadId: String) {
+        gitStateRefreshJob?.cancel()
+        gitStateRefreshJob = viewModelScope.launch {
+            delay(gitStateRefreshDebounceMillis)
+            if (uiState.value.selectedThread?.id != threadId) {
+                return@launch
+            }
+            refreshGitState(threadId)
+        }
+    }
+
     private fun updateGitState(
         threadId: String,
         transform: (RemodexGitState) -> RemodexGitState,
@@ -4202,6 +4223,20 @@ class AppViewModel(
                 siblingChangeSets = sameRepoReadyChangeSets,
             )
         }.toMap()
+    }
+
+    private fun buildRepoRefreshSignal(
+        messages: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+    ): String? {
+        val latestRepoMessage = messages.lastOrNull { message: com.emanueledipietro.remodex.model.RemodexConversationItem ->
+            message.speaker == ConversationSpeaker.SYSTEM &&
+                (
+                    message.kind == ConversationItemKind.FILE_CHANGE ||
+                        message.kind == ConversationItemKind.COMMAND_EXECUTION
+                    )
+        } ?: return null
+
+        return "${latestRepoMessage.id}|${latestRepoMessage.text.length}|${latestRepoMessage.isStreaming}"
     }
 
     private fun assistantRevertPresentation(

@@ -2328,6 +2328,75 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `ui state exposes repo refresh signal for latest repo affecting message`() = runTest {
+        val repoMessage = RemodexConversationItem(
+            id = "file-change-2",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.FILE_CHANGE,
+            text = "updated diff",
+            isStreaming = true,
+        )
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Git thread",
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "chat-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                text = "Not repo related",
+                            ),
+                            RemodexConversationItem(
+                                id = "file-change-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.FILE_CHANGE,
+                                text = "old diff",
+                            ),
+                            repoMessage,
+                        ),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        assertEquals(
+            "file-change-2|12|true",
+            viewModel.uiState.value.repoRefreshSignal,
+        )
+    }
+
+    @Test
+    fun `scheduled git state refresh debounces repeated repo updates`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        repository.gitStateRequests = 0
+
+        viewModel.scheduleGitStateRefresh()
+        viewModel.scheduleGitStateRefresh()
+        advanceTimeBy(349)
+        runCurrent()
+
+        assertEquals(0, repository.gitStateRequests)
+
+        advanceTimeBy(1)
+        advanceUntilIdle()
+
+        assertEquals(1, repository.gitStateRequests)
+    }
+
+    @Test
     fun `active git actions surface a dismissible git alert`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -3000,6 +3069,7 @@ class AppViewModelTest {
         var gitDiffDelayMs = 0L
         var gitDiffResult = RemodexGitRepoDiff()
         var gitStateResult = RemodexGitState()
+        var gitStateRequests = 0
         var gitCommitResults: List<RemodexGitCommit> = emptyList()
         var gitStateError: Throwable? = null
         var checkoutGitBranchError: Throwable? = null
@@ -3359,6 +3429,7 @@ class AppViewModelTest {
         }
 
         override suspend fun loadGitState(threadId: String): RemodexGitState {
+            gitStateRequests += 1
             gitStateError?.let { throw it }
             return gitStateResult
         }

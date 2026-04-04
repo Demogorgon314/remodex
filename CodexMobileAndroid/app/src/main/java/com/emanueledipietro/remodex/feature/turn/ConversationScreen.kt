@@ -1358,6 +1358,7 @@ fun ConversationScreen(
     onPrepareForkDestinationSelection: () -> Unit = {},
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
+    onScheduleGitStateRefresh: () -> Unit = onRefreshGitState,
     onRefreshUsageStatus: () -> Unit = {},
     onRequestContinueOnMac: () -> Unit = {},
     onCheckoutGitBranch: (String) -> Unit,
@@ -1429,6 +1430,7 @@ fun ConversationScreen(
         ConversationAutoScrollMode.valueOf(autoScrollModeName)
     }
     val shouldPauseAutomaticScrolling = isUserDragging || isUserScrollCooldownActive
+    var previousThreadRunning by rememberSaveable(thread.id) { mutableStateOf(thread.isRunning) }
     val derivedState = rememberConversationScreenDerivedState(
         thread = thread,
         uiState = uiState,
@@ -1514,6 +1516,25 @@ fun ConversationScreen(
             onForkThread(destination)
         }
     }
+    LaunchedEffect(thread.id) {
+        onRefreshGitState()
+    }
+
+    LaunchedEffect(thread.id, uiState.repoRefreshSignal) {
+        if (uiState.repoRefreshSignal == null) {
+            return@LaunchedEffect
+        }
+        onScheduleGitStateRefresh()
+    }
+
+    LaunchedEffect(thread.id, thread.isRunning) {
+        val wasRunning = previousThreadRunning
+        previousThreadRunning = thread.isRunning
+        if (wasRunning && !thread.isRunning) {
+            onRefreshGitState()
+        }
+    }
+
     LaunchedEffect(thread.id, lastTimelineItemId) {
         if (!initialScrollApplied && timelineItems.isNotEmpty()) {
             withFrameNanos { }
@@ -1718,11 +1739,15 @@ fun ConversationScreen(
 
     LaunchedEffect(thread.id, uiState.connectionStatus.phase, thread.isRunning) {
         val currentPhase = uiState.connectionStatus.phase
+        val reconnected = previousConnectionPhase != RemodexConnectionPhase.CONNECTED &&
+            currentPhase == RemodexConnectionPhase.CONNECTED
         val reconnectedToLiveThread =
-            previousConnectionPhase != RemodexConnectionPhase.CONNECTED &&
-                currentPhase == RemodexConnectionPhase.CONNECTED &&
+            reconnected &&
                 thread.isRunning
         previousConnectionPhase = currentPhase
+        if (reconnected) {
+            onRefreshGitState()
+        }
         if (!reconnectedToLiveThread) {
             return@LaunchedEffect
         }

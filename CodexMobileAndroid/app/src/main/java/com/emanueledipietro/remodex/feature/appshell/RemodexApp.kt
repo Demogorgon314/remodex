@@ -1062,6 +1062,7 @@ private fun MainPane(
                             onPrepareForkDestinationSelection = viewModel::prepareForkDestinationSelection,
                             onSelectGitBaseBranch = viewModel::selectGitBaseBranch,
                             onRefreshGitState = viewModel::refreshGitState,
+                            onScheduleGitStateRefresh = viewModel::scheduleGitStateRefresh,
                             onRefreshUsageStatus = viewModel::refreshUsageStatus,
                             onRequestContinueOnMac = viewModel::requestContinueOnMac,
                             onCheckoutGitBranch = viewModel::checkoutGitBranch,
