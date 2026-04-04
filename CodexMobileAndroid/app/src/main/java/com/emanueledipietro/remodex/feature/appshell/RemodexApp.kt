@@ -21,6 +21,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -54,6 +59,7 @@ import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,6 +80,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
@@ -1853,21 +1860,32 @@ private fun HomeEmptyState(
     onOpenScanner: () -> Unit,
     onForgetPair: () -> Unit,
 ) {
-    val statusLabel = when {
-        uiState.isConnected -> "Connected"
-        uiState.trustedMac != null -> "Saved pairing"
-        else -> "Offline"
+    val presentation = uiState.toHomeEmptyStatePresentation()
+    val statusColor = when (presentation.status) {
+        HomeEmptyStateStatus.CONNECTING -> MaterialTheme.colorScheme.tertiary
+        HomeEmptyStateStatus.CONNECTED -> MaterialTheme.colorScheme.primary
+        HomeEmptyStateStatus.OFFLINE -> MaterialTheme.colorScheme.outline
     }
-    val primaryTitle = when {
-        uiState.isConnected -> "Disconnect"
-        uiState.trustedMac != null -> "Reconnect"
-        else -> "Scan QR Code"
-    }
-    val statusColor = when {
-        uiState.isConnected -> MaterialTheme.colorScheme.primary
-        uiState.trustedMac != null -> MaterialTheme.colorScheme.tertiary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
+    val isBusy = presentation.status == HomeEmptyStateStatus.CONNECTING
+    val infiniteTransition = rememberInfiniteTransition(label = "home_status")
+    val statusDotScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isBusy) 1.4f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "home_status_scale",
+    )
+    val statusDotAlpha by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isBusy) 0.6f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "home_status_alpha",
+    )
 
     Column(
         modifier = Modifier
@@ -1893,12 +1911,22 @@ private fun HomeEmptyState(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Surface(
-                    modifier = Modifier.size(6.dp),
+                    modifier = Modifier
+                        .size(6.dp)
+                        .graphicsLayer {
+                            scaleX = if (isBusy) statusDotScale else 1f
+                            scaleY = if (isBusy) statusDotScale else 1f
+                            alpha = if (isBusy) statusDotAlpha else 1f
+                        },
                     shape = CircleShape,
                     color = statusColor,
                 ) {}
                 Text(
-                    text = statusLabel,
+                    text = when (presentation.status) {
+                        HomeEmptyStateStatus.CONNECTING -> "Connecting"
+                        HomeEmptyStateStatus.CONNECTED -> "Connected"
+                        HomeEmptyStateStatus.OFFLINE -> "Offline"
+                    },
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1907,44 +1935,128 @@ private fun HomeEmptyState(
 
         Spacer(modifier = Modifier.size(18.dp))
 
-        uiState.trustedMac?.let { trustedMac ->
+        presentation.trustedMac?.let { trustedMac ->
+            TrustedMacSummaryCard(trustedMac = trustedMac)
+            Spacer(modifier = Modifier.size(4.dp))
+        }
+
+        presentation.bodyMessage?.let { message ->
             Text(
-                text = trustedMac.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.widthIn(max = 276.dp),
+                textAlign = TextAlign.Center,
             )
-            trustedMac.detail?.takeIf(String::isNotBlank)?.let { detail ->
-                Spacer(modifier = Modifier.size(6.dp))
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Spacer(modifier = Modifier.size(16.dp))
+        } ?: Spacer(modifier = Modifier.size(8.dp))
+
+        Button(
+            modifier = Modifier.widthIn(min = 150.dp, max = 220.dp),
+            onClick = onPrimaryAction,
+            enabled = presentation.primaryEnabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
+                disabledContentColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.92f),
+            ),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (presentation.isPrimaryBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp,
+                    )
+                }
+                Text(presentation.primaryTitle)
             }
         }
 
-        Spacer(modifier = Modifier.size(8.dp))
-
-        Text(
-            text = uiState.connectionMessage,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.widthIn(max = 320.dp),
-        )
-
-        Spacer(modifier = Modifier.size(20.dp))
-
-        Button(onClick = onPrimaryAction) {
-            Text(primaryTitle)
-        }
-
-        if (uiState.trustedMac != null && !uiState.isConnected) {
+        if (presentation.showsScanNewQrAction) {
             Spacer(modifier = Modifier.size(8.dp))
             TextButton(onClick = onOpenScanner) {
                 Text("Scan New QR Code")
             }
+        }
+        if (presentation.showsForgetPairAction) {
             TextButton(onClick = onForgetPair) {
                 Text("Forget Pair")
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrustedMacSummaryCard(trustedMac: com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation) {
+    Surface(
+        modifier = Modifier.widthIn(max = 288.dp),
+        shape = RoundedCornerShape(15.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                text = trustedMac.title.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    modifier = Modifier.size(22.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.045f),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Outlined.Computer,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp),
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    Text(
+                        text = trustedMac.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    trustedMac.systemName?.takeIf(String::isNotBlank)?.let { systemName ->
+                        Text(
+                            text = "\"$systemName\"",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    trustedMac.detail?.takeIf(String::isNotBlank)?.let { detail ->
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
     }
