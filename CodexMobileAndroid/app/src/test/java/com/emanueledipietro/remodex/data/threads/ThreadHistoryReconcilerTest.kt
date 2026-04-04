@@ -8,10 +8,15 @@ import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputAnswer
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.JsonPrimitive
 
 class ThreadHistoryReconcilerTest {
     @Test
@@ -237,6 +242,71 @@ class ThreadHistoryReconcilerTest {
 
         assertEquals(1, merged.size)
         assertEquals(42L, merged.single().createdAtEpochMs)
+    }
+
+    @Test
+    fun `merge history items preserves local structured user input response when history lacks it`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "prompt-local",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                text = "Asked 1 question",
+                structuredUserInputRequest = RemodexStructuredUserInputRequest(
+                    requestId = JsonPrimitive("request-1"),
+                    questions = listOf(
+                        RemodexStructuredUserInputQuestion(
+                            id = "path",
+                            header = "",
+                            question = "Which path should we take?",
+                        ),
+                    ),
+                ),
+                structuredUserInputResponse = RemodexStructuredUserInputResponse(
+                    answersByQuestionId = mapOf(
+                        "path" to RemodexStructuredUserInputAnswer(
+                            answers = listOf("Android local"),
+                        ),
+                    ),
+                ),
+                turnId = "turn-1",
+                itemId = "prompt-item-1",
+                orderIndex = 1L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "prompt-history",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                text = "Asked 1 question",
+                structuredUserInputRequest = RemodexStructuredUserInputRequest(
+                    requestId = JsonPrimitive("request-1"),
+                    questions = listOf(
+                        RemodexStructuredUserInputQuestion(
+                            id = "path",
+                            header = "",
+                            question = "Which path should we take?",
+                        ),
+                    ),
+                ),
+                turnId = "turn-1",
+                itemId = "prompt-item-1",
+                orderIndex = 2L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(
+            listOf("Android local"),
+            merged.single().structuredUserInputResponse?.answersFor("path"),
+        )
     }
 
     @Test

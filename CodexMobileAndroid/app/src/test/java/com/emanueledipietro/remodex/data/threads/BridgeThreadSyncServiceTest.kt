@@ -34,10 +34,13 @@ import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexRequestedPermissions
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputAnswer
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -4248,6 +4251,220 @@ class BridgeThreadSyncServiceTest {
             listOf("ui", "interaction"),
             answersObject?.get("scope")?.jsonObjectOrNull?.firstArray("answers")
                 ?.mapNotNull { value -> value.jsonPrimitive.contentOrNull },
+        )
+    }
+
+    @Test
+    fun `structured user input response metadata normalizes question ids and answers`() {
+        val response = structuredUserInputResponseFromAnswers(
+            answersByQuestionId = mapOf(
+                " project " to listOf(" android ", ""),
+                "" to listOf("ignored"),
+            ),
+        )
+
+        assertEquals(
+            RemodexStructuredUserInputResponse(
+                answersByQuestionId = mapOf(
+                    "project" to RemodexStructuredUserInputAnswer(
+                        answers = listOf("android"),
+                    ),
+                ),
+            ),
+            response,
+        )
+    }
+
+    @Test
+    fun `structured user input response metadata redacts secret answers for local storage`() {
+        val response = structuredUserInputResponseFromAnswers(
+            answersByQuestionId = mapOf(
+                "token" to listOf("sk-live-123"),
+            ),
+            request = RemodexStructuredUserInputRequest(
+                requestId = JsonPrimitive("request-secret"),
+                questions = listOf(
+                    RemodexStructuredUserInputQuestion(
+                        id = "token",
+                        header = "",
+                        question = "API token",
+                        isSecret = true,
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(
+            RemodexStructuredUserInputResponse(
+                answersByQuestionId = mapOf(
+                    "token" to RemodexStructuredUserInputAnswer(
+                        answers = listOf("Answered"),
+                    ),
+                ),
+            ),
+            response,
+        )
+    }
+
+    @Test
+    fun `record structured user input response locally stores answers on prompt item`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-response",
+                    title = "Plan response",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-response",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "item-plan-request",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                text = "Which path should we take?",
+                                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                                turnId = "turn-plan-request",
+                                itemId = "item-plan-request",
+                                structuredUserInputRequest = RemodexStructuredUserInputRequest(
+                                    requestId = JsonPrimitive("request-plan-1"),
+                                    questions = listOf(
+                                        com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion(
+                                            id = "direction",
+                                            header = "",
+                                            question = "Which path should we take?",
+                                            options = emptyList(),
+                                        ),
+                                    ),
+                                ),
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        invokePrivateMethod(
+            service,
+            "recordStructuredUserInputResponseLocally",
+            JsonPrimitive("request-plan-1"),
+            mapOf("direction" to listOf("Android local")),
+            "thread-plan-response",
+        )
+
+        val prompt = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+            .singleOrNull { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT }
+        assertNotNull(prompt)
+        assertEquals(
+            RemodexStructuredUserInputResponse(
+                answersByQuestionId = mapOf(
+                    "direction" to RemodexStructuredUserInputAnswer(
+                        answers = listOf("Android local"),
+                    ),
+                ),
+            ),
+            prompt?.structuredUserInputResponse,
+        )
+    }
+
+    @Test
+    fun `upserting structured user input prompt preserves local answers`() = runTest {
+        val coordinator = SecureConnectionCoordinator(
+            store = InMemorySecureStore(),
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-plan-response",
+                    title = "Plan response",
+                    preview = "",
+                    projectPath = "/tmp/project-plan-response",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "item-plan-request",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                text = "Asked 1 question",
+                                kind = ConversationItemKind.USER_INPUT_PROMPT,
+                                turnId = "turn-plan-request",
+                                itemId = "item-plan-request",
+                                structuredUserInputRequest = RemodexStructuredUserInputRequest(
+                                    requestId = JsonPrimitive("request-plan-1"),
+                                    questions = listOf(
+                                        RemodexStructuredUserInputQuestion(
+                                            id = "direction",
+                                            header = "",
+                                            question = "Which path should we take?",
+                                        ),
+                                    ),
+                                ),
+                                structuredUserInputResponse = RemodexStructuredUserInputResponse(
+                                    answersByQuestionId = mapOf(
+                                        "direction" to RemodexStructuredUserInputAnswer(
+                                            answers = listOf("Android local"),
+                                        ),
+                                    ),
+                                ),
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        invokePrivateMethod(
+            service,
+            "upsertStructuredUserInputPrompt",
+            "thread-plan-response",
+            "turn-plan-request",
+            "item-plan-request",
+            RemodexStructuredUserInputRequest(
+                requestId = JsonPrimitive("request-plan-1"),
+                questions = listOf(
+                    RemodexStructuredUserInputQuestion(
+                        id = "direction",
+                        header = "Direction",
+                        question = "Which path should we take?",
+                    ),
+                ),
+            ),
+        )
+
+        val prompt = TurnTimelineReducer.reduceProjected(service.threads.value.single().timelineMutations)
+            .singleOrNull { item -> item.kind == ConversationItemKind.USER_INPUT_PROMPT }
+        assertNotNull(prompt)
+        assertEquals(
+            listOf("Android local"),
+            prompt?.structuredUserInputResponse?.answersFor("direction"),
         )
     }
 

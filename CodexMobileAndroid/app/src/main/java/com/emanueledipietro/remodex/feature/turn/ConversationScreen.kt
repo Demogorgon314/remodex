@@ -240,7 +240,9 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexSubagentThreadPresentation
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
@@ -248,6 +250,7 @@ import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.isRunningBackgroundTerminal
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
+import com.emanueledipietro.remodex.model.StructuredSecretAnswerPlaceholder
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
 import com.emanueledipietro.remodex.platform.media.isSupportedComposerImageUri
@@ -10736,6 +10739,23 @@ internal fun structuredUserInputSummaryLabel(questionCount: Int): String {
     }
 }
 
+internal fun structuredUserInputAnswerLines(
+    question: RemodexStructuredUserInputQuestion,
+    response: RemodexStructuredUserInputResponse?,
+): List<String> {
+    val answers = response?.answersFor(question.id)
+        .orEmpty()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+    if (answers.isEmpty()) {
+        return emptyList()
+    }
+    if (question.isSecret) {
+        return listOf(StructuredSecretAnswerPlaceholder)
+    }
+    return answers
+}
+
 private fun RemodexConversationItem.isResolvedStructuredUserInputSummary(): Boolean {
     val request = structuredUserInputRequest ?: return false
     return text == structuredUserInputSummaryLabel(request.questions.size)
@@ -10961,6 +10981,10 @@ private fun StructuredUserInputSummaryRow(item: RemodexConversationItem) {
             AnimatedVisibility(visible = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     request.questions.forEach { question ->
+                        val answerLines = structuredUserInputAnswerLines(
+                            question = question,
+                            response = item.structuredUserInputResponse,
+                        )
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             question.header.trim().takeIf(String::isNotEmpty)?.let { header ->
                                 Text(
@@ -10975,6 +10999,25 @@ private fun StructuredUserInputSummaryRow(item: RemodexConversationItem) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = chrome.secondaryText,
                             )
+                            if (answerLines.isNotEmpty()) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                ) {
+                                    Text(
+                                        text = "Your answer",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = chrome.secondaryText,
+                                    )
+                                    answerLines.forEach { answer ->
+                                        Text(
+                                            text = answer,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = chrome.bodyText,
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

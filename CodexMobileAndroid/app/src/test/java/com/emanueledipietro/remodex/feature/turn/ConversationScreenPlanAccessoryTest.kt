@@ -8,8 +8,10 @@ import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputAnswer
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -471,6 +473,51 @@ class ConversationScreenPlanAccessoryTest {
     fun `structured user input summary label pluralizes by request question count`() {
         assertEquals("Asked 1 question", structuredUserInputSummaryLabel(1))
         assertEquals("Asked 3 questions", structuredUserInputSummaryLabel(3))
+    }
+
+    @Test
+    fun `structured user input answer lines return recorded non secret answers`() {
+        val question = RemodexStructuredUserInputQuestion(
+            id = "path",
+            header = "",
+            question = "Which path should we take?",
+        )
+
+        val answerLines = structuredUserInputAnswerLines(
+            question = question,
+            response = RemodexStructuredUserInputResponse(
+                answersByQuestionId = mapOf(
+                    "path" to RemodexStructuredUserInputAnswer(
+                        answers = listOf("Android local persistence"),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(listOf("Android local persistence"), answerLines)
+    }
+
+    @Test
+    fun `structured user input answer lines hide secret answers`() {
+        val question = RemodexStructuredUserInputQuestion(
+            id = "token",
+            header = "",
+            question = "API token",
+            isSecret = true,
+        )
+
+        val answerLines = structuredUserInputAnswerLines(
+            question = question,
+            response = RemodexStructuredUserInputResponse(
+                answersByQuestionId = mapOf(
+                    "token" to RemodexStructuredUserInputAnswer(
+                        answers = listOf("sk-live-123"),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals(listOf("Answered"), answerLines)
     }
 
     private fun planItem(

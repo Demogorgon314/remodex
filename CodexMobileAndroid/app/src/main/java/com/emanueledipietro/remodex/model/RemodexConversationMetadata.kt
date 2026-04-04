@@ -6,6 +6,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
+const val StructuredSecretAnswerPlaceholder = "Answered"
+
 @Serializable
 enum class RemodexMessageDeliveryState {
     PENDING,
@@ -125,6 +127,20 @@ data class RemodexStructuredUserInputRequest(
             is JsonPrimitive -> requestId.contentOrNull ?: requestId.toString()
             else -> requestId.toString()
         }.trim().ifEmpty { requestId.toString() }
+}
+
+@Serializable
+data class RemodexStructuredUserInputAnswer(
+    val answers: List<String> = emptyList(),
+)
+
+@Serializable
+data class RemodexStructuredUserInputResponse(
+    val answersByQuestionId: Map<String, RemodexStructuredUserInputAnswer> = emptyMap(),
+) {
+    fun answersFor(questionId: String): List<String> {
+        return answersByQuestionId[questionId]?.answers.orEmpty()
+    }
 }
 
 @Serializable

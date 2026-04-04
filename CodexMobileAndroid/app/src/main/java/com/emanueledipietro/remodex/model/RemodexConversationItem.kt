@@ -49,6 +49,7 @@ data class RemodexConversationItem(
     val planState: RemodexPlanState? = null,
     val subagentAction: RemodexSubagentAction? = null,
     val structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
+    val structuredUserInputResponse: RemodexStructuredUserInputResponse? = null,
     val orderIndex: Long = 0L,
     val assistantChangeSet: RemodexAssistantChangeSet? = null,
     val systemTurnOrderingHint: ConversationSystemTurnOrderingHint = ConversationSystemTurnOrderingHint.AUTO,

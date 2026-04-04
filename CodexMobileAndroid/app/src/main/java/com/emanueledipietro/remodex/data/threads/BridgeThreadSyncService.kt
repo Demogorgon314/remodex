@@ -66,8 +66,10 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputOption
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputAnswer
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexSubagentRef
 import com.emanueledipietro.remodex.model.RemodexSubagentState
@@ -80,6 +82,7 @@ import com.emanueledipietro.remodex.model.fallbackConversationImageDisplayName
 import com.emanueledipietro.remodex.model.isRunningBackgroundTerminal
 import com.emanueledipietro.remodex.model.isInlineImageDataUrl
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
+import com.emanueledipietro.remodex.model.StructuredSecretAnswerPlaceholder
 import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
@@ -1451,6 +1454,10 @@ class BridgeThreadSyncService(
         secureConnectionCoordinator.sendResponse(
             id = requestId,
             result = buildStructuredUserInputResponse(answersByQuestionId),
+        )
+        recordStructuredUserInputResponseLocally(
+            requestId = requestId,
+            answersByQuestionId = answersByQuestionId,
         )
     }
 
@@ -4633,6 +4640,7 @@ class BridgeThreadSyncService(
                 planState = planState,
                 subagentAction = subagentAction,
                 structuredUserInputRequest = presentation.structuredUserInputRequest,
+                structuredUserInputResponse = existingItem?.structuredUserInputResponse,
                 orderIndex = resolveOrderIndex(
                     threadId = threadId,
                     messageId = effectiveMessageId,
@@ -4817,6 +4825,7 @@ class BridgeThreadSyncService(
                 turnId = turnId ?: existingItem?.turnId,
                 itemId = itemId,
                 structuredUserInputRequest = request,
+                structuredUserInputResponse = existingItem?.structuredUserInputResponse,
                 orderIndex = resolveOrderIndex(
                     threadId = threadId,
                     messageId = messageId,
@@ -4857,6 +4866,37 @@ class BridgeThreadSyncService(
                         item = item.copy(
                             text = summaryText,
                             isStreaming = false,
+                        ),
+                    )
+                }
+        }
+    }
+
+    private fun recordStructuredUserInputResponseLocally(
+        requestId: JsonElement,
+        answersByQuestionId: Map<String, List<String>>,
+        threadIdHint: String? = null,
+    ) {
+        val resolvedRequestId = rpcIdKey(requestId) ?: return
+        val threadIds = threadIdHint?.let(::listOf) ?: backingThreads.value.map(ThreadSyncSnapshot::id)
+        threadIds.forEach { threadId ->
+            val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return@forEach
+            projectedTimelineItems(snapshot)
+                .firstOrNull { item ->
+                    item.kind == ConversationItemKind.USER_INPUT_PROMPT &&
+                        item.structuredUserInputRequest?.requestIdKey == resolvedRequestId
+                }?.let { item ->
+                    val response = structuredUserInputResponseFromAnswers(
+                        answersByQuestionId = answersByQuestionId,
+                        request = item.structuredUserInputRequest,
+                    )
+                    if (response.answersByQuestionId.isEmpty()) {
+                        return@let
+                    }
+                    upsertStreamingItem(
+                        threadId = threadId,
+                        item = item.copy(
+                            structuredUserInputResponse = response,
                         ),
                     )
                 }
@@ -9586,14 +9626,12 @@ internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolea
 internal fun buildStructuredUserInputResponse(
     answersByQuestionId: Map<String, List<String>>,
 ): JsonObject {
+    val normalizedAnswersByQuestionId = normalizedStructuredUserInputAnswersByQuestionId(answersByQuestionId)
     return buildJsonObject {
         put(
             "answers",
             buildJsonObject {
-                answersByQuestionId.forEach { (questionId, answers) ->
-                    val filteredAnswers = answers
-                        .map(String::trim)
-                        .filter(String::isNotEmpty)
+                normalizedAnswersByQuestionId.forEach { (questionId, filteredAnswers) ->
                     put(
                         questionId,
                         buildJsonObject {
@@ -9611,6 +9649,40 @@ internal fun buildStructuredUserInputResponse(
             },
         )
     }
+}
+
+internal fun structuredUserInputResponseFromAnswers(
+    answersByQuestionId: Map<String, List<String>>,
+    request: RemodexStructuredUserInputRequest? = null,
+): RemodexStructuredUserInputResponse {
+    val questionsById = request?.questions.orEmpty().associateBy(RemodexStructuredUserInputQuestion::id)
+    return RemodexStructuredUserInputResponse(
+        answersByQuestionId = normalizedStructuredUserInputAnswersByQuestionId(answersByQuestionId)
+            .mapValues { (questionId, answers) ->
+                val normalizedAnswers = if (questionsById[questionId]?.isSecret == true) {
+                    listOf(StructuredSecretAnswerPlaceholder)
+                } else {
+                    answers
+                }
+                RemodexStructuredUserInputAnswer(answers = normalizedAnswers)
+            },
+    )
+}
+
+private fun normalizedStructuredUserInputAnswersByQuestionId(
+    answersByQuestionId: Map<String, List<String>>,
+): Map<String, List<String>> {
+    return answersByQuestionId.mapNotNull { (questionId, answers) ->
+        val normalizedQuestionId = questionId.trim()
+        val filteredAnswers = answers
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+        if (normalizedQuestionId.isEmpty() || filteredAnswers.isEmpty()) {
+            null
+        } else {
+            normalizedQuestionId to filteredAnswers
+        }
+    }.toMap()
 }
 
 internal fun buildApprovalDecisionResponse(decision: String): JsonObject {

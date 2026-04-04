@@ -31,6 +31,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
+import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -315,6 +316,7 @@ fun timelineItem(
     planState: RemodexPlanState? = null,
     subagentAction: RemodexSubagentAction? = null,
     structuredUserInputRequest: RemodexStructuredUserInputRequest? = null,
+    structuredUserInputResponse: RemodexStructuredUserInputResponse? = null,
     orderIndex: Long,
     assistantChangeSet: RemodexAssistantChangeSet? = null,
     systemTurnOrderingHint: ConversationSystemTurnOrderingHint =
@@ -335,6 +337,7 @@ fun timelineItem(
         planState = planState,
         subagentAction = subagentAction,
         structuredUserInputRequest = structuredUserInputRequest,
+        structuredUserInputResponse = structuredUserInputResponse,
         orderIndex = orderIndex,
         assistantChangeSet = assistantChangeSet,
         systemTurnOrderingHint = systemTurnOrderingHint,

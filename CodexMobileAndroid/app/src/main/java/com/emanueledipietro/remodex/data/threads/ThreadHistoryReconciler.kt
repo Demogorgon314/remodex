@@ -388,6 +388,7 @@ internal object ThreadHistoryReconciler {
         val nextSupportingText = serverItem.supportingText ?: value.supportingText
         val nextSubagentAction = serverItem.subagentAction ?: value.subagentAction
         val nextStructuredRequest = serverItem.structuredUserInputRequest ?: value.structuredUserInputRequest
+        val nextStructuredResponse = serverItem.structuredUserInputResponse ?: value.structuredUserInputResponse
         val nextAssistantChangeSet = serverItem.assistantChangeSet ?: value.assistantChangeSet
         val nextSystemTurnOrderingHint = if (
             serverItem.systemTurnOrderingHint != ConversationSystemTurnOrderingHint.AUTO
@@ -411,6 +412,7 @@ internal object ThreadHistoryReconciler {
             planState = nextPlanState,
             subagentAction = nextSubagentAction,
             structuredUserInputRequest = nextStructuredRequest,
+            structuredUserInputResponse = nextStructuredResponse,
             assistantChangeSet = nextAssistantChangeSet,
             createdAtEpochMs = value.createdAtEpochMs ?: serverItem.createdAtEpochMs,
             isStreaming = nextStreaming,
