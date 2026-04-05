@@ -385,7 +385,6 @@ class AppViewModel(
     private var autoReconnectJob: Job? = null
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
-    private var lastHydrationConnected = false
     private var voiceOperationGeneration = 0
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
     private var isAppForeground = false
@@ -784,15 +783,11 @@ class AppViewModel(
                 if (selectedThreadId == null) {
                     lastHydratedSelectedThreadId = null
                 } else {
-                    val shouldHydrateSelectedThread =
-                        selectedThreadId != lastHydratedSelectedThreadId ||
-                            (isConnected && !lastHydrationConnected)
-                    if (shouldHydrateSelectedThread) {
+                    if (selectedThreadId != lastHydratedSelectedThreadId) {
                         lastHydratedSelectedThreadId = selectedThreadId
                         launchThreadHydration(selectedThreadId)
                     }
                 }
-                lastHydrationConnected = isConnected
                 maybeAutoSendQueuedDraft(snapshot)
                 detectThreadCompletionBanner(snapshot)
                 detectContextCompactionCompletion(snapshot)

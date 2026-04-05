@@ -461,18 +461,17 @@ class DefaultRemodexAppRepository(
                         selectedThreadBeforeRecovery?.id ?: sessionState.value.selectedThreadId
 
                     if (selectedThreadIdBeforeRecovery != null) {
-                        val recoveredThread = hydrateThreadAndRecoverLiveSessionIfNeeded(
+                        hydrateThreadAndRecoverLiveSessionIfNeeded(
                             threadId = selectedThreadIdBeforeRecovery,
                             wasRunningBeforeHydrate = selectedThreadBeforeRecovery?.isRunning == true,
                             preferResumeBeforeHydrate = true,
                             forceResumeBeforeHydrate = true,
                             allowHistoryBasedPreemptiveResume = false,
+                            skipHydrateAfterLiveResume = true,
                         )
                         if (
                             shouldScheduleReconnectCatchup(
                                 threadId = selectedThreadIdBeforeRecovery,
-                                recoveredThread = recoveredThread,
-                                wasRunningBeforeHydrate = selectedThreadBeforeRecovery?.isRunning == true,
                             )
                         ) {
                             scheduleReconnectCatchup(threadId = selectedThreadIdBeforeRecovery)
@@ -485,7 +484,13 @@ class DefaultRemodexAppRepository(
                     }
                     val recoveredThreadId = recoverReconnectCandidateThreadId() ?: return@withSuppressedActiveThreadSyncRefreshes
                     selectRecoveredThread(threadId = recoveredThreadId)
-                    scheduleReconnectCatchup(threadId = recoveredThreadId)
+                    if (
+                        shouldScheduleReconnectCatchup(
+                            threadId = recoveredThreadId,
+                        )
+                    ) {
+                        scheduleReconnectCatchup(threadId = recoveredThreadId)
+                    }
                 }
             }
         }
@@ -598,9 +603,10 @@ class DefaultRemodexAppRepository(
         preferResumeBeforeHydrate: Boolean = false,
         forceResumeBeforeHydrate: Boolean = false,
         allowHistoryBasedPreemptiveResume: Boolean = true,
+        skipHydrateAfterLiveResume: Boolean = false,
     ): RecoveredThreadContext? {
         val threadBeforeHydrate = resolveRecoveredThreadContext(threadId)
-        if (
+        val shouldResumeBeforeHydrate =
             preferResumeBeforeHydrate &&
             shouldPreemptivelyResumeThread(
                 threadId = threadId,
@@ -608,7 +614,7 @@ class DefaultRemodexAppRepository(
                 wasRunningBeforeHydrate = wasRunningBeforeHydrate,
                 allowHistoryBasedPreemptiveResume = allowHistoryBasedPreemptiveResume,
             )
-        ) {
+        if (shouldResumeBeforeHydrate) {
             resumeThreadIfNeeded(
                 threadId = threadId,
                 preferredProjectPath = threadBeforeHydrate?.projectPath,
@@ -616,6 +622,16 @@ class DefaultRemodexAppRepository(
                 skipIfPendingApprovalPromptVisible = threadBeforeHydrate?.isWaitingOnApproval == true,
                 force = forceResumeBeforeHydrate,
             )
+        }
+        val recoveredThreadBeforeHydrate = resolveRecoveredThreadContext(threadId) ?: threadBeforeHydrate
+        val hasStreamingTimelineBeforeHydrate = threadHasStreamingTimeline(threadId)
+        if (
+            skipHydrateAfterLiveResume &&
+            shouldResumeBeforeHydrate &&
+            (wasRunningBeforeHydrate || recoveredThreadBeforeHydrate?.requiresLiveResume == true) &&
+            !hasStreamingTimelineBeforeHydrate
+        ) {
+            return recoveredThreadBeforeHydrate
         }
         runHydrationSafely {
             hydrationService()?.hydrateThread(threadId)
@@ -638,6 +654,7 @@ class DefaultRemodexAppRepository(
                 threadId = threadId,
                 preferResumeBeforeHydrate = true,
                 allowHistoryBasedPreemptiveResume = false,
+                skipHydrateAfterLiveResume = true,
             ) ?: continue
             if (recoveredThread.requiresLiveResume || threadHasStreamingTimeline(threadId)) {
                 return threadId
@@ -812,14 +829,7 @@ class DefaultRemodexAppRepository(
         return !isLocalOnlyEmptyThread(threadId)
     }
 
-    private fun shouldScheduleReconnectCatchup(
-        threadId: String,
-        recoveredThread: RecoveredThreadContext?,
-        wasRunningBeforeHydrate: Boolean,
-    ): Boolean {
-        if (wasRunningBeforeHydrate || recoveredThread?.requiresLiveResume == true) {
-            return true
-        }
+    private fun shouldScheduleReconnectCatchup(threadId: String): Boolean {
         return threadHasStreamingTimeline(threadId)
     }
 

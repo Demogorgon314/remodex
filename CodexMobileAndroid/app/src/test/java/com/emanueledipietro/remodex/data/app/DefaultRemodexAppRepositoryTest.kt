@@ -556,8 +556,8 @@ class DefaultRemodexAppRepositoryTest {
         awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
         advanceUntilIdle()
 
-        assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
-        assertEquals(resumeCallsBeforeReconnect + 2, syncService.resumeCalls)
+        assertEquals(hydrateCallsBeforeReconnect, syncService.hydrateCalls)
+        assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
     }
 
     @Test
@@ -612,7 +612,7 @@ class DefaultRemodexAppRepositoryTest {
         awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
         advanceUntilIdle()
 
-        assertTrue(syncService.hydrateCalls > hydrateCallsBeforeReconnect)
+        assertEquals(hydrateCallsBeforeReconnect, syncService.hydrateCalls)
         assertEquals(resumeCallsBeforeReconnect + 1, syncService.resumeCalls)
     }
 
@@ -703,8 +703,8 @@ class DefaultRemodexAppRepositoryTest {
         assertEquals("thread-recovered-running", repository.session.value.selectedThread?.id)
         assertTrue(repository.session.value.selectedThread?.isRunning == true)
         assertTrue(syncService.refreshCalls >= 1)
-        assertTrue(syncService.hydrateCalls >= 1)
-        assertEquals(2, syncService.resumeCalls)
+        assertEquals(0, syncService.hydrateCalls)
+        assertEquals(1, syncService.resumeCalls)
     }
 
     @Test

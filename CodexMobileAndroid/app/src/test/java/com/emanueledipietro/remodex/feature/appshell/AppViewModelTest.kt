@@ -462,7 +462,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun `selected thread hydrates again when connection becomes active`() = runTest {
+    fun `selected thread does not rehydrate just because connection becomes active`() = runTest {
         val repository = TestRemodexAppRepository()
         repository.snapshot.value = repository.snapshot.value.copy(
             threads = listOf(threadSummary(id = "thread-1", title = "Recovered thread")),
@@ -483,7 +483,7 @@ class AppViewModelTest {
         )
         advanceUntilIdle()
 
-        assertEquals(listOf("thread-1"), repository.hydrateRequests)
+        assertTrue(repository.hydrateRequests.isEmpty())
     }
 
     @Test
