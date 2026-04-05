@@ -117,6 +117,7 @@ fun ThreadsScreen(
     onDeleteThread: (String) -> Unit,
     onArchiveProject: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenMyMacs: () -> Unit,
     onSearchActiveChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -319,6 +320,7 @@ fun ThreadsScreen(
             trustedMacName = uiState.trustedMac?.name,
             trustedMacTitle = if (uiState.isConnected) "Connected to Mac" else "Saved Mac",
             onOpenSettings = onOpenSettings,
+            onOpenMyMacs = onOpenMyMacs,
         )
     }
 
@@ -1383,6 +1385,7 @@ private fun SidebarFooter(
     trustedMacName: String?,
     trustedMacTitle: String,
     onOpenSettings: () -> Unit,
+    onOpenMyMacs: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -1410,22 +1413,29 @@ private fun SidebarFooter(
         }
         Spacer(modifier = Modifier.weight(1f))
         if (!trustedMacName.isNullOrBlank()) {
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+            Surface(
+                onClick = onOpenMyMacs,
+                shape = RoundedCornerShape(8.dp),
+                color = Color.Transparent
             ) {
-                Text(
-                    text = trustedMacTitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = trustedMacName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = trustedMacTitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = trustedMacName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

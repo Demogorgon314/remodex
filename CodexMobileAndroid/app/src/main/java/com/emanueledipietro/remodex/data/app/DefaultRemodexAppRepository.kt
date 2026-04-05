@@ -2286,6 +2286,27 @@ class DefaultRemodexAppRepository(
         resetBridgeScopedStatus()
     }
 
+    override suspend fun forgetTrustedMac(deviceId: String) {
+        val previousActiveProfile = secureConnectionCoordinator.bridgeProfiles.value.run {
+            profiles.firstOrNull { it.profileId == activeProfileId }
+        }
+        secureConnectionCoordinator.forgetTrustedMac(deviceId)
+        val nextProfiles = secureConnectionCoordinator.bridgeProfiles.value
+        val nextActiveProfileId = nextProfiles.activeProfileId
+        val forgotActiveProfile = previousActiveProfile?.macDeviceId == deviceId
+        val hasActiveProfile = nextActiveProfileId != null &&
+            nextProfiles.profiles.any { it.profileId == nextActiveProfileId }
+        if (forgotActiveProfile || !hasActiveProfile) {
+            clearThreadsForExplicitDisconnect()
+            resetBridgeScopedStatus()
+            if (forgotActiveProfile && nextActiveProfileId != null) {
+                suppressBridgeScopedThreadsUntilNextSync = true
+                secureConnectionCoordinator.activateBridgeProfile(nextActiveProfileId)
+                secureConnectionCoordinator.retryConnection()
+            }
+        }
+    }
+
     private fun resetBridgeScopedStatus() {
         gptAccountSnapshotState.value = disconnectedGptAccountSnapshot(gptAccountSnapshotState.value)
         gptAccountErrorMessageState.value = null
@@ -3351,6 +3372,7 @@ private fun BridgeProfilesSnapshot.toBridgeProfilePresentations(
             detail = detail,
             isActive = profile.isActive,
             isConnected = profile.profileId == connectedProfileId,
+            macDeviceId = profile.macDeviceId,
         )
     }
 }

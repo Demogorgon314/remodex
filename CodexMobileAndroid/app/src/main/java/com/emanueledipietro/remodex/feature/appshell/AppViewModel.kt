@@ -67,7 +67,9 @@ import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.remodexApprovalRequestSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -175,6 +177,9 @@ data class AppUiState(
     val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
     val assistantResponseMetrics: RemodexAssistantResponseMetrics? = null,
     val streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState> = emptyMap(),
+    val isSwitchingMac: Boolean = false,
+    val switchingMacDeviceId: String? = null,
+    val macSwitchNotice: String? = null,
 ) {
     val isConnected: Boolean
         get() = connectionStatus.phase == RemodexConnectionPhase.CONNECTED
@@ -379,10 +384,14 @@ class AppViewModel(
     private val isRefreshingUsageState = MutableStateFlow(false)
     private val hydratingThreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
     private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
+    private val isSwitchingMacState = MutableStateFlow(false)
+    private val switchingMacDeviceIdState = MutableStateFlow<String?>(null)
+    private val macSwitchNoticeState = MutableStateFlow<String?>(null)
     private var fileAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
     private var reviewAutocompleteJob: Job? = null
     private var autoReconnectJob: Job? = null
+    private var switchMacJob: Job? = null
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
     private var sessionHydrationSuppressedThreadId: String? = null
@@ -728,7 +737,10 @@ class AppViewModel(
         combine(
             decoratedUiState,
             autoReconnectState,
-        ) { baseState, reconnectState ->
+            isSwitchingMacState,
+            switchingMacDeviceIdState,
+            macSwitchNoticeState,
+        ) { baseState, reconnectState, isSwitchingMac, switchingMacDeviceId, macSwitchNotice ->
             val shouldShowReconnectState =
                 reconnectState.isActive &&
                     baseState.connectionStatus.phase != RemodexConnectionPhase.CONNECTED &&
@@ -756,6 +768,9 @@ class AppViewModel(
                 } else {
                     baseState.connectionMessage
                 },
+                isSwitchingMac = isSwitchingMac,
+                switchingMacDeviceId = switchingMacDeviceId,
+                macSwitchNotice = macSwitchNotice,
             )
         }.stateIn(
             scope = viewModelScope,
@@ -4503,6 +4518,94 @@ class AppViewModel(
             gitState = gitState,
             selectedGitBaseBranch = selectedGitBaseBranch,
         )
+    }
+
+    fun switchToTrustedMac(deviceId: String) {
+        val targetProfile = uiState.value.bridgeProfiles.firstOrNull { it.macDeviceId == deviceId }
+        val targetProfileId = targetProfile?.profileId ?: return
+
+        launchMacSwitch(
+            deviceId = deviceId,
+            notice = "Connecting to ${targetProfile.name}...",
+        ) {
+            repository.activateBridgeProfile(targetProfileId)
+        }
+    }
+
+    fun switchToScannedMac(payload: PairingQrPayload) {
+        launchMacSwitch(
+            deviceId = payload.macDeviceId,
+            notice = "Connecting to new Mac...",
+        ) {
+            repository.pairWithQrPayload(payload)
+        }
+    }
+
+    fun requestMacSwitchCancellation() {
+        switchMacJob?.cancel()
+        clearMacSwitchState()
+    }
+
+    private fun launchMacSwitch(
+        deviceId: String?,
+        notice: String,
+        performSwitch: suspend () -> Unit,
+    ) {
+        switchMacJob?.cancel()
+        val job = viewModelScope.launch {
+            isSwitchingMacState.value = true
+            switchingMacDeviceIdState.value = deviceId
+            macSwitchNoticeState.value = notice
+            try {
+                stopActiveTurnBeforeMacSwitch()
+                currentCoroutineContext().ensureActive()
+                performSwitch()
+                currentCoroutineContext().ensureActive()
+                // The bridge call returns fast; wait for reconnection.
+                waitForConnectionOrTimeout()
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+            } finally {
+                if (switchMacJob === currentCoroutineContext()[Job]) {
+                    switchMacJob = null
+                    clearMacSwitchState()
+                }
+            }
+        }
+        switchMacJob = job
+    }
+
+    private suspend fun stopActiveTurnBeforeMacSwitch() {
+        val activeThread = uiState.value.selectedThread
+        if (activeThread?.isRunning == true) {
+            repository.stopTurn(activeThread.id)
+        }
+    }
+
+    private fun clearMacSwitchState() {
+        isSwitchingMacState.value = false
+        switchingMacDeviceIdState.value = null
+        macSwitchNoticeState.value = null
+    }
+
+    private suspend fun waitForConnectionOrTimeout() {
+        val timeoutMs = 8_000L
+        val pollIntervalMs = 300L
+        val deadline = System.currentTimeMillis() + timeoutMs
+        // Ensure the overlay is visible for at least a short moment
+        kotlinx.coroutines.delay(500L)
+        while (System.currentTimeMillis() < deadline) {
+            if (uiState.value.isConnected) return
+            kotlinx.coroutines.delay(pollIntervalMs)
+        }
+    }
+
+    fun forgetMac(deviceId: String) {
+        viewModelScope.launch {
+            repository.forgetTrustedMac(deviceId)
+        }
     }
 
     companion object {

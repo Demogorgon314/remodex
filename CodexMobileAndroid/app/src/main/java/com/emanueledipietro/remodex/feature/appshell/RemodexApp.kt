@@ -111,6 +111,7 @@ import androidx.core.view.WindowCompat
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.feature.onboarding.OnboardingScreen
 import com.emanueledipietro.remodex.feature.recovery.PairingScannerScreen
+import com.emanueledipietro.remodex.feature.mymacs.MyMacsScreen
 import com.emanueledipietro.remodex.feature.settings.AboutRemodexScreen
 import com.emanueledipietro.remodex.feature.settings.ArchivedChatsScreen
 import com.emanueledipietro.remodex.feature.settings.SettingsScreen
@@ -148,6 +149,7 @@ internal enum class ShellRoute(val title: String) {
     SETTINGS("Settings"),
     ABOUT_REMODEX("About Remodex"),
     ARCHIVED_CHATS("Archived Chats"),
+    MY_MACS("My Macs"),
 }
 
 internal enum class ShellBackAction {
@@ -187,7 +189,8 @@ internal fun resolveShellBackAction(
         shellRoute == ShellRoute.ABOUT_REMODEX ||
             shellRoute == ShellRoute.ARCHIVED_CHATS ->
             ShellBackAction.NAVIGATE_TO_SETTINGS
-        shellRoute == ShellRoute.SETTINGS -> ShellBackAction.NAVIGATE_TO_CONTENT
+        shellRoute == ShellRoute.SETTINGS ||
+            shellRoute == ShellRoute.MY_MACS -> ShellBackAction.NAVIGATE_TO_CONTENT
         else -> null
     }
 }
@@ -772,6 +775,7 @@ private fun RemodexShell(
                         onDeleteThread = viewModel::deleteThread,
                         onArchiveProject = viewModel::archiveProject,
                         onOpenSettings = { onShellRouteChange(ShellRoute.SETTINGS) },
+                        onOpenMyMacs = { onShellRouteChange(ShellRoute.MY_MACS) },
                         onSearchActiveChange = onSidebarSearchActiveChange,
                     )
                 }
@@ -895,6 +899,10 @@ private fun RemodexShell(
                         onArchiveProject = viewModel::archiveProject,
                         onOpenSettings = {
                             onShellRouteChange(ShellRoute.SETTINGS)
+                            onSidebarOpenChange(false)
+                        },
+                        onOpenMyMacs = {
+                            onShellRouteChange(ShellRoute.MY_MACS)
                             onSidebarOpenChange(false)
                         },
                         onSearchActiveChange = onSidebarSearchActiveChange,
@@ -1131,6 +1139,15 @@ private fun MainPane(
                         },
                         onUnarchiveThread = viewModel::unarchiveThread,
                         onDeleteThread = viewModel::deleteThread,
+                    )
+                }
+
+                ShellRoute.MY_MACS -> {
+                    MyMacsScreen(
+                        uiState = uiState,
+                        viewModel = viewModel,
+                        onBack = onBack,
+                        onNavigateToQrScanner = onOpenScanner
                     )
                 }
             }
@@ -1477,6 +1494,7 @@ private fun ShellTopBar(
         ShellRoute.SETTINGS -> shellRoute.title
         ShellRoute.ABOUT_REMODEX -> shellRoute.title
         ShellRoute.ARCHIVED_CHATS -> shellRoute.title
+        ShellRoute.MY_MACS -> shellRoute.title
     }
     val subtitleProjectPath = when (shellRoute) {
         ShellRoute.CONTENT -> {
@@ -1489,6 +1507,7 @@ private fun ShellTopBar(
         ShellRoute.SETTINGS,
         ShellRoute.ABOUT_REMODEX,
         ShellRoute.ARCHIVED_CHATS,
+        ShellRoute.MY_MACS,
         -> null
     }
     val titleLayout = resolveShellTopBarTitleLayout(

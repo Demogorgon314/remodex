@@ -1047,6 +1047,79 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `cancelling trusted mac switch aborts activation after stopping the active run`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            stopTurnDelayMs = 5_000L
+            snapshot.value = snapshot.value.copy(
+                bridgeProfiles = listOf(
+                    bridgeProfile(
+                        profileId = "profile-2",
+                        deviceId = "mac-2",
+                        isActive = false,
+                    ),
+                ),
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-running",
+                        title = "Running thread",
+                        isRunning = true,
+                    ),
+                ),
+                selectedThreadId = "thread-running",
+                selectedThreadSnapshot = threadSummary(
+                    id = "thread-running",
+                    title = "Running thread",
+                    isRunning = true,
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.switchToTrustedMac("mac-2")
+        runCurrent()
+        assertTrue(viewModel.uiState.value.isSwitchingMac)
+
+        viewModel.requestMacSwitchCancellation()
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-running"), repository.stopTurnRequests)
+        assertTrue(repository.activateBridgeProfileRequests.isEmpty())
+        assertFalse(viewModel.uiState.value.isSwitchingMac)
+        assertNull(viewModel.uiState.value.switchingMacDeviceId)
+        assertNull(viewModel.uiState.value.macSwitchNotice)
+    }
+
+    @Test
+    fun `cancelling scanned mac switch aborts deferred pairing`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            pairWithQrPayloadDelayMs = 5_000L
+        }
+        val viewModel = AppViewModel(repository)
+        val payload = PairingQrPayload(
+            v = 2,
+            relay = "wss://relay.example",
+            sessionId = "session-1",
+            macDeviceId = "mac-new",
+            macIdentityPublicKey = "public-key",
+            expiresAt = 123L,
+        )
+        advanceUntilIdle()
+
+        viewModel.switchToScannedMac(payload)
+        runCurrent()
+        assertTrue(viewModel.uiState.value.isSwitchingMac)
+
+        viewModel.requestMacSwitchCancellation()
+        advanceUntilIdle()
+
+        assertTrue(repository.pairWithQrPayloadRequests.isEmpty())
+        assertFalse(viewModel.uiState.value.isSwitchingMac)
+        assertNull(viewModel.uiState.value.switchingMacDeviceId)
+        assertNull(viewModel.uiState.value.macSwitchNotice)
+    }
+
+    @Test
     fun `manual disconnect suppresses foreground auto reconnect`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -3077,6 +3150,8 @@ class AppViewModelTest {
         var retryConnectionCalls = 0
         var disconnectCalls = 0
         val activateBridgeProfileRequests = mutableListOf<String>()
+        val pairWithQrPayloadRequests = mutableListOf<PairingQrPayload>()
+        val stopTurnRequests = mutableListOf<String>()
         var dismissBridgeUpdatePromptCalls = 0
         var onRetryConnection: (suspend TestRemodexAppRepository.() -> Unit)? = null
         var refreshDelayMs = 1_000L
@@ -3084,6 +3159,9 @@ class AppViewModelTest {
         var activeThreadSyncDelayMs = 0L
         var sendPromptDelayMs = 0L
         var continueOnMacDelayMs = 0L
+        var stopTurnDelayMs = 0L
+        var activateBridgeProfileDelayMs = 0L
+        var pairWithQrPayloadDelayMs = 0L
         var createThreadDelayMs = 0L
         var createThreadError: Throwable? = null
         var sendPromptError: Throwable? = null
@@ -3288,7 +3366,12 @@ class AppViewModelTest {
             continueOnMacError?.let { throw it }
         }
 
-        override suspend fun stopTurn(threadId: String) = Unit
+        override suspend fun stopTurn(threadId: String) {
+            stopTurnRequests += threadId
+            if (stopTurnDelayMs > 0) {
+                delay(stopTurnDelayMs)
+            }
+        }
 
         override suspend fun sendQueuedDraft(threadId: String, draftId: String) {
             sentQueuedDrafts += threadId to draftId
@@ -3409,6 +3492,9 @@ class AppViewModelTest {
         override suspend fun setMacNickname(deviceId: String, nickname: String?) = Unit
 
         override suspend fun activateBridgeProfile(profileId: String): Boolean {
+            if (activateBridgeProfileDelayMs > 0) {
+                delay(activateBridgeProfileDelayMs)
+            }
             activateBridgeProfileRequests += profileId
             return true
         }
@@ -3581,7 +3667,12 @@ class AppViewModelTest {
             return applyResult
         }
 
-        override suspend fun pairWithQrPayload(payload: PairingQrPayload) = Unit
+        override suspend fun pairWithQrPayload(payload: PairingQrPayload) {
+            if (pairWithQrPayloadDelayMs > 0) {
+                delay(pairWithQrPayloadDelayMs)
+            }
+            pairWithQrPayloadRequests += payload
+        }
 
         override suspend fun dismissBridgeUpdatePrompt() {
             dismissBridgeUpdatePromptCalls += 1
@@ -3605,6 +3696,8 @@ class AppViewModelTest {
         }
 
         override suspend fun forgetTrustedMac() = Unit
+
+        override suspend fun forgetTrustedMac(deviceId: String) = Unit
     }
 
     private fun threadSummary(
@@ -3632,6 +3725,22 @@ class AppViewModelTest {
             runtimeLabel = "Auto, medium reasoning",
             runtimeConfig = runtimeConfig,
             messages = messages,
+        )
+    }
+
+    private fun bridgeProfile(
+        profileId: String,
+        deviceId: String,
+        isActive: Boolean,
+        isConnected: Boolean = false,
+    ): com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation {
+        return com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation(
+            profileId = profileId,
+            title = "Saved Pair",
+            name = "Mac $deviceId",
+            isActive = isActive,
+            isConnected = isConnected,
+            macDeviceId = deviceId,
         )
     }
 

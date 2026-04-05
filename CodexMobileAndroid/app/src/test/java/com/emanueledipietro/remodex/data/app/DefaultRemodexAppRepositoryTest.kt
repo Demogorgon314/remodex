@@ -1790,6 +1790,59 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `forgetting the active trusted mac clears old bridge threads and switches to the fallback profile`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val secureStore = InMemorySecureStore()
+        val firstMacIdentity = createTestMacIdentity()
+        val secondMacIdentity = createTestMacIdentity()
+        val syncService = FakeThreadSyncService()
+        val coordinator = SecureConnectionCoordinator(
+            store = secureStore,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            scope = backgroundScope,
+        )
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-one",
+                macIdentityPublicKey = firstMacIdentity.publicKeyBase64,
+                sessionId = "session-one",
+            ),
+        )
+        val fallbackProfileId = requireNotNull(coordinator.bridgeProfiles.value.activeProfileId)
+        coordinator.rememberRelayPairing(
+            createTestPairingPayload(
+                macDeviceId = "mac-two",
+                macIdentityPublicKey = secondMacIdentity.publicKeyBase64,
+                sessionId = "session-two",
+            ),
+        )
+
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = preferencesRepository,
+            secureConnectionCoordinator = coordinator,
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = null,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        repository.forgetTrustedMac("mac-two")
+        advanceUntilIdle()
+
+        assertEquals(fallbackProfileId, coordinator.bridgeProfiles.value.activeProfileId)
+        assertTrue(repository.session.value.threads.isEmpty())
+        assertEquals(null, repository.session.value.selectedThreadId)
+        assertEquals(null, repository.session.value.selectedThread)
+        assertEquals(null, preferencesRepository.preferencesState.value.selectedThreadId)
+        assertEquals(fallbackProfileId, coordinator.state.value.activeProfileId)
+    }
+
+    @Test
     fun `stale thread list rebuild keeps sticky selected thread when the new thread is temporarily missing`() = runTest {
         val repository = createRepository(scope = backgroundScope)
         advanceUntilIdle()

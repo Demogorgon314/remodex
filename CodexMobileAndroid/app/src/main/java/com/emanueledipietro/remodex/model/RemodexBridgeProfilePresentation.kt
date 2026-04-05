@@ -8,4 +8,5 @@ data class RemodexBridgeProfilePresentation(
     val detail: String? = null,
     val isActive: Boolean = false,
     val isConnected: Boolean = false,
+    val macDeviceId: String? = null,
 )

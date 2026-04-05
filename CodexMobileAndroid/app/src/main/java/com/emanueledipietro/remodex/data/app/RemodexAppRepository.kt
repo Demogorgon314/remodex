@@ -299,4 +299,6 @@ interface RemodexAppRepository {
     suspend fun disconnect()
 
     suspend fun forgetTrustedMac()
+
+    suspend fun forgetTrustedMac(deviceId: String)
 }

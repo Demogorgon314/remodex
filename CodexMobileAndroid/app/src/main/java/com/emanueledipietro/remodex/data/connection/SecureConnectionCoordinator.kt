@@ -265,6 +265,27 @@ class SecureConnectionCoordinator(
         pairingState?.profileId?.let(::removeBridgeProfile)
     }
 
+    fun forgetTrustedMac(deviceId: String) {
+        val matchingProfileIds = relayProfileRegistry.profiles.values
+            .filter { it.macDeviceId == deviceId }
+            .map { it.profileId }
+
+        matchingProfileIds.forEach(::removeBridgeProfile)
+
+        if (matchingProfileIds.isEmpty()) {
+            trustedMacRegistry = TrustedMacRegistry(
+                records = trustedMacRegistry.records.toMutableMap().apply {
+                    remove(deviceId)
+                },
+            )
+            SecureCrypto.writeTrustedMacRegistry(
+                store = store,
+                registry = trustedMacRegistry,
+                lastTrustedMacDeviceId = trustedMacRegistry.records.keys.firstOrNull(),
+            )
+        }
+    }
+
     private suspend fun performRetryConnection() {
         val currentPairingState = pairingState ?: return
         disconnectCurrentSocket()
