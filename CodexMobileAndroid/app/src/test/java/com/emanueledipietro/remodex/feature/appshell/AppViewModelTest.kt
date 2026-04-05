@@ -487,6 +487,36 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `explicit thread selection does not trigger a second session hydration pass`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                secureConnection = SecureConnectionSnapshot(
+                    phaseMessage = "Connected",
+                    secureState = SecureConnectionState.ENCRYPTED,
+                    attempt = 1,
+                ),
+                threads = listOf(
+                    threadSummary(id = "thread-1", title = "First thread"),
+                    threadSummary(id = "thread-2", title = "Second thread"),
+                ),
+                selectedThreadId = "thread-1",
+                selectedThreadSnapshot = threadSummary(id = "thread-1", title = "First thread"),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        repository.hydrateRequests.clear()
+        repository.selectedThreadRequests.clear()
+
+        viewModel.selectThread("thread-2")
+        advanceUntilIdle()
+
+        assertEquals(listOf("thread-2"), repository.selectedThreadRequests)
+        assertTrue(repository.hydrateRequests.isEmpty())
+    }
+
+    @Test
     fun `foreground changes are forwarded to the repository active sync controller`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(

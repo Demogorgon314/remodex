@@ -385,6 +385,7 @@ class AppViewModel(
     private var autoReconnectJob: Job? = null
     private var lastObservedThreadId: String? = null
     private var lastHydratedSelectedThreadId: String? = null
+    private var sessionHydrationSuppressedThreadId: String? = null
     private var voiceOperationGeneration = 0
     private var previousThreadsById: Map<String, RemodexThreadSummary> = emptyMap()
     private var isAppForeground = false
@@ -783,7 +784,12 @@ class AppViewModel(
                 if (selectedThreadId == null) {
                     lastHydratedSelectedThreadId = null
                 } else {
-                    if (selectedThreadId != lastHydratedSelectedThreadId) {
+                    val sessionHydrationOwnedByExplicitSelection =
+                        selectedThreadId == sessionHydrationSuppressedThreadId
+                    if (
+                        selectedThreadId != lastHydratedSelectedThreadId &&
+                        !sessionHydrationOwnedByExplicitSelection
+                    ) {
                         lastHydratedSelectedThreadId = selectedThreadId
                         launchThreadHydration(selectedThreadId)
                     }
@@ -869,8 +875,18 @@ class AppViewModel(
 
     fun selectThread(threadId: String) {
         viewModelScope.launch {
-            withTrackedThreadHydration(threadId) {
-                repository.selectThread(threadId)
+            sessionHydrationSuppressedThreadId = threadId
+            try {
+                withTrackedThreadHydration(threadId) {
+                    repository.selectThread(threadId)
+                }
+                if (repository.session.value.selectedThread?.id == threadId) {
+                    lastHydratedSelectedThreadId = threadId
+                }
+            } finally {
+                if (sessionHydrationSuppressedThreadId == threadId) {
+                    sessionHydrationSuppressedThreadId = null
+                }
             }
             refreshGitState(threadId)
             clearComposerAutocomplete()
