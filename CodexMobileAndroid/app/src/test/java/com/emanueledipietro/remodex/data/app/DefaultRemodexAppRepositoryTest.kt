@@ -199,6 +199,68 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `selected thread detail survives when thread list temporarily omits the selected thread`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = createRepository(scope = backgroundScope, syncService = syncService)
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        val hydratedSelectedThread = requireNotNull(repository.session.value.selectedThread).copy(
+            title = "Hydrated Android notifications",
+        )
+        setSelectedThreadDetail(
+            repository = repository,
+            threadId = hydratedSelectedThread.id,
+            thread = hydratedSelectedThread,
+        )
+
+        syncService.updateThreads(
+            syncService.threads.value.filterNot { snapshot ->
+                snapshot.id == hydratedSelectedThread.id
+            },
+        )
+        advanceUntilIdle()
+
+        assertEquals(hydratedSelectedThread.id, repository.session.value.selectedThreadId)
+        assertEquals(
+            "Hydrated Android notifications",
+            repository.session.value.selectedThreadSnapshot?.title,
+        )
+        assertEquals(hydratedSelectedThread.id, repository.session.value.selectedThread?.id)
+    }
+
+    @Test
+    fun `switching selected thread clears previously retained selected detail`() = runTest {
+        val syncService = FakeThreadSyncService()
+        val repository = createRepository(scope = backgroundScope, syncService = syncService)
+        advanceUntilIdle()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        val hydratedSelectedThread = requireNotNull(repository.session.value.selectedThread).copy(
+            title = "Hydrated Android notifications",
+        )
+        setSelectedThreadDetail(
+            repository = repository,
+            threadId = hydratedSelectedThread.id,
+            thread = hydratedSelectedThread,
+        )
+
+        repository.selectThread("thread-reconnect")
+        advanceUntilIdle()
+
+        assertEquals("thread-reconnect", repository.session.value.selectedThreadId)
+        assertEquals("thread-reconnect", repository.session.value.selectedThreadSnapshot?.id)
+        assertEquals("thread-reconnect", repository.session.value.selectedThread?.id)
+        assertNotEquals(
+            "Hydrated Android notifications",
+            repository.session.value.selectedThreadSnapshot?.title,
+        )
+    }
+
+    @Test
     fun `selected thread updates the active thread hint for live sync attribution`() = runTest {
         val syncService = FakeThreadSyncService()
         val repository = DefaultRemodexAppRepository(
@@ -2856,6 +2918,19 @@ class DefaultRemodexAppRepositoryTest {
         field.isAccessible = true
         val state = field.get(repository) as MutableStateFlow<Map<String, RemodexContextWindowUsage>>
         state.value = usageByThread
+    }
+
+    private fun setSelectedThreadDetail(
+        repository: DefaultRemodexAppRepository,
+        threadId: String?,
+        thread: RemodexThreadSummary?,
+    ) {
+        invokePrivateMethod<Unit>(
+            target = repository,
+            methodName = "setSelectedThreadDetail",
+            threadId,
+            thread,
+        )
     }
 
     @Suppress("UNCHECKED_CAST")
