@@ -737,14 +737,45 @@ class DefaultRemodexAppRepository(
     private suspend fun resumeRecoveredThreadIfNeeded(
         recoveredThread: RecoveredThreadContext,
         force: Boolean = false,
-    ) {
-        resumeThreadIfNeeded(
+    ): Boolean {
+        return resumeThreadIfNeeded(
             threadId = recoveredThread.threadId,
             preferredProjectPath = recoveredThread.projectPath,
             modelIdentifier = recoveredThread.modelIdentifier,
             skipIfPendingApprovalPromptVisible = recoveredThread.isWaitingOnApproval,
             force = force,
         )
+    }
+
+    private suspend fun recoverSelectedThreadForDisplay(threadId: String) {
+        if (!hasActiveSecureTransport()) {
+            return
+        }
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty() || isLocalOnlyEmptyThread(normalizedThreadId)) {
+            return
+        }
+
+        val threadBeforeDisplay = resolveRecoveredThreadContext(normalizedThreadId) ?: return
+        val hadStreamingTimeline = threadHasStreamingTimeline(normalizedThreadId)
+        val hadLocalTimeline = hasLocallyMaterializedTimeline(normalizedThreadId)
+        val didResume = resumeRecoveredThreadIfNeeded(
+            recoveredThread = threadBeforeDisplay,
+            force = false,
+        )
+        val recoveredThread = resolveRecoveredThreadContext(normalizedThreadId) ?: threadBeforeDisplay
+        if (recoveredThread.requiresLiveResume || hadStreamingTimeline || threadHasStreamingTimeline(normalizedThreadId)) {
+            resumeRecoveredThreadIfNeeded(
+                recoveredThread = recoveredThread,
+                force = true,
+            )
+            return
+        }
+        if (!didResume && !hadLocalTimeline) {
+            runHydrationSafely {
+                hydrationService()?.hydrateThread(normalizedThreadId)
+            }
+        }
     }
 
     private suspend fun selectRecoveredThread(threadId: String) {
@@ -777,21 +808,21 @@ class DefaultRemodexAppRepository(
         modelIdentifier: String?,
         skipIfPendingApprovalPromptVisible: Boolean,
         force: Boolean = false,
-    ) {
+    ): Boolean {
         if (!hasActiveSecureTransport()) {
-            return
+            return false
         }
         val resumeService = resumeService() ?: run {
-            return
+            return false
         }
         if (!force && resumeService.isThreadResumedLocally(threadId)) {
-            return
+            return false
         }
         if (
             skipIfPendingApprovalPromptVisible &&
             threadSyncService.pendingApprovalRequest.value?.threadId == threadId
         ) {
-            return
+            return false
         }
         var didResume = false
         runHydrationSafely {
@@ -809,6 +840,7 @@ class DefaultRemodexAppRepository(
                 Log.w(logTag, "event=resumeThread completedWithoutSnapshot threadId=$threadId force=$force")
             }
         }
+        return didResume
     }
 
     private fun shouldPreemptivelyResumeThread(
@@ -836,6 +868,19 @@ class DefaultRemodexAppRepository(
     private fun hasRecoverableHistoryOrMaterializedState(threadId: String): Boolean {
         val syncThread = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
         if (syncThread != null) {
+            return true
+        }
+        val baseThread = baseThreadsState.value.firstOrNull { thread -> thread.id == threadId }
+        if (baseThread?.messages?.isNotEmpty() == true) {
+            return true
+        }
+        val sessionThread = sessionState.value.threads.firstOrNull { thread -> thread.id == threadId }
+        return sessionThread?.messages?.isNotEmpty() == true
+    }
+
+    private fun hasLocallyMaterializedTimeline(threadId: String): Boolean {
+        val syncThread = threadSyncService.threads.value.firstOrNull { snapshot -> snapshot.id == threadId }
+        if (syncThread != null && projectThreadTimelineItems(syncThread).isNotEmpty()) {
             return true
         }
         val baseThread = baseThreadsState.value.firstOrNull { thread -> thread.id == threadId }
@@ -1132,7 +1177,7 @@ class DefaultRemodexAppRepository(
                     previous = previousSelectedThread,
                     next = sessionState.value.selectedThreadSnapshot,
                 )
-                hydrateThreadAndRecoverLiveSession(threadId)
+                recoverSelectedThreadForDisplay(threadId)
             }
         }
     }

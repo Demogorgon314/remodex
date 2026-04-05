@@ -780,12 +780,13 @@ class DefaultRemodexAppRepositoryTest {
             scope = backgroundScope,
         )
         advanceUntilIdle()
+        syncService.clearRecordedCalls()
 
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
 
-        assertEquals(1, syncService.hydrateCalls)
-        assertEquals(1, syncService.resumeCalls)
+        assertEquals(0, syncService.hydrateCalls)
+        assertEquals(2, syncService.resumeCalls)
     }
 
     @Test
@@ -848,11 +849,12 @@ class DefaultRemodexAppRepositoryTest {
             scope = backgroundScope,
         )
         advanceUntilIdle()
+        syncService.clearRecordedCalls()
 
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
 
-        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(0, syncService.hydrateCalls)
         assertEquals(2, syncService.resumeCalls)
     }
 
@@ -916,6 +918,7 @@ class DefaultRemodexAppRepositoryTest {
             scope = backgroundScope,
         )
         advanceUntilIdle()
+        syncService.clearRecordedCalls()
 
         repository.syncActiveThread("thread-notifications")
         advanceUntilIdle()
@@ -1089,12 +1092,45 @@ class DefaultRemodexAppRepositoryTest {
             scope = backgroundScope,
         )
         advanceUntilIdle()
+        syncService.clearRecordedCalls()
 
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
 
-        assertEquals(1, syncService.hydrateCalls)
+        assertEquals(0, syncService.hydrateCalls)
+        assertEquals(2, syncService.resumeCalls)
+    }
+
+    @Test
+    fun `reselecting an already hydrated idle thread reuses local timeline without extra recovery`() = runTest {
+        val syncService = WaitingApprovalRecoverySyncService()
+        val repository = DefaultRemodexAppRepository(
+            appPreferencesRepository = TestAppPreferencesRepository(),
+            secureConnectionCoordinator = createConnectedSecureCoordinator(),
+            threadCacheStore = InMemoryThreadCacheStore(),
+            threadSyncService = syncService,
+            threadCommandService = syncService,
+            threadHydrationService = syncService,
+            scope = backgroundScope,
+        )
+        advanceUntilIdle()
+        syncService.clearRecordedCalls()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+        assertEquals(0, syncService.hydrateCalls)
         assertEquals(1, syncService.resumeCalls)
+
+        syncService.clearRecordedCalls()
+        repository.selectThread("thread-reconnect")
+        advanceUntilIdle()
+        syncService.clearRecordedCalls()
+
+        repository.selectThread("thread-notifications")
+        advanceUntilIdle()
+
+        assertEquals(0, syncService.hydrateCalls)
+        assertEquals(0, syncService.resumeCalls)
     }
 
     @Test
@@ -1146,7 +1182,7 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
-    fun `selecting a connected thread forces resume when local resumed state is stale`() = runTest {
+    fun `selecting a connected idle thread reuses local resumed state without extra recovery`() = runTest {
         val syncService = StaleLocalResumeRecoverySyncService()
         val repository = DefaultRemodexAppRepository(
             appPreferencesRepository = TestAppPreferencesRepository(),
@@ -1158,12 +1194,13 @@ class DefaultRemodexAppRepositoryTest {
             scope = backgroundScope,
         )
         advanceUntilIdle()
+        syncService.clearRecordedCalls()
 
         repository.selectThread("thread-notifications")
         advanceUntilIdle()
 
-        assertEquals(1, syncService.hydrateCalls)
-        assertEquals(1, syncService.resumeCalls)
+        assertEquals(0, syncService.hydrateCalls)
+        assertEquals(0, syncService.resumeCalls)
     }
 
     @Test
@@ -2924,6 +2961,11 @@ class DefaultRemodexAppRepositoryTest {
             private set
         var resumeCalls: Int = 0
             private set
+
+        fun clearRecordedCalls() {
+            hydrateCalls = 0
+            resumeCalls = 0
+        }
 
         override suspend fun refreshThreads() = Unit
 
