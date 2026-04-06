@@ -78,6 +78,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
+private data class GitWorktreeRequest(
+    val threadId: String,
+    val name: String,
+    val baseBranch: String?,
+    val changeTransfer: RemodexGitWorktreeChangeTransferMode,
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppViewModelTest {
     @get:Rule
@@ -3433,6 +3440,7 @@ class AppViewModelTest {
             listOf(Triple("thread-1", "feature/handoff", "main")),
             repository.createGitWorktreeResultRequests,
         )
+        assertTrue(repository.createGitWorktreeRequests.isEmpty())
         assertEquals(
             listOf("thread-1" to canonicalWorktreePath),
             repository.moveThreadToProjectPathRequests,
@@ -3479,6 +3487,7 @@ class AppViewModelTest {
             listOf(Triple("thread-1", "feature/forked", "main")),
             repository.createGitWorktreeResultRequests,
         )
+        assertTrue(repository.createGitWorktreeRequests.isEmpty())
         assertEquals(
             listOf("thread-1" to "/tmp/remodex/.codex/worktrees/feature/forked"),
             repository.forkThreadIntoProjectPathRequests,
@@ -3533,6 +3542,7 @@ class AppViewModelTest {
             listOf(Triple("thread-1", "feature/forked", "feature/current")),
             repository.createGitWorktreeResultRequests,
         )
+        assertTrue(repository.createGitWorktreeRequests.isEmpty())
         assertEquals(
             listOf("thread-1" to "/tmp/remodex/.codex/worktrees/feature/forked"),
             repository.forkThreadIntoProjectPathRequests,
@@ -3602,6 +3612,7 @@ class AppViewModelTest {
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
         val checkoutGitBranchRequests = mutableListOf<Pair<String, String>>()
         val createGitBranchRequests = mutableListOf<Pair<String, String>>()
+        val createGitWorktreeRequests = mutableListOf<GitWorktreeRequest>()
         val createGitWorktreeResultRequests = mutableListOf<Triple<String, String, String?>>()
         val commitGitChangesRequests = mutableListOf<Pair<String, String?>>()
         val commitAndPushRequests = mutableListOf<Pair<String, String?>>()
@@ -4061,7 +4072,10 @@ class AppViewModelTest {
             name: String,
             baseBranch: String?,
             changeTransfer: RemodexGitWorktreeChangeTransferMode,
-        ): RemodexGitState = RemodexGitState()
+        ): RemodexGitState {
+            createGitWorktreeRequests += GitWorktreeRequest(threadId, name, baseBranch, changeTransfer)
+            return RemodexGitState()
+        }
 
         override suspend fun createGitWorktreeResult(
             threadId: String,

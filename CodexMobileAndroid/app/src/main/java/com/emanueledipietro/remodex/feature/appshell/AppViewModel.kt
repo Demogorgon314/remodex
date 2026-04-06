@@ -260,17 +260,11 @@ private sealed interface PendingGitBranchOperation {
 
     data class SwitchBranch(val branchName: String) : PendingGitBranchOperation
 
-    data class CreateWorktree(
+    data class HandoffToWorktree(
         val branchName: String,
         val baseBranch: String,
         val changeTransfer: RemodexGitWorktreeChangeTransferMode,
-        val followUp: GitWorktreeFollowUp = GitWorktreeFollowUp.NONE,
     ) : PendingGitBranchOperation
-}
-
-private enum class GitWorktreeFollowUp {
-    NONE,
-    HANDOFF_CURRENT_THREAD,
 }
 
 private data class ComposerRenderStateA(
@@ -2260,20 +2254,10 @@ class AppViewModel(
         )
     }
 
-    fun createGitWorktree(name: String) {
-        val baseBranch = uiState.value.composer.selectedGitBaseBranch.ifBlank { null }
-        createGitWorktree(
-            name = name,
-            baseBranch = baseBranch,
-            changeTransfer = RemodexGitWorktreeChangeTransferMode.COPY,
-        )
-    }
-
-    private fun createGitWorktree(
+    private fun requestThreadHandoffToWorktree(
         name: String,
         baseBranch: String?,
         changeTransfer: RemodexGitWorktreeChangeTransferMode,
-        followUp: GitWorktreeFollowUp = GitWorktreeFollowUp.NONE,
     ) {
         val threadId = uiState.value.selectedThread?.id ?: return
         if (!canRunGitBranchOperation(threadId)) {
@@ -2286,11 +2270,10 @@ class AppViewModel(
         }
         maybeRunGitBranchOperation(
             threadId = threadId,
-            operation = PendingGitBranchOperation.CreateWorktree(
+            operation = PendingGitBranchOperation.HandoffToWorktree(
                 branchName = trimmedName,
                 baseBranch = trimmedBaseBranch,
                 changeTransfer = changeTransfer,
-                followUp = followUp,
             ),
         )
     }
@@ -2299,11 +2282,10 @@ class AppViewModel(
         name: String,
         baseBranch: String?,
     ) {
-        createGitWorktree(
+        requestThreadHandoffToWorktree(
             name = name,
             baseBranch = baseBranch,
             changeTransfer = RemodexGitWorktreeChangeTransferMode.MOVE,
-            followUp = GitWorktreeFollowUp.HANDOFF_CURRENT_THREAD,
         )
     }
 
@@ -4079,70 +4061,55 @@ class AppViewModel(
                     repository.checkoutGitBranch(threadId, operation.branchName)
                 }
             }
-            is PendingGitBranchOperation.CreateWorktree -> {
-                if (operation.followUp == GitWorktreeFollowUp.HANDOFF_CURRENT_THREAD) {
-                    viewModelScope.launch {
-                        setGitWorktreeCreationInProgress(threadId, true)
-                        clearGitSyncAlert(threadId)
-                        updateGitState(threadId) { currentState ->
-                            currentState.copy(isLoading = true, errorMessage = null)
-                        }
-                        runCatching {
-                            val result = repository.createGitWorktreeResult(
-                                threadId = threadId,
-                                name = operation.branchName,
-                                baseBranch = operation.baseBranch,
-                                changeTransfer = operation.changeTransfer,
-                            )
-                            val resolvedWorktreePath = RemodexWorktreeRouting.canonicalProjectPath(result.worktreePath)
-                                ?: normalizeRemodexFilesystemProjectPath(result.worktreePath)
-                                ?: throw IllegalStateException(
-                                    "Could not resolve the worktree path for ${result.branch}."
-                                )
-                            repository.moveThreadToProjectPath(
-                                threadId = threadId,
-                                projectPath = resolvedWorktreePath,
-                            )
-                            result
-                        }.onSuccess { result ->
-                            refreshGitState(threadId)
-                            updateGitState(threadId) { currentState ->
-                                currentState.copy(
-                                    isLoading = false,
-                                    lastActionMessage = "Moved this thread to worktree ${result.branch}.",
-                                    errorMessage = null,
-                                )
-                            }
-                            emitWorktreeOperationSuccessSignal()
-                            presentTransientBanner("Now in worktree ${result.branch}.")
-                        }.onFailure { error ->
-                            updateGitState(threadId) { currentState ->
-                                currentState.copy(
-                                    isLoading = false,
-                                    errorMessage = null,
-                                )
-                            }
-                            showGitSyncAlert(
-                                threadId = threadId,
-                                title = "Worktree Creation Failed",
-                                message = error.message ?: "Could not create worktree.",
-                            )
-                        }.also {
-                            setGitWorktreeCreationInProgress(threadId, false)
-                        }
+            is PendingGitBranchOperation.HandoffToWorktree -> {
+                viewModelScope.launch {
+                    setGitWorktreeCreationInProgress(threadId, true)
+                    clearGitSyncAlert(threadId)
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(isLoading = true, errorMessage = null)
                     }
-                } else {
-                    launchGitAction(
-                        threadId = threadId,
-                        title = "Worktree Creation Failed",
-                        fallbackMessage = "Could not create worktree.",
-                    ) {
-                        repository.createGitWorktree(
+                    runCatching {
+                        val result = repository.createGitWorktreeResult(
                             threadId = threadId,
                             name = operation.branchName,
                             baseBranch = operation.baseBranch,
                             changeTransfer = operation.changeTransfer,
                         )
+                        val resolvedWorktreePath = RemodexWorktreeRouting.canonicalProjectPath(result.worktreePath)
+                            ?: normalizeRemodexFilesystemProjectPath(result.worktreePath)
+                            ?: throw IllegalStateException(
+                                "Could not resolve the worktree path for ${result.branch}."
+                            )
+                        repository.moveThreadToProjectPath(
+                            threadId = threadId,
+                            projectPath = resolvedWorktreePath,
+                        )
+                        result
+                    }.onSuccess { result ->
+                        refreshGitState(threadId)
+                        updateGitState(threadId) { currentState ->
+                            currentState.copy(
+                                isLoading = false,
+                                lastActionMessage = "Moved this thread to worktree ${result.branch}.",
+                                errorMessage = null,
+                            )
+                        }
+                        emitWorktreeOperationSuccessSignal()
+                        presentTransientBanner("Now in worktree ${result.branch}.")
+                    }.onFailure { error ->
+                        updateGitState(threadId) { currentState ->
+                            currentState.copy(
+                                isLoading = false,
+                                errorMessage = null,
+                            )
+                        }
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            title = "Worktree Creation Failed",
+                            message = error.message ?: "Could not create worktree.",
+                        )
+                    }.also {
+                        setGitWorktreeCreationInProgress(threadId, false)
                     }
                 }
             }
@@ -4288,7 +4255,7 @@ class AppViewModel(
                     else -> null
                 }
             }
-            is PendingGitBranchOperation.CreateWorktree -> {
+            is PendingGitBranchOperation.HandoffToWorktree -> {
                 when {
                     isDirty && currentBranch != operation.baseBranch -> {
                         val transferVerb = if (operation.changeTransfer == RemodexGitWorktreeChangeTransferMode.MOVE) {
