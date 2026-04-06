@@ -388,6 +388,85 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `fork slash command only offers local when thread cannot create a worktree`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(phase = RemodexConnectionPhase.CONNECTED),
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Running thread",
+                        projectPath = "/tmp/remodex",
+                        isRunning = true,
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+                supportsThreadFork = true,
+            )
+            gitStateResult = RemodexGitState(
+                branches = RemodexGitBranches(
+                    currentBranch = "main",
+                    defaultBranch = "main",
+                    branches = listOf("main", "feature/test"),
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.FORK)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RemodexComposerForkDestination.LOCAL),
+            viewModel.uiState.value.composer.autocomplete.forkDestinations,
+        )
+    }
+
+    @Test
+    fun `fork slash command does not offer new worktree from an existing worktree thread`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                connectionStatus = RemodexConnectionStatus(phase = RemodexConnectionPhase.CONNECTED),
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Worktree thread",
+                        projectPath = "/tmp/remodex/.codex/worktrees/feature/existing",
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+                supportsThreadFork = true,
+            )
+            gitStateResult = RemodexGitState(
+                branches = RemodexGitBranches(
+                    currentBranch = "feature/existing",
+                    defaultBranch = "main",
+                    branches = listOf("main", "feature/existing"),
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+        viewModel.refreshGitState()
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("/")
+        advanceUntilIdle()
+        viewModel.selectSlashCommand(RemodexSlashCommand.FORK)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(RemodexComposerForkDestination.LOCAL),
+            viewModel.uiState.value.composer.autocomplete.forkDestinations,
+        )
+    }
+
+    @Test
     fun `fork thread suppresses bridge update failures once runtime prompt is available`() = runTest {
         val selectedThread = threadSummary(
             id = "thread-1",

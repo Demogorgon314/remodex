@@ -844,9 +844,6 @@ internal const val BackgroundTerminalTrayTag = "background_terminal_tray"
 internal const val BackgroundTerminalSheetTag = "background_terminal_sheet"
 internal const val ConversationWelcomeStateTag = "conversation_welcome_state"
 internal const val ConversationWelcomeLoadingTag = "conversation_welcome_loading"
-internal const val GitSheetTag = "git_sheet"
-internal const val GitCheckoutPickerTriggerTag = "git_checkout_picker_trigger"
-internal const val GitComparePickerTriggerTag = "git_compare_picker_trigger"
 internal const val GitBranchPickerDialogTag = "git_branch_picker_dialog"
 internal const val GitBranchPickerSearchFieldTag = "git_branch_picker_search_field"
 private const val FileChangeDetailSheetAutoExpandMaxLines = 160
@@ -1429,7 +1426,9 @@ fun ConversationScreen(
     val autocompleteVisible = uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE
     val showsThreadRunningUi = thread.isRunning
 
-    var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
+    var activeGitBranchPickerMode by rememberSaveable(thread.id) {
+        mutableStateOf<GitBranchPickerMode?>(null)
+    }
     var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeSheetMode by remember(thread.id) { mutableStateOf(WorktreeSheetMode.HANDOFF) }
     var handledWorktreeSuccessSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
@@ -1601,9 +1600,9 @@ fun ConversationScreen(
         worktreeHandoffSheetExpanded = false
     }
 
-    LaunchedEffect(gitSheetExpanded, showsGitControls) {
-        if (gitSheetExpanded && !showsGitControls) {
-            gitSheetExpanded = false
+    LaunchedEffect(activeGitBranchPickerMode, showsGitControls) {
+        if (activeGitBranchPickerMode != null && !showsGitControls) {
+            activeGitBranchPickerMode = null
         }
     }
 
@@ -2040,7 +2039,7 @@ fun ConversationScreen(
                 onComposerFocusChanged = { isFocused ->
                     composerFocused = isFocused
                 },
-                onOpenGitSheet = { gitSheetExpanded = true },
+                onOpenGitSheet = { activeGitBranchPickerMode = GitBranchPickerMode.CHECKOUT },
                 onOpenWorktreeHandoff = {
                     worktreeSheetMode = WorktreeSheetMode.HANDOFF
                     worktreeHandoffSheetExpanded = true
@@ -2058,7 +2057,6 @@ fun ConversationScreen(
             isWorktreeOperationAvailable = isWorktreeOperationAvailable,
             isCreatingGitWorktree = uiState.isCreatingGitWorktree,
             selectedGitBaseBranch = uiState.composer.selectedGitBaseBranch,
-            canCreatePullRequest = uiState.composer.canCreatePullRequest,
             onDismissWorktreeHandoffSheet = { worktreeHandoffSheetExpanded = false },
             onSubmitWorktreeHandoff = { branchName, baseBranch ->
                 when (worktreeSheetMode) {
@@ -2066,19 +2064,12 @@ fun ConversationScreen(
                     WorktreeSheetMode.FORK -> onForkThreadIntoNewWorktree(branchName, baseBranch)
                 }
             },
-            gitSheetExpanded = gitSheetExpanded,
-            onDismissGitSheet = { gitSheetExpanded = false },
+            activeGitBranchPickerMode = activeGitBranchPickerMode,
+            onDismissGitBranchPicker = { activeGitBranchPickerMode = null },
             onSelectGitBaseBranch = onSelectGitBaseBranch,
             onRefreshGitState = onRefreshGitState,
-            onSyncGitChanges = onSyncGitChanges,
             onCheckoutGitBranch = onCheckoutGitBranch,
             onCreateGitBranch = onCreateGitBranch,
-            onCommitGitChanges = onCommitGitChanges,
-            onCommitAndPushGitChanges = onCommitAndPushGitChanges,
-            onPullGitChanges = onPullGitChanges,
-            onPushGitChanges = onPushGitChanges,
-            onCreatePullRequest = onCreatePullRequest,
-            onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
             selectedPlanSheetItem = selectedPlanSheetItem,
             onDismissPlanSheet = { selectedPlanSheetItemId = null },
             statusSheetExpanded = statusSheetExpanded,
@@ -2675,22 +2666,14 @@ private fun ConversationScreenSheetOverlays(
     isWorktreeOperationAvailable: Boolean,
     isCreatingGitWorktree: Boolean,
     selectedGitBaseBranch: String,
-    canCreatePullRequest: Boolean,
     onDismissWorktreeHandoffSheet: () -> Unit,
     onSubmitWorktreeHandoff: (String, String) -> Unit,
-    gitSheetExpanded: Boolean,
-    onDismissGitSheet: () -> Unit,
+    activeGitBranchPickerMode: GitBranchPickerMode?,
+    onDismissGitBranchPicker: () -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
-    onSyncGitChanges: () -> Unit,
     onCheckoutGitBranch: (String) -> Unit,
     onCreateGitBranch: (String) -> Unit,
-    onCommitGitChanges: () -> Unit,
-    onCommitAndPushGitChanges: () -> Unit,
-    onPullGitChanges: () -> Unit,
-    onPushGitChanges: () -> Unit,
-    onCreatePullRequest: () -> Unit,
-    onDiscardRuntimeChangesAndSync: () -> Unit,
     selectedPlanSheetItem: RemodexConversationItem?,
     onDismissPlanSheet: () -> Unit,
     statusSheetExpanded: Boolean,
@@ -2725,23 +2708,16 @@ private fun ConversationScreenSheetOverlays(
         )
     }
 
-    if (gitSheetExpanded) {
-        DetailedGitSheet(
+    activeGitBranchPickerMode?.let { mode ->
+        GitBranchPickerDialog(
+            mode = mode,
             gitState = gitState,
-            canCreatePullRequest = canCreatePullRequest,
             selectedBaseBranch = selectedGitBaseBranch,
-            onDismiss = onDismissGitSheet,
+            onDismiss = onDismissGitBranchPicker,
             onSelectBaseBranch = onSelectGitBaseBranch,
-            onRefreshBranches = onRefreshGitState,
-            onSync = onSyncGitChanges,
+            onRefresh = onRefreshGitState,
             onCheckoutBranch = onCheckoutGitBranch,
             onCreateBranch = onCreateGitBranch,
-            onCommit = onCommitGitChanges,
-            onCommitAndPush = onCommitAndPushGitChanges,
-            onPull = onPullGitChanges,
-            onPush = onPushGitChanges,
-            onCreatePullRequest = onCreatePullRequest,
-            onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
         )
     }
 
@@ -4490,167 +4466,6 @@ internal fun resolveQueuedDraftRowActionState(
 }
 
 @Composable
-private fun GitContextCard(
-    gitState: RemodexGitState,
-    canCreatePullRequest: Boolean,
-    selectedBaseBranch: String,
-    onSelectBaseBranch: (String) -> Unit,
-    onSync: () -> Unit,
-    onRefreshBranches: () -> Unit,
-    onCheckoutBranch: (String) -> Unit,
-    onCreateBranch: (String) -> Unit,
-    onCommit: () -> Unit,
-    onCommitAndPush: () -> Unit,
-    onPull: () -> Unit,
-    onPush: () -> Unit,
-    onCreatePullRequest: () -> Unit,
-    onDiscardRuntimeChangesAndSync: () -> Unit,
-) {
-    val chrome = remodexConversationChrome()
-    if (!gitState.hasContext) {
-        return
-    }
-
-    var activeBranchPickerMode by rememberSaveable { mutableStateOf<GitBranchPickerMode?>(null) }
-    val gitActionsEnabled = !gitState.isLoading
-    val canOpenBranchPicker = gitActionsEnabled
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                modifier = Modifier
-                    .width(36.dp)
-                    .height(5.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(chrome.secondaryText.copy(alpha = 0.35f)),
-            )
-        }
-        Text(
-            text = "Git & Worktree",
-            style = MaterialTheme.typography.titleMedium,
-            color = chrome.titleText,
-        )
-        gitState.sync?.let { sync ->
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = buildString {
-                        append(sync.currentBranch ?: "Unknown branch")
-                        sync.trackingBranch?.takeIf(String::isNotBlank)?.let {
-                            append(" · ")
-                            append(it)
-                        }
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = chrome.titleText,
-                )
-                Text(
-                    text = buildString {
-                        append(sync.state.replace('_', ' '))
-                        if (sync.diffTotals != null) {
-                            append(" · +${sync.diffTotals.additions} / -${sync.diffTotals.deletions}")
-                        }
-                        if (sync.files.isNotEmpty()) {
-                            append(" · ${sync.files.size} files")
-                        }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = chrome.secondaryText,
-                )
-            }
-        }
-        gitState.lastActionMessage?.let { message ->
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = chrome.accent,
-            )
-        }
-        GitBranchPickerTrigger(
-            title = "Compare Against",
-            value = selectedGitBaseBranchLabel(gitState, selectedBaseBranch),
-            modifier = Modifier.testTag(GitComparePickerTriggerTag),
-            enabled = canOpenBranchPicker,
-            onClick = { activeBranchPickerMode = GitBranchPickerMode.BASE_BRANCH },
-        )
-        GitBranchPickerTrigger(
-            title = "Checkout",
-            value = selectedGitCheckoutBranchLabel(gitState),
-            modifier = Modifier.testTag(GitCheckoutPickerTriggerTag),
-            enabled = canOpenBranchPicker,
-            onClick = { activeBranchPickerMode = GitBranchPickerMode.CHECKOUT },
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
-                onClick = onSync,
-                enabled = gitActionsEnabled,
-            ) {
-                Text(if (gitState.isLoading) "Updating..." else "Update")
-            }
-            OutlinedButton(onClick = onPull, enabled = gitActionsEnabled) {
-                Text("Pull")
-            }
-            OutlinedButton(onClick = onPush, enabled = gitActionsEnabled) {
-                Text("Push")
-            }
-            OutlinedButton(onClick = onCommit, enabled = gitActionsEnabled) {
-                Text("Commit")
-            }
-            OutlinedButton(onClick = onCommitAndPush, enabled = gitActionsEnabled) {
-                Text("Commit & Push")
-            }
-            OutlinedButton(
-                onClick = onCreatePullRequest,
-                enabled = gitActionsEnabled && canCreatePullRequest,
-            ) {
-                Text("Create PR")
-            }
-            if (shouldShowDiscardRuntimeChangesAndSync(gitState.sync)) {
-                OutlinedButton(
-                    onClick = onDiscardRuntimeChangesAndSync,
-                    enabled = gitActionsEnabled,
-                ) {
-                    Text("Discard Local Changes")
-                }
-            }
-        }
-    }
-
-    activeBranchPickerMode?.let { mode ->
-        GitBranchPickerDialog(
-            mode = mode,
-            gitState = gitState,
-            selectedBaseBranch = selectedBaseBranch,
-            onDismiss = { activeBranchPickerMode = null },
-            onSelectBaseBranch = { branch ->
-                activeBranchPickerMode = null
-                onSelectBaseBranch(branch)
-            },
-            onCheckoutBranch = { branch ->
-                activeBranchPickerMode = null
-                onCheckoutBranch(branch)
-            },
-            onCreateBranch = { branch ->
-                activeBranchPickerMode = null
-                onCreateBranch(branch)
-            },
-            onRefresh = onRefreshBranches,
-        )
-    }
-}
-
-@Composable
 private fun ComposerSecondaryBar(
     thread: RemodexThreadSummary,
     gitState: RemodexGitState,
@@ -4908,11 +4723,9 @@ private fun ComposerSecondaryBar(
                         enabled = branchSelectorEnabled,
                         hapticOnClick = true,
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.CallSplit,
-                            contentDescription = null,
+                        RemodexGitBranchGlyph(
+                            color = chrome.secondaryText,
                             modifier = Modifier.size(12.dp),
-                            tint = chrome.secondaryText,
                         )
                         Text(
                             text = branchLabel,
@@ -5407,30 +5220,6 @@ private fun composerSecondaryBarBranchLabel(gitState: RemodexGitState): String {
         ?: "Branch"
 }
 
-private fun selectedGitCheckoutBranchLabel(gitState: RemodexGitState): String {
-    return gitState.branches.currentBranch
-        ?.trim()
-        ?.takeIf(String::isNotEmpty)
-        ?: gitState.sync?.currentBranch
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-        ?: gitState.branches.defaultBranch
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-        ?: "Pick a branch"
-}
-
-private fun selectedGitBaseBranchLabel(
-    gitState: RemodexGitState,
-    selectedBaseBranch: String,
-): String {
-    return selectedBaseBranch.trim().takeIf(String::isNotEmpty)
-        ?: gitState.branches.defaultBranch
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-        ?: "Pick a base branch"
-}
-
 private fun preferredWorktreeBaseBranch(
     gitState: RemodexGitState,
     selectedBaseBranch: String,
@@ -5453,7 +5242,7 @@ private enum class WorktreeSheetMode {
     FORK,
 }
 
-private fun shouldShowDiscardRuntimeChangesAndSync(sync: RemodexGitRepoSync?): Boolean {
+internal fun shouldShowDiscardRuntimeChangesAndSync(sync: RemodexGitRepoSync?): Boolean {
     if (sync == null) {
         return false
     }
@@ -5494,52 +5283,6 @@ private fun composerResetLabel(window: com.emanueledipietro.remodex.model.Remode
         hours > 0L -> "resets ${hours}h ${minutes}m"
         totalMinutes > 0L -> "resets ${totalMinutes}m"
         else -> "resets soon"
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DetailedGitSheet(
-    gitState: RemodexGitState,
-    canCreatePullRequest: Boolean,
-    selectedBaseBranch: String,
-    onDismiss: () -> Unit,
-    onSelectBaseBranch: (String) -> Unit,
-    onRefreshBranches: () -> Unit,
-    onSync: () -> Unit,
-    onCheckoutBranch: (String) -> Unit,
-    onCreateBranch: (String) -> Unit,
-    onCommit: () -> Unit,
-    onCommitAndPush: () -> Unit,
-    onPull: () -> Unit,
-    onPush: () -> Unit,
-    onCreatePullRequest: () -> Unit,
-    onDiscardRuntimeChangesAndSync: () -> Unit,
-) {
-    val chrome = remodexConversationChrome()
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        modifier = Modifier.testTag(GitSheetTag),
-        containerColor = chrome.panelSurfaceStrong,
-        dragHandle = null,
-        tonalElevation = 0.dp,
-    ) {
-        GitContextCard(
-            gitState = gitState,
-            canCreatePullRequest = canCreatePullRequest,
-            selectedBaseBranch = selectedBaseBranch,
-            onSelectBaseBranch = onSelectBaseBranch,
-            onSync = onSync,
-            onRefreshBranches = onRefreshBranches,
-            onCheckoutBranch = onCheckoutBranch,
-            onCreateBranch = onCreateBranch,
-            onCommit = onCommit,
-            onCommitAndPush = onCommitAndPush,
-            onPull = onPull,
-            onPush = onPush,
-            onCreatePullRequest = onCreatePullRequest,
-            onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
-        )
     }
 }
 
@@ -7958,61 +7701,6 @@ private fun ModelRuntimeControlsSection(
                     label = { Text(option.displayName) },
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun GitBranchPickerTrigger(
-    title: String,
-    value: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) {
-    val chrome = remodexConversationChrome()
-    Surface(
-        modifier = modifier,
-        color = chrome.panelSurface,
-        shape = RemodexConversationShapes.card,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(
-                    enabled = enabled,
-                    onClick = onClick,
-                )
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (enabled) chrome.secondaryText else chrome.secondaryText.copy(alpha = 0.6f),
-                )
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (enabled) chrome.titleText else chrome.titleText.copy(alpha = 0.6f),
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Icon(
-                imageVector = Icons.Outlined.ExpandMore,
-                contentDescription = null,
-                tint = if (enabled) chrome.secondaryText else chrome.secondaryText.copy(alpha = 0.6f),
-            )
         }
     }
 }

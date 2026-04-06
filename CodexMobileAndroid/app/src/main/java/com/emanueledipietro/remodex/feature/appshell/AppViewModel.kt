@@ -66,7 +66,10 @@ import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
 import com.emanueledipietro.remodex.model.remodexApprovalRequestSummary
+import com.emanueledipietro.remodex.feature.turn.remodexGitUiActionIsAvailable
+import com.emanueledipietro.remodex.feature.turn.remodexShowsGitControls
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -209,6 +212,7 @@ private data class BaseUiOverlayState(
     val sendSignalsByThread: Map<String, ComposerSendUiSignals>,
     val planSessionsByThread: Map<String, PlanComposerSessionUiState>,
     val voiceUiState: ComposerVoiceUiState,
+    val creatingGitWorktreeThreadIds: Set<String>,
     val isAppForeground: Boolean,
     val dismissedApprovalBannerRequestIds: Set<String>,
 )
@@ -546,15 +550,17 @@ class AppViewModel(
         combine(
             baseUiTransientState,
             voiceUiRenderState,
+            creatingGitWorktreeThreadIdsState,
             isAppForegroundState,
             dismissedApprovalBannerRequestIdsState,
-        ) { transientState, voiceUiState, isAppForeground, dismissedApprovalBannerRequestIds ->
+        ) { transientState, voiceUiState, creatingGitWorktreeThreadIds, isAppForeground, dismissedApprovalBannerRequestIds ->
             val (gitUiState, sendSignalsByThread, planSessionsByThread) = transientState
             BaseUiOverlayState(
                 gitUiState = gitUiState,
                 sendSignalsByThread = sendSignalsByThread,
                 planSessionsByThread = planSessionsByThread,
                 voiceUiState = voiceUiState,
+                creatingGitWorktreeThreadIds = creatingGitWorktreeThreadIds,
                 isAppForeground = isAppForeground,
                 dismissedApprovalBannerRequestIds = dismissedApprovalBannerRequestIds,
             )
@@ -624,8 +630,12 @@ class AppViewModel(
                     steeringQueuedDraftId = steeringQueuedDraftId,
                     autocomplete = renderStateB.autocomplete.enriched(
                         selectedThread = selectedThread,
+                        isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED,
                         gitState = gitState,
                         supportsThreadFork = snapshot.supportsThreadFork,
+                        isCreatingGitWorktree = selectedThread?.id?.let { threadId ->
+                            overlayState.creatingGitWorktreeThreadIds.contains(threadId)
+                        } == true,
                         selectedGitBaseBranch = selectedGitBaseBranch,
                         draftText = draftText,
                         mentionedFiles = mentionedFiles,
@@ -1787,8 +1797,11 @@ class AppViewModel(
                 autocompleteState.value = autocompleteState.value.copy(
                     panel = RemodexComposerAutocompletePanel.FORK_DESTINATIONS,
                     forkDestinations = availableForkDestinations(
+                        isConnected = uiState.value.isConnected,
+                        selectedThread = uiState.value.selectedThread,
                         gitState = uiState.value.composer.gitState,
                         supportsThreadFork = uiState.value.supportsThreadFork,
+                        isCreatingGitWorktree = uiState.value.isCreatingGitWorktree,
                     ),
                 )
             }
@@ -3958,8 +3971,11 @@ class AppViewModel(
             hasSubagentsSelection = composer.isSubagentsSelectionArmed,
             isPlanModeArmed = composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN,
         ) && availableForkDestinations(
+            isConnected = uiState.value.isConnected,
+            selectedThread = uiState.value.selectedThread,
             gitState = composer.gitState,
             supportsThreadFork = uiState.value.supportsThreadFork,
+            isCreatingGitWorktree = uiState.value.isCreatingGitWorktree,
         ).isNotEmpty()
         return RemodexSlashCommand.allCommands.filter { command ->
             command != RemodexSlashCommand.FORK || allowsFork
@@ -4870,8 +4886,10 @@ class AppViewModelFactory(
 
 private fun RemodexComposerAutocompleteState.enriched(
     selectedThread: RemodexThreadSummary?,
+    isConnected: Boolean,
     gitState: RemodexGitState,
     supportsThreadFork: Boolean,
+    isCreatingGitWorktree: Boolean,
     selectedGitBaseBranch: String,
     draftText: String,
     mentionedFiles: List<RemodexComposerMentionedFile>,
@@ -4891,8 +4909,11 @@ private fun RemodexComposerAutocompleteState.enriched(
         hasSubagentsSelection = isSubagentsSelectionArmed,
     )
     val availableForkDestinations = availableForkDestinations(
+        isConnected = isConnected,
+        selectedThread = selectedThread,
         gitState = gitState,
         supportsThreadFork = supportsThreadFork,
+        isCreatingGitWorktree = isCreatingGitWorktree,
     )
     return copy(
         availableCommands = availableCommands.filter { command ->
@@ -4922,14 +4943,29 @@ private fun RemodexComposerAutocompleteState.enriched(
 }
 
 private fun availableForkDestinations(
+    isConnected: Boolean,
+    selectedThread: RemodexThreadSummary?,
     gitState: RemodexGitState,
     supportsThreadFork: Boolean,
+    isCreatingGitWorktree: Boolean,
 ): List<RemodexComposerForkDestination> {
     if (!supportsThreadFork) {
         return emptyList()
     }
+    val canCreateWorktree = selectedThread != null &&
+        !isCodexManagedWorktreeProject(selectedThread.projectPath) &&
+        remodexShowsGitControls(
+            isConnected = isConnected,
+            gitState = gitState,
+        ) &&
+        remodexGitUiActionIsAvailable(
+            isConnected = isConnected,
+            gitState = gitState,
+            isThreadRunning = selectedThread.isRunning,
+            isCreatingGitWorktree = isCreatingGitWorktree,
+        )
     return buildList {
-        if (gitState.hasContext) {
+        if (canCreateWorktree) {
             add(RemodexComposerForkDestination.NEW_WORKTREE)
         }
         add(RemodexComposerForkDestination.LOCAL)

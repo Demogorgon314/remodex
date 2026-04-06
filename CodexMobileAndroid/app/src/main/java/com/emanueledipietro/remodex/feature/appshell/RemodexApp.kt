@@ -55,11 +55,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -120,12 +127,17 @@ import com.emanueledipietro.remodex.feature.turn.ConversationScreen
 import com.emanueledipietro.remodex.feature.turn.FileChangeDetailSheet
 import com.emanueledipietro.remodex.feature.turn.FileChangeSheetPresentation
 import com.emanueledipietro.remodex.feature.turn.buildRepositoryDiffSheetPresentation
+import com.emanueledipietro.remodex.feature.turn.remodexGitUiActionIsAvailable
+import com.emanueledipietro.remodex.feature.turn.remodexShowsGitControls
+import com.emanueledipietro.remodex.feature.turn.RemodexGitCommitGlyph
+import com.emanueledipietro.remodex.feature.turn.shouldShowDiscardRuntimeChangesAndSync
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexGitDiffTotals
+import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
@@ -949,11 +961,27 @@ private fun MainPane(
     var isLoadingRepositoryDiff by remember(uiState.selectedThread?.id) {
         mutableStateOf(false)
     }
+    val selectedThread = uiState.selectedThread
     val repoDiffTotals = if (shellRoute == ShellRoute.CONTENT) {
         uiState.composer.gitState.sync?.diffTotals
     } else {
         null
     }
+    val showsGitActions = shellRoute == ShellRoute.CONTENT &&
+        remodexShowsGitControls(
+            isConnected = uiState.isConnected,
+            gitState = uiState.composer.gitState,
+        )
+    val isGitActionEnabled = shellRoute == ShellRoute.CONTENT &&
+        selectedThread != null &&
+        remodexGitUiActionIsAvailable(
+            isConnected = uiState.isConnected,
+            gitState = uiState.composer.gitState,
+            isThreadRunning = selectedThread.isRunning,
+            isCreatingGitWorktree = uiState.isCreatingGitWorktree,
+        )
+    val showsDiscardRuntimeChanges = shellRoute == ShellRoute.CONTENT &&
+        shouldShowDiscardRuntimeChangesAndSync(uiState.composer.gitState.sync)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -967,6 +995,12 @@ private fun MainPane(
             compact = compact,
             repoDiffTotals = repoDiffTotals,
             isLoadingRepoDiff = shellRoute == ShellRoute.CONTENT && isLoadingRepositoryDiff,
+            showsGitActions = showsGitActions,
+            isGitActionEnabled = isGitActionEnabled,
+            isRunningGitAction = shellRoute == ShellRoute.CONTENT && uiState.composer.gitState.isLoading,
+            canCreatePullRequest = uiState.composer.canCreatePullRequest,
+            showsDiscardRuntimeChangesAndSync = showsDiscardRuntimeChanges,
+            gitSyncState = uiState.composer.gitState.sync?.state,
             onOpenRepoDiff = if (shellRoute == ShellRoute.CONTENT && repoDiffTotals != null) {
                 {
                     isLoadingRepositoryDiff = true
@@ -979,6 +1013,36 @@ private fun MainPane(
                         },
                     )
                 }
+            } else {
+                null
+            },
+            onSyncGitChanges = if (showsGitActions) {
+                viewModel::syncGitChanges
+            } else {
+                null
+            },
+            onCommitGitChanges = if (showsGitActions) {
+                { viewModel.commitGitChanges() }
+            } else {
+                null
+            },
+            onPushGitChanges = if (showsGitActions) {
+                viewModel::pushGitChanges
+            } else {
+                null
+            },
+            onCommitAndPushGitChanges = if (showsGitActions) {
+                { viewModel.commitAndPushGitChanges() }
+            } else {
+                null
+            },
+            onCreatePullRequest = if (showsGitActions) {
+                { viewModel.createPullRequest(uriHandler::openUri) }
+            } else {
+                null
+            },
+            onDiscardRuntimeChangesAndSync = if (showsDiscardRuntimeChanges) {
+                viewModel::discardRuntimeChangesAndSync
             } else {
                 null
             },
@@ -1485,6 +1549,18 @@ private fun ShellTopBar(
     repoDiffTotals: RemodexGitDiffTotals?,
     isLoadingRepoDiff: Boolean,
     onOpenRepoDiff: (() -> Unit)?,
+    showsGitActions: Boolean,
+    isGitActionEnabled: Boolean,
+    isRunningGitAction: Boolean,
+    canCreatePullRequest: Boolean,
+    showsDiscardRuntimeChangesAndSync: Boolean,
+    gitSyncState: String?,
+    onSyncGitChanges: (() -> Unit)?,
+    onCommitGitChanges: (() -> Unit)?,
+    onPushGitChanges: (() -> Unit)?,
+    onCommitAndPushGitChanges: (() -> Unit)?,
+    onCreatePullRequest: (() -> Unit)?,
+    onDiscardRuntimeChangesAndSync: (() -> Unit)?,
     onMenu: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -1622,12 +1698,34 @@ private fun ShellTopBar(
             }
         }
 
-        if (shellRoute == ShellRoute.CONTENT && repoDiffTotals != null) {
-            ShellTopBarDiffTotalsButton(
-                totals = repoDiffTotals,
-                isLoading = isLoadingRepoDiff,
-                onClick = onOpenRepoDiff,
-            )
+        if (shellRoute == ShellRoute.CONTENT && (repoDiffTotals != null || showsGitActions)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repoDiffTotals?.let { totals ->
+                    ShellTopBarDiffTotalsButton(
+                        totals = totals,
+                        isLoading = isLoadingRepoDiff,
+                        onClick = onOpenRepoDiff,
+                    )
+                }
+                if (showsGitActions) {
+                    ShellTopBarGitActionsButton(
+                        isEnabled = isGitActionEnabled,
+                        isRunningAction = isRunningGitAction,
+                        canCreatePullRequest = canCreatePullRequest,
+                        showsDiscardRuntimeChangesAndSync = showsDiscardRuntimeChangesAndSync,
+                        gitSyncState = gitSyncState,
+                        onSyncGitChanges = onSyncGitChanges,
+                        onCommitGitChanges = onCommitGitChanges,
+                        onPushGitChanges = onPushGitChanges,
+                        onCommitAndPushGitChanges = onCommitAndPushGitChanges,
+                        onCreatePullRequest = onCreatePullRequest,
+                        onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+                    )
+                }
+            }
         } else {
             Spacer(modifier = Modifier.size(40.dp))
         }
@@ -1744,6 +1842,155 @@ private fun ShellTopBarDiffTotalsButton(
     ) {
         content()
     }
+}
+
+@Composable
+private fun ShellTopBarGitActionsButton(
+    isEnabled: Boolean,
+    isRunningAction: Boolean,
+    canCreatePullRequest: Boolean,
+    showsDiscardRuntimeChangesAndSync: Boolean,
+    gitSyncState: String?,
+    onSyncGitChanges: (() -> Unit)?,
+    onCommitGitChanges: (() -> Unit)?,
+    onPushGitChanges: (() -> Unit)?,
+    onCommitAndPushGitChanges: (() -> Unit)?,
+    onCreatePullRequest: (() -> Unit)?,
+    onDiscardRuntimeChangesAndSync: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val syncStatusColor = when (gitSyncState) {
+        "behind_only", "diverged", "dirty_and_behind" -> Color(0xFFE59A18)
+        else -> null
+    }
+
+    Box {
+        ShellTopBarButton(
+            onClick = { expanded = true },
+            contentDescription = "Git actions",
+        ) {
+            if (isRunningAction) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 1.8.dp,
+                    color = chrome.titleText,
+                )
+            } else {
+                Box(contentAlignment = Alignment.Center) {
+                    RemodexGitCommitGlyph(
+                        color = chrome.titleText,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    syncStatusColor?.let { color ->
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(8.dp)
+                                .background(color, CircleShape)
+                                .border(
+                                    width = 1.5.dp,
+                                    color = chrome.mutedSurface,
+                                    shape = CircleShape,
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            ShellTopBarGitActionMenuItem(
+                label = "Update",
+                leadingIcon = {
+                    Icon(Icons.Outlined.Refresh, contentDescription = null)
+                },
+                enabled = isEnabled && onSyncGitChanges != null,
+                onClick = {
+                    expanded = false
+                    onSyncGitChanges?.invoke()
+                },
+            )
+            ShellTopBarGitActionMenuItem(
+                label = "Commit",
+                leadingIcon = {
+                    RemodexGitCommitGlyph(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+                enabled = isEnabled && onCommitGitChanges != null,
+                onClick = {
+                    expanded = false
+                    onCommitGitChanges?.invoke()
+                },
+            )
+            ShellTopBarGitActionMenuItem(
+                label = "Push",
+                leadingIcon = {
+                    Icon(Icons.Outlined.ArrowUpward, contentDescription = null)
+                },
+                enabled = isEnabled && onPushGitChanges != null,
+                onClick = {
+                    expanded = false
+                    onPushGitChanges?.invoke()
+                },
+            )
+            ShellTopBarGitActionMenuItem(
+                label = "Commit & Push",
+                leadingIcon = {
+                    Icon(Icons.Outlined.ArrowUpward, contentDescription = null)
+                },
+                enabled = isEnabled && onCommitAndPushGitChanges != null,
+                onClick = {
+                    expanded = false
+                    onCommitAndPushGitChanges?.invoke()
+                },
+            )
+            ShellTopBarGitActionMenuItem(
+                label = "Create PR",
+                leadingIcon = {
+                    Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null)
+                },
+                enabled = isEnabled && canCreatePullRequest && onCreatePullRequest != null,
+                onClick = {
+                    expanded = false
+                    onCreatePullRequest?.invoke()
+                },
+            )
+            if (showsDiscardRuntimeChangesAndSync && onDiscardRuntimeChangesAndSync != null) {
+                ShellTopBarGitActionMenuItem(
+                    label = "Discard Local Changes",
+                    leadingIcon = {
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                    },
+                    enabled = isEnabled,
+                    onClick = {
+                        expanded = false
+                        onDiscardRuntimeChangesAndSync()
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShellTopBarGitActionMenuItem(
+    label: String,
+    leadingIcon: @Composable () -> Unit,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        onClick = onClick,
+        enabled = enabled,
+        leadingIcon = leadingIcon,
+    )
 }
 
 internal fun fitProjectPathForWidth(
