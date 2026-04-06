@@ -9,6 +9,8 @@ import com.emanueledipietro.remodex.data.app.RemodexSessionSnapshot
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.connection.firstString
+import com.emanueledipietro.remodex.data.connection.jsonObjectOrNull
 import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import com.emanueledipietro.remodex.platform.media.AndroidVoiceRecorder
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
@@ -106,6 +108,7 @@ data class ComposerUiState(
     val autocomplete: RemodexComposerAutocompleteState = RemodexComposerAutocompleteState(),
     val gitState: RemodexGitState = RemodexGitState(),
     val selectedGitBaseBranch: String = "",
+    val canCreatePullRequest: Boolean = false,
 )
 
 enum class ComposerVoiceButtonMode {
@@ -150,6 +153,7 @@ data class AppUiState(
     val supportsThreadFork: Boolean = true,
     val pendingApprovalRequest: RemodexApprovalRequest? = null,
     val isCreatingThread: Boolean = false,
+    val isCreatingGitWorktree: Boolean = false,
     val isRefreshingThreads: Boolean = false,
     val isRefreshingUsage: Boolean = false,
     val isSelectedThreadHydrating: Boolean = false,
@@ -172,6 +176,7 @@ data class AppUiState(
     val composerSendAnchorSignal: Long = 0L,
     val statusSheetSignal: Long = 0L,
     val backgroundTerminalSheetSignal: Long = 0L,
+    val worktreeOperationSuccessSignal: Long = 0L,
     val assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation> = emptyMap(),
     val assistantRevertSheet: RemodexAssistantRevertSheetState? = null,
     val commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
@@ -239,9 +244,11 @@ enum class RemodexGitSyncAlertButtonRole {
 
 enum class RemodexGitSyncAlertAction {
     DISMISS_ONLY,
+    PULL_REBASE,
     DISCARD_RUNTIME_CHANGES,
     CONTINUE_GIT_BRANCH_OPERATION,
     COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION,
+    OPEN_EXISTING_BRANCH_CHAT,
 }
 
 private sealed interface PendingGitBranchOperation {
@@ -332,8 +339,10 @@ private data class ThreadChromeState(
 
 private data class ThreadLoadingState(
     val isCreatingThread: Boolean = false,
+    val creatingGitWorktreeThreadIds: Set<String> = emptySet(),
     val isRefreshingThreads: Boolean = false,
     val isRefreshingUsage: Boolean = false,
+    val worktreeOperationSuccessSignal: Long = 0L,
 )
 
 private object NoopVoiceRecorder : AndroidVoiceRecorder {
@@ -380,8 +389,10 @@ class AppViewModel(
     private val planComposerSessions = MutableStateFlow<Map<String, PlanComposerSessionUiState>>(emptyMap())
     private val voiceButtonModeState = MutableStateFlow(ComposerVoiceButtonMode.IDLE)
     private val isCreatingThreadState = MutableStateFlow(false)
+    private val creatingGitWorktreeThreadIdsState = MutableStateFlow<Set<String>>(emptySet())
     private val isRefreshingThreadsState = MutableStateFlow(false)
     private val isRefreshingUsageState = MutableStateFlow(false)
+    private val worktreeOperationSuccessSignalState = MutableStateFlow(0L)
     private val hydratingThreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
     private val autoReconnectState = MutableStateFlow(AutoReconnectUiState())
     private val isSwitchingMacState = MutableStateFlow(false)
@@ -400,6 +411,7 @@ class AppViewModel(
     private var isAppForeground = false
     private var isManualScannerActive = false
     private var pendingGitBranchOperation: PendingGitBranchOperation? = null
+    private var pendingCheckedOutElsewhereThreadId: String? = null
     private var pendingDesktopHandoffThreadId: String? = null
     private var gitStateRefreshJob: Job? = null
     private var suppressAutoReconnectUntilManualConnect = false
@@ -681,13 +693,17 @@ class AppViewModel(
     private val threadLoadingState =
         combine(
             isCreatingThreadState,
+            creatingGitWorktreeThreadIdsState,
             isRefreshingThreadsState,
             isRefreshingUsageState,
-        ) { isCreatingThread, isRefreshingThreads, isRefreshingUsage ->
+            worktreeOperationSuccessSignalState,
+        ) { isCreatingThread, creatingGitWorktreeThreadIds, isRefreshingThreads, isRefreshingUsage, worktreeOperationSuccessSignal ->
             ThreadLoadingState(
                 isCreatingThread = isCreatingThread,
+                creatingGitWorktreeThreadIds = creatingGitWorktreeThreadIds,
                 isRefreshingThreads = isRefreshingThreads,
                 isRefreshingUsage = isRefreshingUsage,
+                worktreeOperationSuccessSignal = worktreeOperationSuccessSignal,
             )
         }
 
@@ -715,8 +731,12 @@ class AppViewModel(
                 threadCompletionBanner = threadChrome.threadCompletionBanner,
                 completionHapticSignal = threadChrome.completionHapticSignal,
                 isCreatingThread = loadingState.isCreatingThread,
+                isCreatingGitWorktree = selectedThreadId?.let { threadId ->
+                    loadingState.creatingGitWorktreeThreadIds.contains(threadId)
+                } == true,
                 isRefreshingThreads = loadingState.isRefreshingThreads,
                 isRefreshingUsage = loadingState.isRefreshingUsage,
+                worktreeOperationSuccessSignal = loadingState.worktreeOperationSuccessSignal,
             )
         }
 
@@ -2169,35 +2189,41 @@ class AppViewModel(
         val threadId = uiState.value.selectedThread?.id ?: return
         val selectedThread = uiState.value.selectedThread ?: return
         val gitState = uiState.value.composer.gitState
+        if (!canRunGitBranchOperation(threadId)) {
+            return
+        }
         val trimmedBranch = branch.trim()
         if (trimmedBranch.isEmpty()) {
             return
         }
         if (gitState.branches.branchesCheckedOutElsewhere.contains(trimmedBranch)) {
             val targetPath = gitState.branches.worktreePathByBranch[trimmedBranch]
-            val normalizedCurrentPath = normalizeComparableProjectPath(selectedThread.projectPath)
-            val normalizedTargetPath = normalizeComparableProjectPath(targetPath)
-            if (normalizedTargetPath != null && normalizedTargetPath == normalizedCurrentPath) {
-                return
-            }
-            val matchingThread = normalizedTargetPath?.let { worktreePath ->
-                uiState.value.threads.firstOrNull { thread ->
-                    normalizeComparableProjectPath(thread.projectPath) == worktreePath
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+            if (targetPath != null) {
+                val normalizedTargetPath = normalizeComparableProjectPath(targetPath)
+                val normalizedCurrentPath = normalizeComparableProjectPath(selectedThread.projectPath)
+                if (normalizedTargetPath != null && normalizedTargetPath == normalizedCurrentPath) {
+                    return
                 }
+                val matchingThread = RemodexWorktreeRouting.liveThreadForCheckedOutElsewhereBranch(
+                    projectPath = targetPath,
+                    currentThread = selectedThread,
+                    threads = uiState.value.threads,
+                )
+                showCheckedOutElsewhereAlert(
+                    threadId = threadId,
+                    branch = trimmedBranch,
+                    matchingThreadId = matchingThread?.id,
+                )
+            } else {
+                pendingCheckedOutElsewhereThreadId = null
+                showGitSyncAlert(
+                    threadId = threadId,
+                    title = "Branch Switch Failed",
+                    message = "Cannot switch branches: this branch is already open in another worktree.",
+                )
             }
-            if (matchingThread != null) {
-                selectThread(matchingThread.id)
-                return
-            }
-            showGitSyncAlert(
-                threadId = threadId,
-                title = "Branch already open elsewhere",
-                message = if (trimmedBranch.isBlank()) {
-                    "This branch is already checked out in another worktree."
-                } else {
-                    "'$trimmedBranch' is already checked out in another worktree. Open that chat from the sidebar to continue there."
-                },
-            )
             return
         }
         maybeRunGitBranchOperation(
@@ -2208,6 +2234,9 @@ class AppViewModel(
 
     fun createGitBranch(branch: String) {
         val threadId = uiState.value.selectedThread?.id ?: return
+        if (!canRunGitBranchOperation(threadId)) {
+            return
+        }
         val trimmedBranch = branch.trim()
         if (trimmedBranch.isEmpty()) {
             return
@@ -2234,6 +2263,9 @@ class AppViewModel(
         followUp: GitWorktreeFollowUp = GitWorktreeFollowUp.NONE,
     ) {
         val threadId = uiState.value.selectedThread?.id ?: return
+        if (!canRunGitBranchOperation(threadId)) {
+            return
+        }
         val trimmedName = name.trim()
         val trimmedBaseBranch = baseBranch?.trim().orEmpty()
         if (trimmedName.isEmpty() || trimmedBaseBranch.isEmpty()) {
@@ -2281,6 +2313,67 @@ class AppViewModel(
             fallbackMessage = "Operation failed.",
         ) {
             repository.commitAndPushGitChanges(threadId, message)
+        }
+    }
+
+    fun syncGitChanges() {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        viewModelScope.launch {
+            clearGitSyncAlert(threadId)
+            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
+            runCatching { repository.loadGitState(threadId) }
+                .onSuccess { nextState ->
+                    updateGitState(threadId) {
+                        nextState.copy(isLoading = false, errorMessage = null)
+                    }
+                    when (nextState.sync?.state) {
+                        "behind_only" -> {
+                            launchGitAction(
+                                threadId = threadId,
+                                title = "Pull Failed",
+                                fallbackMessage = "Operation failed.",
+                            ) {
+                                repository.pullGitChanges(threadId)
+                            }
+                        }
+                        "diverged", "dirty_and_behind" -> {
+                            showGitSyncAlert(
+                                threadId = threadId,
+                                title = if (nextState.sync.state == "diverged") {
+                                    "Branch diverged from remote"
+                                } else {
+                                    "Local changes need attention"
+                                },
+                                message = if (nextState.sync.state == "diverged") {
+                                    "Local and remote history both moved. Pull with rebase to reconcile them?"
+                                } else {
+                                    "You have local changes and the remote branch moved ahead. Pull with rebase only if you're ready to reconcile those changes."
+                                },
+                                buttons = listOf(
+                                    RemodexGitSyncAlertButtonUiState(
+                                        title = "Cancel",
+                                        role = RemodexGitSyncAlertButtonRole.CANCEL,
+                                        action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                                    ),
+                                    RemodexGitSyncAlertButtonUiState(
+                                        title = "Pull & Rebase",
+                                        action = RemodexGitSyncAlertAction.PULL_REBASE,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    updateGitState(threadId) { currentState ->
+                        currentState.copy(isLoading = false, errorMessage = null)
+                    }
+                    showGitSyncAlert(
+                        threadId = threadId,
+                        title = "Git Error",
+                        message = error.message ?: "Operation failed.",
+                    )
+                }
         }
     }
 
@@ -2415,6 +2508,9 @@ class AppViewModel(
         baseBranch: String?,
     ) {
         val threadId = uiState.value.selectedThread?.id ?: return
+        if (!canRunGitBranchOperation(threadId)) {
+            return
+        }
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) {
             return
@@ -2436,6 +2532,7 @@ class AppViewModel(
         }
 
         viewModelScope.launch {
+            setGitWorktreeCreationInProgress(threadId, true)
             clearComposerAutocomplete()
             dismissAssistantRevertSheet()
             clearGitSyncAlert(threadId)
@@ -2455,15 +2552,20 @@ class AppViewModel(
                         "A managed worktree for '${worktreeResult.branch}' already exists. Choose a different branch name to create a fresh forked workspace."
                     )
                 }
+                val resolvedWorktreePath = normalizeRemodexFilesystemProjectPath(worktreeResult.worktreePath)
+                    ?: throw IllegalStateException(
+                        "Could not resolve the new worktree path for '${worktreeResult.branch}'."
+                    )
                 repository.forkThreadIntoProjectPath(
                     threadId = threadId,
-                    projectPath = worktreeResult.worktreePath,
+                    projectPath = resolvedWorktreePath,
                 )
                 worktreeResult
             }.onSuccess { worktreeResult ->
                 updateGitState(threadId) { currentState ->
                     currentState.copy(isLoading = false, errorMessage = null)
                 }
+                emitWorktreeOperationSuccessSignal()
                 presentTransientBanner("Now in worktree ${worktreeResult.branch}.")
                 repository.session.value.selectedThread?.id?.let(::refreshGitState)
             }.onFailure { error ->
@@ -2475,6 +2577,8 @@ class AppViewModel(
                     title = "Worktree Fork Failed",
                     message = error.message ?: "Could not fork the thread into a new worktree.",
                 )
+            }.also {
+                setGitWorktreeCreationInProgress(threadId, false)
             }
         }
     }
@@ -2596,6 +2700,7 @@ class AppViewModel(
         val threadId = uiState.value.selectedThread?.id ?: return
         clearGitSyncAlert(threadId)
         pendingGitBranchOperation = null
+        pendingCheckedOutElsewhereThreadId = null
     }
 
     fun confirmGitSyncAlert() {
@@ -2609,10 +2714,21 @@ class AppViewModel(
     fun performGitSyncAlertAction(action: RemodexGitSyncAlertAction) {
         val threadId = uiState.value.selectedThread?.id ?: return
         val pendingOperation = pendingGitBranchOperation
+        val pendingElsewhereThreadId = pendingCheckedOutElsewhereThreadId
         clearGitSyncAlert(threadId)
         pendingGitBranchOperation = null
+        pendingCheckedOutElsewhereThreadId = null
         when (action) {
             RemodexGitSyncAlertAction.DISMISS_ONLY -> Unit
+            RemodexGitSyncAlertAction.PULL_REBASE -> {
+                launchGitAction(
+                    threadId = threadId,
+                    title = "Pull Failed",
+                    fallbackMessage = "Operation failed.",
+                ) {
+                    repository.pullGitChanges(threadId)
+                }
+            }
             RemodexGitSyncAlertAction.DISCARD_RUNTIME_CHANGES -> {
                 launchGitAction(
                     threadId = threadId,
@@ -2657,6 +2773,9 @@ class AppViewModel(
                         )
                     }
                 }
+            }
+            RemodexGitSyncAlertAction.OPEN_EXISTING_BRANCH_CHAT -> {
+                pendingElsewhereThreadId?.let(::selectThread)
             }
         }
     }
@@ -3922,6 +4041,9 @@ class AppViewModel(
         threadId: String,
         operation: PendingGitBranchOperation,
     ) {
+        if (!canRunGitBranchOperation(threadId)) {
+            return
+        }
         when (operation) {
             is PendingGitBranchOperation.CreateBranch -> {
                 launchGitAction(
@@ -3944,6 +4066,7 @@ class AppViewModel(
             is PendingGitBranchOperation.CreateWorktree -> {
                 if (operation.followUp == GitWorktreeFollowUp.HANDOFF_CURRENT_THREAD) {
                     viewModelScope.launch {
+                        setGitWorktreeCreationInProgress(threadId, true)
                         clearGitSyncAlert(threadId)
                         updateGitState(threadId) { currentState ->
                             currentState.copy(isLoading = true, errorMessage = null)
@@ -3955,9 +4078,14 @@ class AppViewModel(
                                 baseBranch = operation.baseBranch,
                                 changeTransfer = operation.changeTransfer,
                             )
+                            val resolvedWorktreePath = RemodexWorktreeRouting.canonicalProjectPath(result.worktreePath)
+                                ?: normalizeRemodexFilesystemProjectPath(result.worktreePath)
+                                ?: throw IllegalStateException(
+                                    "Could not resolve the worktree path for ${result.branch}."
+                                )
                             repository.moveThreadToProjectPath(
                                 threadId = threadId,
-                                projectPath = result.worktreePath,
+                                projectPath = resolvedWorktreePath,
                             )
                             result
                         }.onSuccess { result ->
@@ -3969,6 +4097,7 @@ class AppViewModel(
                                     errorMessage = null,
                                 )
                             }
+                            emitWorktreeOperationSuccessSignal()
                             presentTransientBanner("Now in worktree ${result.branch}.")
                         }.onFailure { error ->
                             updateGitState(threadId) { currentState ->
@@ -3982,6 +4111,8 @@ class AppViewModel(
                                 title = "Worktree Creation Failed",
                                 message = error.message ?: "Could not create worktree.",
                             )
+                        }.also {
+                            setGitWorktreeCreationInProgress(threadId, false)
                         }
                     }
                 } else {
@@ -4033,6 +4164,35 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    private fun canRunGitBranchOperation(threadId: String): Boolean {
+        val selectedThread = uiState.value.selectedThread ?: return false
+        if (selectedThread.id != threadId) {
+            return false
+        }
+        return !selectedThread.isRunning &&
+            !uiState.value.composer.gitState.isLoading &&
+            !uiState.value.isCreatingGitWorktree
+    }
+
+    private fun setGitWorktreeCreationInProgress(
+        threadId: String,
+        isInProgress: Boolean,
+    ) {
+        creatingGitWorktreeThreadIdsState.update { threadIds ->
+            threadIds.toMutableSet().apply {
+                if (isInProgress) {
+                    add(threadId)
+                } else {
+                    remove(threadId)
+                }
+            }
+        }
+    }
+
+    private fun emitWorktreeOperationSuccessSignal() {
+        worktreeOperationSuccessSignalState.update { current -> current + 1L }
     }
 
     private suspend fun shouldSuppressForkFailureAfterBridgeUpdate(): Boolean {
@@ -4218,13 +4378,29 @@ class AppViewModel(
                             errorMessage = null,
                         )
                     }
-                    showGitSyncAlert(
-                        threadId = threadId,
-                        title = title,
-                        message = error.message ?: fallbackMessage,
-                    )
+                    if (gitErrorCode(error) == "nothing_to_commit") {
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            title = "Nothing to Commit",
+                            message = "There are no changes to commit.",
+                        )
+                    } else {
+                        showGitSyncAlert(
+                            threadId = threadId,
+                            title = title,
+                            message = error.message ?: fallbackMessage,
+                        )
+                    }
                 }
         }
+    }
+
+    private fun gitErrorCode(error: Throwable): String? {
+        val rpcError = when (error) {
+            is com.emanueledipietro.remodex.data.connection.RpcError -> error
+            else -> error.cause as? com.emanueledipietro.remodex.data.connection.RpcError
+        }
+        return rpcError?.data?.jsonObjectOrNull?.firstString("errorCode")
     }
 
     private fun assistantRevertPresentations(
@@ -4371,7 +4547,41 @@ class AppViewModel(
     }
 
     private fun normalizeComparableProjectPath(path: String?): String? {
-        return normalizeRemodexFilesystemProjectPath(path)
+        return RemodexWorktreeRouting.comparableProjectPath(path)
+    }
+
+    private fun showCheckedOutElsewhereAlert(
+        threadId: String,
+        branch: String,
+        matchingThreadId: String?,
+    ) {
+        pendingCheckedOutElsewhereThreadId = matchingThreadId
+        showGitSyncAlert(
+            threadId = threadId,
+            title = "Branch already open elsewhere",
+            message = if (matchingThreadId != null) {
+                "'$branch' is already checked out in another worktree. Open that chat to continue there."
+            } else {
+                "'$branch' is already checked out in another worktree. Open that chat from the sidebar to continue there."
+            },
+            buttons = buildList {
+                add(
+                    RemodexGitSyncAlertButtonUiState(
+                        title = "Close",
+                        role = RemodexGitSyncAlertButtonRole.CANCEL,
+                        action = RemodexGitSyncAlertAction.DISMISS_ONLY,
+                    ),
+                )
+                if (matchingThreadId != null) {
+                    add(
+                        RemodexGitSyncAlertButtonUiState(
+                            title = "Open Chat",
+                            action = RemodexGitSyncAlertAction.OPEN_EXISTING_BRANCH_CHAT,
+                        ),
+                    )
+                }
+            },
+        )
     }
 
     private fun createPullRequestValidationMessage(gitState: RemodexGitState): String? {
@@ -4517,6 +4727,7 @@ class AppViewModel(
             autocomplete = autocomplete,
             gitState = gitState,
             selectedGitBaseBranch = selectedGitBaseBranch,
+            canCreatePullRequest = createPullRequestValidationMessage(gitState) == null,
         )
     }
 

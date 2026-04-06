@@ -887,8 +887,7 @@ internal fun remodexCurrentBranchSelectionIsDisabled(
     if (!allowsSelectingCurrentBranch) {
         return trimmedBranch == trimmedCurrentBranch
     }
-    return branchesCheckedOutElsewhere.contains(trimmedBranch) &&
-        worktreePathByBranch[trimmedBranch].isNullOrBlank()
+    return false
 }
 
 internal fun gitBranchPickerOrderedBranches(
@@ -1363,12 +1362,12 @@ fun ConversationScreen(
     onPrepareForkDestinationSelection: () -> Unit = {},
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
+    onSyncGitChanges: () -> Unit = onRefreshGitState,
     onScheduleGitStateRefresh: () -> Unit = onRefreshGitState,
     onRefreshUsageStatus: () -> Unit = {},
     onRequestContinueOnMac: () -> Unit = {},
     onCheckoutGitBranch: (String) -> Unit,
     onCreateGitBranch: (String) -> Unit,
-    onCreateGitWorktree: (String) -> Unit,
     onCommitGitChanges: () -> Unit,
     onCommitAndPushGitChanges: () -> Unit = {},
     onPullGitChanges: () -> Unit,
@@ -1397,6 +1396,7 @@ fun ConversationScreen(
     var gitSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeSheetMode by remember(thread.id) { mutableStateOf(WorktreeSheetMode.HANDOFF) }
+    var handledWorktreeSuccessSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
     var selectedPlanSheetItemId by rememberSaveable(thread.id) { mutableStateOf<String?>(null) }
     var statusSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var handledStatusSheetSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
@@ -1530,6 +1530,20 @@ fun ConversationScreen(
             return@LaunchedEffect
         }
         onScheduleGitStateRefresh()
+    }
+
+    LaunchedEffect(uiState.worktreeOperationSuccessSignal, worktreeHandoffSheetExpanded) {
+        if (!worktreeHandoffSheetExpanded) {
+            handledWorktreeSuccessSignal = uiState.worktreeOperationSuccessSignal
+            return@LaunchedEffect
+        }
+        if (uiState.worktreeOperationSuccessSignal == 0L ||
+            uiState.worktreeOperationSuccessSignal == handledWorktreeSuccessSignal
+        ) {
+            return@LaunchedEffect
+        }
+        handledWorktreeSuccessSignal = uiState.worktreeOperationSuccessSignal
+        worktreeHandoffSheetExpanded = false
     }
 
     LaunchedEffect(thread.id, thread.isRunning) {
@@ -1971,10 +1985,11 @@ fun ConversationScreen(
             worktreeHandoffSheetExpanded = worktreeHandoffSheetExpanded,
             worktreeSheetMode = worktreeSheetMode,
             gitState = uiState.composer.gitState,
+            isCreatingGitWorktree = uiState.isCreatingGitWorktree,
             selectedGitBaseBranch = uiState.composer.selectedGitBaseBranch,
+            canCreatePullRequest = uiState.composer.canCreatePullRequest,
             onDismissWorktreeHandoffSheet = { worktreeHandoffSheetExpanded = false },
             onSubmitWorktreeHandoff = { branchName, baseBranch ->
-                worktreeHandoffSheetExpanded = false
                 when (worktreeSheetMode) {
                     WorktreeSheetMode.HANDOFF -> onHandoffThreadToWorktree(branchName, baseBranch)
                     WorktreeSheetMode.FORK -> onForkThreadIntoNewWorktree(branchName, baseBranch)
@@ -1984,9 +1999,9 @@ fun ConversationScreen(
             onDismissGitSheet = { gitSheetExpanded = false },
             onSelectGitBaseBranch = onSelectGitBaseBranch,
             onRefreshGitState = onRefreshGitState,
+            onSyncGitChanges = onSyncGitChanges,
             onCheckoutGitBranch = onCheckoutGitBranch,
             onCreateGitBranch = onCreateGitBranch,
-            onCreateGitWorktree = onCreateGitWorktree,
             onCommitGitChanges = onCommitGitChanges,
             onCommitAndPushGitChanges = onCommitAndPushGitChanges,
             onPullGitChanges = onPullGitChanges,
@@ -2584,16 +2599,18 @@ private fun ConversationScreenSheetOverlays(
     worktreeHandoffSheetExpanded: Boolean,
     worktreeSheetMode: WorktreeSheetMode,
     gitState: RemodexGitState,
+    isCreatingGitWorktree: Boolean,
     selectedGitBaseBranch: String,
+    canCreatePullRequest: Boolean,
     onDismissWorktreeHandoffSheet: () -> Unit,
     onSubmitWorktreeHandoff: (String, String) -> Unit,
     gitSheetExpanded: Boolean,
     onDismissGitSheet: () -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
     onRefreshGitState: () -> Unit,
+    onSyncGitChanges: () -> Unit,
     onCheckoutGitBranch: (String) -> Unit,
     onCreateGitBranch: (String) -> Unit,
-    onCreateGitWorktree: (String) -> Unit,
     onCommitGitChanges: () -> Unit,
     onCommitAndPushGitChanges: () -> Unit,
     onPullGitChanges: () -> Unit,
@@ -2627,6 +2644,7 @@ private fun ConversationScreenSheetOverlays(
                 gitState = gitState,
                 selectedBaseBranch = selectedGitBaseBranch,
             ),
+            isSubmitting = isCreatingGitWorktree,
             onDismiss = onDismissWorktreeHandoffSheet,
             onSubmit = onSubmitWorktreeHandoff,
         )
@@ -2635,13 +2653,14 @@ private fun ConversationScreenSheetOverlays(
     if (gitSheetExpanded) {
         DetailedGitSheet(
             gitState = gitState,
+            canCreatePullRequest = canCreatePullRequest,
             selectedBaseBranch = selectedGitBaseBranch,
             onDismiss = onDismissGitSheet,
             onSelectBaseBranch = onSelectGitBaseBranch,
-            onRefresh = onRefreshGitState,
+            onRefreshBranches = onRefreshGitState,
+            onSync = onSyncGitChanges,
             onCheckoutBranch = onCheckoutGitBranch,
             onCreateBranch = onCreateGitBranch,
-            onCreateWorktree = onCreateGitWorktree,
             onCommit = onCommitGitChanges,
             onCommitAndPush = onCommitAndPushGitChanges,
             onPull = onPullGitChanges,
@@ -4398,12 +4417,13 @@ internal fun resolveQueuedDraftRowActionState(
 @Composable
 private fun GitContextCard(
     gitState: RemodexGitState,
+    canCreatePullRequest: Boolean,
     selectedBaseBranch: String,
     onSelectBaseBranch: (String) -> Unit,
-    onRefresh: () -> Unit,
+    onSync: () -> Unit,
+    onRefreshBranches: () -> Unit,
     onCheckoutBranch: (String) -> Unit,
     onCreateBranch: (String) -> Unit,
-    onCreateWorktree: (String) -> Unit,
     onCommit: () -> Unit,
     onCommitAndPush: () -> Unit,
     onPull: () -> Unit,
@@ -4416,8 +4436,9 @@ private fun GitContextCard(
         return
     }
 
-    var worktreeDraft by rememberSaveable { mutableStateOf("") }
     var activeBranchPickerMode by rememberSaveable { mutableStateOf<GitBranchPickerMode?>(null) }
+    val gitActionsEnabled = !gitState.isLoading
+    val canOpenBranchPicker = gitActionsEnabled
 
     Column(
         modifier = Modifier
@@ -4482,57 +4503,50 @@ private fun GitContextCard(
             title = "Compare Against",
             value = selectedGitBaseBranchLabel(gitState, selectedBaseBranch),
             modifier = Modifier.testTag(GitComparePickerTriggerTag),
+            enabled = canOpenBranchPicker,
             onClick = { activeBranchPickerMode = GitBranchPickerMode.BASE_BRANCH },
         )
         GitBranchPickerTrigger(
             title = "Checkout",
             value = selectedGitCheckoutBranchLabel(gitState),
             modifier = Modifier.testTag(GitCheckoutPickerTriggerTag),
+            enabled = canOpenBranchPicker,
             onClick = { activeBranchPickerMode = GitBranchPickerMode.CHECKOUT },
-        )
-        OutlinedTextField(
-            value = worktreeDraft,
-            onValueChange = { worktreeDraft = it },
-            label = { Text("Worktree name") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-            modifier = Modifier.fillMaxWidth(),
         )
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(onClick = onRefresh) {
-                Text(if (gitState.isLoading) "Refreshing..." else "Refresh")
+            OutlinedButton(
+                onClick = onSync,
+                enabled = gitActionsEnabled,
+            ) {
+                Text(if (gitState.isLoading) "Updating..." else "Update")
             }
-            OutlinedButton(onClick = onPull) {
+            OutlinedButton(onClick = onPull, enabled = gitActionsEnabled) {
                 Text("Pull")
             }
-            OutlinedButton(onClick = onPush) {
+            OutlinedButton(onClick = onPush, enabled = gitActionsEnabled) {
                 Text("Push")
             }
-            OutlinedButton(onClick = onCommit) {
+            OutlinedButton(onClick = onCommit, enabled = gitActionsEnabled) {
                 Text("Commit")
             }
-            OutlinedButton(onClick = onCommitAndPush) {
+            OutlinedButton(onClick = onCommitAndPush, enabled = gitActionsEnabled) {
                 Text("Commit & Push")
             }
             OutlinedButton(
-                onClick = {
-                    if (worktreeDraft.isNotBlank()) {
-                        onCreateWorktree(worktreeDraft.trim())
-                        worktreeDraft = ""
-                    }
-                },
+                onClick = onCreatePullRequest,
+                enabled = gitActionsEnabled && canCreatePullRequest,
             ) {
-                Text("Create worktree")
-            }
-            OutlinedButton(onClick = onCreatePullRequest) {
                 Text("Create PR")
             }
             if (shouldShowDiscardRuntimeChangesAndSync(gitState.sync)) {
-                OutlinedButton(onClick = onDiscardRuntimeChangesAndSync) {
-                    Text("Discard & sync")
+                OutlinedButton(
+                    onClick = onDiscardRuntimeChangesAndSync,
+                    enabled = gitActionsEnabled,
+                ) {
+                    Text("Discard Local Changes")
                 }
             }
         }
@@ -4556,7 +4570,7 @@ private fun GitContextCard(
                 activeBranchPickerMode = null
                 onCreateBranch(branch)
             },
-            onRefresh = onRefresh,
+            onRefresh = onRefreshBranches,
         )
     }
 }
@@ -5378,13 +5392,14 @@ private fun composerResetLabel(window: com.emanueledipietro.remodex.model.Remode
 @Composable
 private fun DetailedGitSheet(
     gitState: RemodexGitState,
+    canCreatePullRequest: Boolean,
     selectedBaseBranch: String,
     onDismiss: () -> Unit,
     onSelectBaseBranch: (String) -> Unit,
-    onRefresh: () -> Unit,
+    onRefreshBranches: () -> Unit,
+    onSync: () -> Unit,
     onCheckoutBranch: (String) -> Unit,
     onCreateBranch: (String) -> Unit,
-    onCreateWorktree: (String) -> Unit,
     onCommit: () -> Unit,
     onCommitAndPush: () -> Unit,
     onPull: () -> Unit,
@@ -5402,12 +5417,13 @@ private fun DetailedGitSheet(
     ) {
         GitContextCard(
             gitState = gitState,
+            canCreatePullRequest = canCreatePullRequest,
             selectedBaseBranch = selectedBaseBranch,
             onSelectBaseBranch = onSelectBaseBranch,
-            onRefresh = onRefresh,
+            onSync = onSync,
+            onRefreshBranches = onRefreshBranches,
             onCheckoutBranch = onCheckoutBranch,
             onCreateBranch = onCreateBranch,
-            onCreateWorktree = onCreateWorktree,
             onCommit = onCommit,
             onCommitAndPush = onCommitAndPush,
             onPull = onPull,
@@ -5422,6 +5438,7 @@ private fun DetailedGitSheet(
 private fun WorktreeHandoffSheet(
     mode: WorktreeSheetMode,
     preferredBaseBranch: String,
+    isSubmitting: Boolean,
     onDismiss: () -> Unit,
     onSubmit: (String, String) -> Unit,
 ) {
@@ -5458,7 +5475,7 @@ private fun WorktreeHandoffSheet(
                 Text(
                     text = when (mode) {
                         WorktreeSheetMode.HANDOFF ->
-                            "Create and check out a branch in a new worktree to keep working in parallel. Tracked local changes move there too, while ignored files stay in Local."
+                            "Create and check out a branch in a new worktree to continue working in parallel. Tracked local changes move there too, while ignored files stay in Local."
                         WorktreeSheetMode.FORK ->
                             "Create and check out a branch in a new worktree, then fork this conversation into the new checkout. Tracked local changes are copied there too, while the current thread and Local checkout stay exactly where they are."
                     },
@@ -5475,9 +5492,9 @@ private fun WorktreeHandoffSheet(
                         .fillMaxWidth()
                         .focusRequester(focusRequester),
                 )
-                if (trimmedBaseBranch.isNotEmpty()) {
+                if (trimmedBranchName.isNotEmpty()) {
                     Text(
-                        text = "Base branch: $trimmedBaseBranch",
+                        text = remodexNormalizedCreatedBranchName(trimmedBranchName),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -5491,14 +5508,23 @@ private fun WorktreeHandoffSheet(
                     }
                     Button(
                         onClick = { onSubmit(trimmedBranchName, trimmedBaseBranch) },
-                        enabled = trimmedBranchName.isNotBlank() && trimmedBaseBranch.isNotBlank(),
+                        enabled = !isSubmitting &&
+                            trimmedBranchName.isNotBlank() &&
+                            trimmedBaseBranch.isNotBlank(),
                     ) {
-                        Text(
-                            when (mode) {
-                                WorktreeSheetMode.HANDOFF -> "Hand off"
-                                WorktreeSheetMode.FORK -> "Fork"
-                            },
-                        )
+                        if (isSubmitting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text(
+                                when (mode) {
+                                    WorktreeSheetMode.HANDOFF -> "Hand off"
+                                    WorktreeSheetMode.FORK -> "Fork"
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -7825,6 +7851,7 @@ private fun GitBranchPickerTrigger(
     value: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val chrome = remodexConversationChrome()
     Surface(
@@ -7838,7 +7865,10 @@ private fun GitBranchPickerTrigger(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
+                .clickable(
+                    enabled = enabled,
+                    onClick = onClick,
+                )
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -7850,12 +7880,12 @@ private fun GitBranchPickerTrigger(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.labelLarge,
-                    color = chrome.secondaryText,
+                    color = if (enabled) chrome.secondaryText else chrome.secondaryText.copy(alpha = 0.6f),
                 )
                 Text(
                     text = value,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.titleText,
+                    color = if (enabled) chrome.titleText else chrome.titleText.copy(alpha = 0.6f),
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -7864,7 +7894,7 @@ private fun GitBranchPickerTrigger(
             Icon(
                 imageVector = Icons.Outlined.ExpandMore,
                 contentDescription = null,
-                tint = chrome.secondaryText,
+                tint = if (enabled) chrome.secondaryText else chrome.secondaryText.copy(alpha = 0.6f),
             )
         }
     }
@@ -7903,6 +7933,10 @@ private fun GitBranchPickerDialog(
                 ?: defaultBranch
                 ?: ""
         }
+    }
+    val disabledBranchReference = when (mode) {
+        GitBranchPickerMode.CHECKOUT -> currentBranch
+        GitBranchPickerMode.BASE_BRANCH -> selectedBranch
     }
     val visibleBranches = remember(gitState.branches.branches, defaultBranch) {
         gitState.branches.branches.filter { branch ->
@@ -8000,7 +8034,9 @@ private fun GitBranchPickerDialog(
                                     enabled = !gitState.isLoading &&
                                         !remodexCurrentBranchSelectionIsDisabled(
                                             branch = defaultBranch,
-                                            currentBranch = currentBranch,
+                                            currentBranch = disabledBranchReference,
+                                            branchesCheckedOutElsewhere = gitState.branches.branchesCheckedOutElsewhere,
+                                            worktreePathByBranch = gitState.branches.worktreePathByBranch,
                                             allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
                                         ),
                                     onClick = {
@@ -8029,7 +8065,9 @@ private fun GitBranchPickerDialog(
                                 enabled = !gitState.isLoading &&
                                     !remodexCurrentBranchSelectionIsDisabled(
                                         branch = branch,
-                                        currentBranch = currentBranch,
+                                        currentBranch = disabledBranchReference,
+                                        branchesCheckedOutElsewhere = gitState.branches.branchesCheckedOutElsewhere,
+                                        worktreePathByBranch = gitState.branches.worktreePathByBranch,
                                         allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
                                     ),
                                 onClick = {
@@ -8312,7 +8350,7 @@ private fun checkedOutBadgeTitle(
     if (!gitState.branches.branchesCheckedOutElsewhere.contains(branch)) {
         return null
     }
-    return if (allowsSelectingCurrentBranch && gitState.branches.worktreePathByBranch[branch] != null) {
+    return if (allowsSelectingCurrentBranch && !gitState.branches.worktreePathByBranch[branch].isNullOrBlank()) {
         "Open worktree"
     } else {
         "Open elsewhere"

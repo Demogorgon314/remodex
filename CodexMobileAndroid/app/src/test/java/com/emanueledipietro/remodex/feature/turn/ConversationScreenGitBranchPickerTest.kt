@@ -40,13 +40,26 @@ class ConversationScreenGitBranchPickerTest {
     }
 
     @Test
-    fun `current branch picker disables checked out elsewhere rows when worktree path is missing`() {
-        assertTrue(
+    fun `current branch picker keeps checked out elsewhere rows selectable when worktree path is missing`() {
+        assertFalse(
             remodexCurrentBranchSelectionIsDisabled(
                 branch = "remodex/feature-a",
                 currentBranch = "main",
                 branchesCheckedOutElsewhere = setOf("remodex/feature-a"),
                 worktreePathByBranch = emptyMap(),
+                allowsSelectingCurrentBranch = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `current branch picker keeps checked out elsewhere rows selectable when worktree path is blank`() {
+        assertFalse(
+            remodexCurrentBranchSelectionIsDisabled(
+                branch = "remodex/feature-a",
+                currentBranch = "main",
+                branchesCheckedOutElsewhere = setOf("remodex/feature-a"),
+                worktreePathByBranch = mapOf("remodex/feature-a" to "   "),
                 allowsSelectingCurrentBranch = true,
             ),
         )
@@ -60,6 +73,18 @@ class ConversationScreenGitBranchPickerTest {
                 currentBranch = "main",
                 branchesCheckedOutElsewhere = setOf("remodex/feature-a"),
                 worktreePathByBranch = mapOf("remodex/feature-a" to "/tmp/remodex-feature-a"),
+                allowsSelectingCurrentBranch = true,
+            ),
+        )
+    }
+
+
+    @Test
+    fun `base branch picker allows selecting current default branch`() {
+        assertFalse(
+            remodexCurrentBranchSelectionIsDisabled(
+                branch = "main",
+                currentBranch = "main",
                 allowsSelectingCurrentBranch = true,
             ),
         )
