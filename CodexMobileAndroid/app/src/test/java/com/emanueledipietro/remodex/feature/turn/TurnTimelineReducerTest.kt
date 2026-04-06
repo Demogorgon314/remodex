@@ -370,7 +370,7 @@ class TurnTimelineReducerTest {
     }
 
     @Test
-    fun `active turn anchor falls back to the latest item in the active turn when no assistant exists`() {
+    fun `active turn anchor stays unset until an assistant response exists in the active turn`() {
         val items = listOf(
             RemodexConversationItem(
                 id = "user-1",
@@ -399,11 +399,11 @@ class TurnTimelineReducerTest {
             ),
         )
 
-        assertEquals(2, TurnTimelineReducer.activeTurnAnchorIndex(items, activeTurnId = "turn-2"))
+        assertEquals(null, TurnTimelineReducer.activeTurnAnchorIndex(items, activeTurnId = "turn-2"))
     }
 
     @Test
-    fun `active turn anchor falls back to the latest streaming item when the active turn id is unavailable`() {
+    fun `active turn anchor stays unset when no active turn assistant response is available`() {
         val items = listOf(
             RemodexConversationItem(
                 id = "assistant-1",
@@ -423,7 +423,7 @@ class TurnTimelineReducerTest {
             ),
         )
 
-        assertEquals(1, TurnTimelineReducer.activeTurnAnchorIndex(items, activeTurnId = null))
+        assertEquals(null, TurnTimelineReducer.activeTurnAnchorIndex(items, activeTurnId = null))
     }
 
     @Test

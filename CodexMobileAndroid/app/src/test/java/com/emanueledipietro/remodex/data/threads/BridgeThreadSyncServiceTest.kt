@@ -758,7 +758,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `thread read history merge skips running threads when local timeline already exists`() {
+    fun `thread read history merge skips running threads when local timeline already exists unless explicitly allowed`() {
         assertFalse(
             shouldMergeThreadReadHistory(
                 threadIsRunning = true,
@@ -3342,7 +3342,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `hydrate thread merges server history for running thread even when local timeline exists`() = runTest {
+    fun `hydrate thread preserves local running timeline until an explicit resume merges history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         val payload = createTestPairingPayload(
@@ -3444,7 +3444,117 @@ class BridgeThreadSyncServiceTest {
             val items = TurnTimelineReducer.reduce(thread.timelineMutations)
             assertTrue(thread.isRunning)
             assertTrue(items.any { it.text == "Local reconnect note" })
-            assertTrue(items.any { it.text == "Recovered assistant output after reconnect." })
+            assertFalse(items.any { it.text == "Recovered assistant output after reconnect." })
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `resume thread merges running history when local timeline already exists`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-running-history-resume",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        if (it.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-running-history-resume"))
+                                        put("title", JsonPrimitive("Reconnect resume target"))
+                                        put("cwd", JsonPrimitive("/tmp/project-running-history-resume"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_336))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/resume" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-running-history-resume"))
+                                put("title", JsonPrimitive("Reconnect resume target"))
+                                put("cwd", JsonPrimitive("/tmp/project-running-history-resume"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-running-history-resume"))
+                                                put("status", JsonPrimitive("running"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("assistant-history-resume"))
+                                                                put("type", JsonPrimitive("agent_message"))
+                                                                put(
+                                                                    "text",
+                                                                    JsonPrimitive("Recovered assistant output after explicit resume."),
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+            awaitThreads(service, expectedCount = 1)
+
+            service.appendLocalSystemMessage("thread-running-history-resume", "Local reconnect note")
+            advanceUntilIdle()
+
+            service.resumeThread("thread-running-history-resume")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-running-history-resume" }
+            val items = TurnTimelineReducer.reduce(thread.timelineMutations)
+            assertTrue(thread.isRunning)
+            assertTrue(items.any { it.text == "Local reconnect note" })
+            assertTrue(items.any { it.text == "Recovered assistant output after explicit resume." })
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

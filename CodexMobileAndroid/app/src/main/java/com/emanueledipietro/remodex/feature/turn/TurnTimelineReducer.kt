@@ -77,21 +77,7 @@ object TurnTimelineReducer {
         items: List<RemodexConversationItem>,
         activeTurnId: String?,
     ): Int? {
-        assistantResponseAnchorIndex(items, activeTurnId)?.let { index ->
-            return index
-        }
-
-        if (activeTurnId != null) {
-            val activeTurnIndex = items.indexOfLast { item ->
-                item.turnId == activeTurnId
-            }
-            if (activeTurnIndex >= 0) {
-                return activeTurnIndex
-            }
-        }
-
-        val streamingItemIndex = items.indexOfLast { item -> item.isStreaming }
-        return streamingItemIndex.takeIf { it >= 0 }
+        return assistantResponseAnchorIndex(items, activeTurnId)
     }
 
     fun assistantResponseAnchorIndex(

@@ -840,7 +840,7 @@ class BridgeThreadSyncService(
             response = response,
             existingSnapshot = existingSnapshot,
             syncState = currentSyncState(threadId),
-            allowHistoryMergeWhileRunning = true,
+            allowHistoryMergeWhileRunning = false,
         )
     }
 
