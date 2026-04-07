@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -41,6 +42,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -1698,18 +1700,35 @@ private fun ShellTopBar(
         }
 
         if (shellRoute == ShellRoute.CONTENT && (repoDiffTotals != null || showsGitActions)) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                repoDiffTotals?.let { totals ->
+            when {
+                repoDiffTotals != null && showsGitActions -> {
+                    ShellTopBarDiffAndGitCluster(
+                        totals = repoDiffTotals,
+                        isLoadingRepoDiff = isLoadingRepoDiff,
+                        onOpenRepoDiff = onOpenRepoDiff,
+                        isGitActionEnabled = isGitActionEnabled,
+                        isRunningGitAction = isRunningGitAction,
+                        canCreatePullRequest = canCreatePullRequest,
+                        showsDiscardRuntimeChangesAndSync = showsDiscardRuntimeChangesAndSync,
+                        gitSyncState = gitSyncState,
+                        onSyncGitChanges = onSyncGitChanges,
+                        onCommitGitChanges = onCommitGitChanges,
+                        onPushGitChanges = onPushGitChanges,
+                        onCommitAndPushGitChanges = onCommitAndPushGitChanges,
+                        onCreatePullRequest = onCreatePullRequest,
+                        onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+                    )
+                }
+
+                repoDiffTotals != null -> {
                     ShellTopBarDiffTotalsButton(
-                        totals = totals,
+                        totals = repoDiffTotals,
                         isLoading = isLoadingRepoDiff,
                         onClick = onOpenRepoDiff,
                     )
                 }
-                if (showsGitActions) {
+
+                else -> {
                     ShellTopBarGitActionsButton(
                         isEnabled = isGitActionEnabled,
                         isRunningAction = isRunningGitAction,
@@ -1799,47 +1818,136 @@ private fun ShellTopBarDiffTotalsButton(
     onClick: (() -> Unit)?,
 ) {
     val chrome = remodexConversationChrome()
-    val content: @Composable () -> Unit = {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.6.dp,
-                    color = chrome.secondaryText,
-                )
-            }
-            Text(
-                text = "+${totals.additions}",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF22A653),
-            )
-            Text(
-                text = "-${totals.deletions}",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFE04646),
-            )
-            if (totals.binaryFiles > 0) {
-                Text(
-                    text = "B${totals.binaryFiles}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = chrome.secondaryText,
-                )
-            }
-        }
-    }
-
     Surface(
         modifier = Modifier
             .clickable(enabled = onClick != null && !isLoading) { onClick?.invoke() },
-        color = chrome.mutedSurface,
-        shape = RoundedCornerShape(999.dp),
-        border = BorderStroke(1.dp, chrome.subtleBorder),
+        color = chrome.mutedSurface.copy(alpha = 0.9f),
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.72f)),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
     ) {
-        content()
+        ShellTopBarDiffTotalsContent(
+            totals = totals,
+            isLoading = isLoading,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+        )
+    }
+}
+
+@Composable
+private fun ShellTopBarDiffAndGitCluster(
+    totals: RemodexGitDiffTotals,
+    isLoadingRepoDiff: Boolean,
+    onOpenRepoDiff: (() -> Unit)?,
+    isGitActionEnabled: Boolean,
+    isRunningGitAction: Boolean,
+    canCreatePullRequest: Boolean,
+    showsDiscardRuntimeChangesAndSync: Boolean,
+    gitSyncState: String?,
+    onSyncGitChanges: (() -> Unit)?,
+    onCommitGitChanges: (() -> Unit)?,
+    onPushGitChanges: (() -> Unit)?,
+    onCommitAndPushGitChanges: (() -> Unit)?,
+    onCreatePullRequest: (() -> Unit)?,
+    onDiscardRuntimeChangesAndSync: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        color = chrome.mutedSurface.copy(alpha = 0.9f),
+        shape = RemodexConversationShapes.pill,
+        border = BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.72f)),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.defaultMinSize(minHeight = 40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 50.dp, minHeight = 40.dp)
+                    .clickable(enabled = onOpenRepoDiff != null && !isLoadingRepoDiff) {
+                        onOpenRepoDiff?.invoke()
+                    }
+                    .padding(start = 12.dp, end = 10.dp)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Repository diff total"
+                    },
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ShellTopBarDiffTotalsContent(
+                    totals = totals,
+                    isLoading = isLoadingRepoDiff,
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(18.dp)
+                    .background(chrome.subtleBorder.copy(alpha = 0.6f)),
+            )
+
+            ShellTopBarGitActionsButton(
+                isEnabled = isGitActionEnabled,
+                isRunningAction = isRunningGitAction,
+                canCreatePullRequest = canCreatePullRequest,
+                showsDiscardRuntimeChangesAndSync = showsDiscardRuntimeChangesAndSync,
+                gitSyncState = gitSyncState,
+                onSyncGitChanges = onSyncGitChanges,
+                onCommitGitChanges = onCommitGitChanges,
+                onPushGitChanges = onPushGitChanges,
+                onCommitAndPushGitChanges = onCommitAndPushGitChanges,
+                onCreatePullRequest = onCreatePullRequest,
+                onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+                embedded = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShellTopBarDiffTotalsContent(
+    totals: RemodexGitDiffTotals,
+    isLoading: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val chrome = remodexConversationChrome()
+    val monoFamily = MaterialTheme.typography.labelLarge.fontFamily
+    val diffLabelTextStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily)
+
+    Row(
+        modifier = modifier.defaultMinSize(minWidth = 50.dp, minHeight = 28.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(10.dp),
+                strokeWidth = 1.4.dp,
+                color = chrome.secondaryText,
+            )
+        }
+        Text(
+            text = "+${totals.additions}",
+            style = diffLabelTextStyle,
+            color = Color(0xFF22A653),
+        )
+        Text(
+            text = "-${totals.deletions}",
+            style = diffLabelTextStyle,
+            color = Color(0xFFE04646),
+        )
+        if (totals.binaryFiles > 0) {
+            Text(
+                text = "B${totals.binaryFiles}",
+                style = diffLabelTextStyle,
+                color = chrome.secondaryText,
+            )
+        }
     }
 }
 
@@ -1856,6 +1964,7 @@ private fun ShellTopBarGitActionsButton(
     onCommitAndPushGitChanges: (() -> Unit)?,
     onCreatePullRequest: (() -> Unit)?,
     onDiscardRuntimeChangesAndSync: (() -> Unit)?,
+    embedded: Boolean = false,
 ) {
     val chrome = remodexConversationChrome()
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -1865,38 +1974,38 @@ private fun ShellTopBarGitActionsButton(
     }
 
     Box {
-        ShellTopBarButton(
-            onClick = { expanded = true },
-            contentDescription = "Git actions",
-        ) {
-            if (isRunningAction) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 1.8.dp,
-                    color = chrome.titleText,
-                )
-            } else {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_git_commit),
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = chrome.titleText,
-                    )
-                    syncStatusColor?.let { color ->
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size(8.dp)
-                                .background(color, CircleShape)
-                                .border(
-                                    width = 1.5.dp,
-                                    color = chrome.mutedSurface,
-                                    shape = CircleShape,
-                                ),
-                        )
+        val triggerContent: @Composable () -> Unit = {
+            ShellTopBarGitActionsTriggerContent(
+                isRunningAction = isRunningAction,
+                syncStatusColor = syncStatusColor,
+                badgeOutlineColor = if (embedded) {
+                    Color.Transparent
+                } else {
+                    chrome.mutedSurface
+                },
+            )
+        }
+
+        if (embedded) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Git actions"
                     }
-                }
+                    .clickable { expanded = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                triggerContent()
+            }
+        } else {
+            ShellTopBarButton(
+                onClick = { expanded = true },
+                contentDescription = "Git actions",
+            ) {
+                triggerContent()
             }
         }
 
@@ -1990,6 +2099,45 @@ private fun ShellTopBarGitActionsButton(
                         expanded = false
                         onDiscardRuntimeChangesAndSync()
                     },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShellTopBarGitActionsTriggerContent(
+    isRunningAction: Boolean,
+    syncStatusColor: Color?,
+    badgeOutlineColor: Color,
+) {
+    val chrome = remodexConversationChrome()
+
+    if (isRunningAction) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 1.8.dp,
+            color = chrome.titleText,
+        )
+    } else {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(id = R.drawable.ic_git_commit),
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = chrome.titleText,
+            )
+            syncStatusColor?.let { color ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(8.dp)
+                        .background(color, CircleShape)
+                        .border(
+                            width = 1.5.dp,
+                            color = badgeOutlineColor,
+                            shape = CircleShape,
+                        ),
                 )
             }
         }
