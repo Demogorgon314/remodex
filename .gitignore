@@ -45,5 +45,8 @@ $TMP_PLACEHOLDER
 # Claude project config (local only)
 .claude/
 
+# Codex project config
+.codex/
+
 # VS Code
 .vscode/
