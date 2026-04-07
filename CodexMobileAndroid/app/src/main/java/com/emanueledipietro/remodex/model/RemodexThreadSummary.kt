@@ -12,6 +12,7 @@ data class RemodexThreadSummary(
     val preview: String,
     val projectPath: String,
     val lastUpdatedLabel: String,
+    val lastUpdatedEpochMs: Long = 0L,
     val isRunning: Boolean,
     val isWaitingOnApproval: Boolean = false,
     val syncState: RemodexThreadSyncState = RemodexThreadSyncState.LIVE,

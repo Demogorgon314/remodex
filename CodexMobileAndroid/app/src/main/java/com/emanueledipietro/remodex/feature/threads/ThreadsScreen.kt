@@ -233,8 +233,8 @@ fun ThreadsScreen(
                                         group = group,
                                         selectedThreadId = selectedThreadId,
                                         expanded = expandedProjectIds.contains(group.id),
-                                        revealAll = revealedProjectGroupIds.contains(group.id) ||
-                                            group.threads.any { thread -> thread.id == selectedThreadId },
+                                        isFiltering = searchText.isNotBlank(),
+                                        manuallyExpanded = revealedProjectGroupIds.contains(group.id),
                                         expandedSubagentParentIds = expandedSubagentParentIds,
                                         onToggleExpanded = {
                                             val isCurrentlyExpanded = group.id in expandedProjectIds
@@ -795,7 +795,8 @@ private fun ProjectGroupSection(
     group: SidebarThreadGroup,
     selectedThreadId: String?,
     expanded: Boolean,
-    revealAll: Boolean,
+    isFiltering: Boolean,
+    manuallyExpanded: Boolean,
     expandedSubagentParentIds: Set<String>,
     canCreateThread: Boolean,
     isCreatingThread: Boolean,
@@ -810,8 +811,22 @@ private fun ProjectGroupSection(
     onUnarchiveThread: (String) -> Unit,
     onDeleteThread: (String) -> Unit,
 ) {
-    val rootThreads = remember(group.threads) { rootThreads(group.threads) }
-    val visibleRoots = if (revealAll) rootThreads else rootThreads.take(ProjectPreviewCount)
+    val visibleRoots = remember(group.threads, selectedThreadId, isFiltering, manuallyExpanded) {
+        SidebarProjectThreadPreviewState.visibleRootThreads(
+            group = group,
+            selectedThreadId = selectedThreadId,
+            isFiltering = isFiltering,
+            manuallyExpanded = manuallyExpanded,
+        )
+    }
+    val shouldShowMoreButton = remember(group.threads, selectedThreadId, isFiltering, manuallyExpanded) {
+        SidebarProjectThreadPreviewState.shouldShowMoreButton(
+            group = group,
+            selectedThreadId = selectedThreadId,
+            isFiltering = isFiltering,
+            manuallyExpanded = manuallyExpanded,
+        )
+    }
     val childrenByParentId = remember(group.threads) {
         group.threads
             .filter { thread -> !thread.parentThreadId.isNullOrBlank() }
@@ -895,9 +910,12 @@ private fun ProjectGroupSection(
                 )
             }
 
-            if (!revealAll && rootThreads.size > ProjectPreviewCount) {
+            if (shouldShowMoreButton) {
                 ShowMoreButton(
-                    hiddenCount = rootThreads.size - ProjectPreviewCount,
+                    hiddenCount = SidebarProjectThreadPreviewState.hiddenRootThreadCount(
+                        group = group,
+                        selectedThreadId = selectedThreadId,
+                    ),
                     onRevealAll = onRevealAll,
                 )
             }
@@ -1472,6 +1490,102 @@ private fun rootThreads(threads: List<RemodexThreadSummary>): List<RemodexThread
     val ids = threads.map(RemodexThreadSummary::id).toSet()
     return threads.filter { thread ->
         thread.parentThreadId.isNullOrBlank() || thread.parentThreadId !in ids
+    }
+}
+
+internal object SidebarProjectThreadPreviewState {
+    fun visibleRootThreads(
+        group: SidebarThreadGroup,
+        selectedThreadId: String?,
+        isFiltering: Boolean,
+        manuallyExpanded: Boolean,
+    ): List<RemodexThreadSummary> {
+        val rootThreads = rootThreads(group.threads)
+        if (shouldRevealAllRootThreads(group, rootThreads, selectedThreadId, isFiltering, manuallyExpanded)) {
+            return rootThreads
+        }
+        return rootThreads.take(ProjectPreviewCount)
+    }
+
+    fun shouldShowMoreButton(
+        group: SidebarThreadGroup,
+        selectedThreadId: String?,
+        isFiltering: Boolean,
+        manuallyExpanded: Boolean,
+    ): Boolean {
+        val rootThreads = rootThreads(group.threads)
+        if (
+            group.kind != SidebarThreadGroupKind.PROJECT ||
+            rootThreads.size <= ProjectPreviewCount ||
+            isFiltering ||
+            manuallyExpanded
+        ) {
+            return false
+        }
+        return !selectedThreadRequiresExpansion(group, selectedThreadId, rootThreads)
+    }
+
+    fun hiddenRootThreadCount(
+        group: SidebarThreadGroup,
+        selectedThreadId: String?,
+    ): Int {
+        val rootThreads = rootThreads(group.threads)
+        if (selectedThreadRequiresExpansion(group, selectedThreadId, rootThreads)) {
+            return 0
+        }
+        return (rootThreads.size - ProjectPreviewCount).coerceAtLeast(0)
+    }
+
+    private fun shouldRevealAllRootThreads(
+        group: SidebarThreadGroup,
+        rootThreads: List<RemodexThreadSummary>,
+        selectedThreadId: String?,
+        isFiltering: Boolean,
+        manuallyExpanded: Boolean,
+    ): Boolean {
+        if (group.kind != SidebarThreadGroupKind.PROJECT || rootThreads.size <= ProjectPreviewCount) {
+            return true
+        }
+        if (isFiltering || manuallyExpanded) {
+            return true
+        }
+        return selectedThreadRequiresExpansion(group, selectedThreadId, rootThreads)
+    }
+
+    private fun selectedThreadRequiresExpansion(
+        group: SidebarThreadGroup,
+        selectedThreadId: String?,
+        rootThreads: List<RemodexThreadSummary>,
+    ): Boolean {
+        val selectedThread = group.threads.firstOrNull { thread -> thread.id == selectedThreadId } ?: return false
+        val visibleRootThreadIds = rootThreads
+            .take(ProjectPreviewCount)
+            .mapTo(mutableSetOf(), RemodexThreadSummary::id)
+        val selectedRootThreadId = rootThreadIdContaining(
+            selectedThread = selectedThread,
+            groupThreads = group.threads,
+        ) ?: selectedThread.id
+        return selectedRootThreadId !in visibleRootThreadIds
+    }
+
+    private fun rootThreadIdContaining(
+        selectedThread: RemodexThreadSummary,
+        groupThreads: List<RemodexThreadSummary>,
+    ): String? {
+        val threadsById = groupThreads.associateBy(RemodexThreadSummary::id)
+        val visitedThreadIds = mutableSetOf(selectedThread.id)
+        var currentThread = selectedThread
+
+        while (!currentThread.parentThreadId.isNullOrBlank()) {
+            val parentThreadId = currentThread.parentThreadId ?: break
+            if (!visitedThreadIds.add(parentThreadId)) {
+                break
+            }
+            val parentThread = threadsById[parentThreadId] ?: break
+            currentThread = parentThread
+        }
+
+        return currentThread.id
     }
 }
 

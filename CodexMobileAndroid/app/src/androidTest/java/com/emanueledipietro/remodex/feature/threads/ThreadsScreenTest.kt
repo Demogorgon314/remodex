@@ -59,6 +59,7 @@ class ThreadsScreenTest {
                     onDeleteThread = {},
                     onArchiveProject = {},
                     onOpenSettings = {},
+                    onOpenMyMacs = {},
                     onSearchActiveChange = {},
                 )
             }
@@ -97,6 +98,7 @@ class ThreadsScreenTest {
                     onDeleteThread = {},
                     onArchiveProject = {},
                     onOpenSettings = {},
+                    onOpenMyMacs = {},
                     onSearchActiveChange = {},
                 )
             }
@@ -143,6 +145,7 @@ class ThreadsScreenTest {
                     onDeleteThread = {},
                     onArchiveProject = {},
                     onOpenSettings = {},
+                    onOpenMyMacs = {},
                     onSearchActiveChange = {},
                 )
             }
@@ -203,6 +206,7 @@ class ThreadsScreenTest {
                         onDeleteThread = {},
                         onArchiveProject = {},
                         onOpenSettings = {},
+                        onOpenMyMacs = {},
                         onSearchActiveChange = {},
                     )
                 }
@@ -246,6 +250,7 @@ class ThreadsScreenTest {
                     onDeleteThread = {},
                     onArchiveProject = {},
                     onOpenSettings = {},
+                    onOpenMyMacs = {},
                     onSearchActiveChange = {},
                 )
             }
@@ -256,10 +261,52 @@ class ThreadsScreenTest {
         composeRule.onNodeWithTag("sidebar_project_new_chat_button_project-0").assertIsNotEnabled()
     }
 
+    @Test
+    fun selectedProjectKeepsPreviewCapWhenSelectedThreadIsAlreadyVisible() {
+        val threads = List(12) { index ->
+            threadSummary(
+                id = "thread-$index",
+                title = "Conversation $index",
+                projectPath = "/tmp/project-0",
+                lastUpdatedEpochMs = (12 - index).toLong(),
+            )
+        }
+
+        composeRule.setContent {
+            RemodexTheme {
+                ThreadsScreen(
+                    uiState = AppUiState(
+                        connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.CONNECTED, attempt = 1),
+                        threads = threads,
+                        selectedThread = threads.first(),
+                    ),
+                    onSelectThread = {},
+                    onRefreshThreads = {},
+                    onRetryConnection = {},
+                    onCreateThread = {},
+                    onSetProjectGroupCollapsed = { _, _ -> },
+                    onRenameThread = { _, _ -> },
+                    onArchiveThread = {},
+                    onUnarchiveThread = {},
+                    onDeleteThread = {},
+                    onArchiveProject = {},
+                    onOpenSettings = {},
+                    onOpenMyMacs = {},
+                    onSearchActiveChange = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Show 2 more").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Conversation 10").assertCountEquals(0)
+        composeRule.onAllNodesWithText("Conversation 11").assertCountEquals(0)
+    }
+
     private fun threadSummary(
         id: String,
         title: String,
         projectPath: String,
+        lastUpdatedEpochMs: Long = 0L,
     ): RemodexThreadSummary {
         return RemodexThreadSummary(
             id = id,
@@ -267,6 +314,7 @@ class ThreadsScreenTest {
             preview = "Preview",
             projectPath = projectPath,
             lastUpdatedLabel = "Updated 51m ago",
+            lastUpdatedEpochMs = lastUpdatedEpochMs,
             isRunning = false,
             queuedDrafts = 0,
             runtimeLabel = "Auto",

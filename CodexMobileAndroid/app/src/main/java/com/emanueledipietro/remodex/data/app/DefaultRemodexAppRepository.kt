@@ -3181,6 +3181,7 @@ internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
         preview = preview,
         projectPath = projectPath,
         lastUpdatedLabel = lastUpdatedLabel,
+        lastUpdatedEpochMs = lastUpdatedEpochMs,
         isRunning = isRunning,
         isWaitingOnApproval = isWaitingOnApproval,
         syncState = syncState,

@@ -50,13 +50,9 @@ object SidebarThreadGrouping {
                 }.lowercase(Locale.ROOT).contains(normalizedQuery)
             }
         }
-        val orderByThreadId = filteredThreads
-            .mapIndexed { index, thread -> thread.id to index }
-            .toMap()
-
         val archivedThreads = filteredThreads
             .filter { it.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL }
-            .sortedBy { thread -> orderByThreadId[thread.id] ?: Int.MAX_VALUE }
+            .sortedWith(threadRecencyComparator())
         val liveThreads = filteredThreads
             .filter { it.syncState != RemodexThreadSyncState.ARCHIVED_LOCAL }
 
@@ -70,12 +66,13 @@ object SidebarThreadGrouping {
                     label = projectLabel(projectKey),
                     kind = SidebarThreadGroupKind.PROJECT,
                     projectPath = projectKey.takeUnless { it == CloudProjectGroupKey },
-                    threads = projectThreads.sortedBy { thread -> orderByThreadId[thread.id] ?: Int.MAX_VALUE },
+                    threads = projectThreads.sortedWith(threadRecencyComparator()),
                 )
             }
-            .sortedBy { group ->
-                group.threads.minOfOrNull { thread -> orderByThreadId[thread.id] ?: Int.MAX_VALUE } ?: Int.MAX_VALUE
-            }
+            .sortedWith(compareByDescending<SidebarThreadGroup> { groupSortEpochMs(it) }
+                .thenBy { it.label.lowercase(Locale.ROOT) }
+                .thenBy { it.id }
+            )
 
         return buildList {
             addAll(projectGroups)
@@ -90,6 +87,15 @@ object SidebarThreadGrouping {
                 )
             }
         }
+    }
+
+    private fun groupSortEpochMs(group: SidebarThreadGroup): Long {
+        return group.threads.maxOfOrNull(RemodexThreadSummary::lastUpdatedEpochMs) ?: Long.MIN_VALUE
+    }
+
+    private fun threadRecencyComparator(): Comparator<RemodexThreadSummary> {
+        return compareByDescending<RemodexThreadSummary> { it.lastUpdatedEpochMs }
+            .thenBy { it.id }
     }
 }
 

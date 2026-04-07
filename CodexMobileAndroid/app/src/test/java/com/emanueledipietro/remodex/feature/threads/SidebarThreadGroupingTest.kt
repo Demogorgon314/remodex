@@ -70,9 +70,9 @@ class SidebarThreadGroupingTest {
     fun `project groups expose iOS aligned icon semantics`() {
         val groups = SidebarThreadGrouping.makeGroups(
             threads = listOf(
-                thread(id = "1", title = "Local", projectPath = "/tmp/remodex"),
-                thread(id = "2", title = "Worktree", projectPath = "/tmp/remodex/.codex/worktrees/feature-a"),
-                thread(id = "3", title = "Cloud", projectPath = ""),
+                thread(id = "1", title = "Local", projectPath = "/tmp/remodex", lastUpdatedEpochMs = 30),
+                thread(id = "2", title = "Worktree", projectPath = "/tmp/remodex/.codex/worktrees/feature-a", lastUpdatedEpochMs = 20),
+                thread(id = "3", title = "Cloud", projectPath = "", lastUpdatedEpochMs = 10),
             ),
             query = "",
         )
@@ -86,8 +86,8 @@ class SidebarThreadGroupingTest {
     fun `pseudo project buckets stay grouped as cloud instead of local paths`() {
         val groups = SidebarThreadGrouping.makeGroups(
             threads = listOf(
-                thread(id = "1", title = "Pseudo", projectPath = "_default"),
-                thread(id = "2", title = "Cloud", projectPath = ""),
+                thread(id = "1", title = "Pseudo", projectPath = "_default", lastUpdatedEpochMs = 20),
+                thread(id = "2", title = "Cloud", projectPath = "", lastUpdatedEpochMs = 10),
             ),
             query = "",
         )
@@ -167,11 +167,97 @@ class SidebarThreadGroupingTest {
         )
     }
 
+    @Test
+    fun `groups and threads sort by most recent activity`() {
+        val groups = SidebarThreadGrouping.makeGroups(
+            threads = listOf(
+                thread(id = "older", title = "Older", projectPath = "/tmp/alpha", lastUpdatedEpochMs = 100),
+                thread(id = "newer", title = "Newer", projectPath = "/tmp/alpha", lastUpdatedEpochMs = 500),
+                thread(id = "latest", title = "Latest", projectPath = "/tmp/beta", lastUpdatedEpochMs = 900),
+            ),
+            query = "",
+        )
+
+        assertEquals(listOf("beta", "alpha"), groups.map(SidebarThreadGroup::label))
+        assertEquals(listOf("newer", "older"), groups[1].threads.map(RemodexThreadSummary::id))
+    }
+
+    @Test
+    fun `preview keeps collapsed cap when selected thread is already visible`() {
+        val group = SidebarThreadGroup(
+            id = "project:/tmp/app",
+            label = "app",
+            kind = SidebarThreadGroupKind.PROJECT,
+            projectPath = "/tmp/app",
+            threads = (0 until 12).map { index ->
+                thread(
+                    id = "thread-$index",
+                    title = "Conversation $index",
+                    projectPath = "/tmp/app",
+                    lastUpdatedEpochMs = (12 - index).toLong(),
+                )
+            },
+        )
+
+        val visibleThreads = SidebarProjectThreadPreviewState.visibleRootThreads(
+            group = group,
+            selectedThreadId = "thread-0",
+            isFiltering = false,
+            manuallyExpanded = false,
+        )
+
+        assertEquals((0 until 10).map { "thread-$it" }, visibleThreads.map(RemodexThreadSummary::id))
+        assertTrue(
+            SidebarProjectThreadPreviewState.shouldShowMoreButton(
+                group = group,
+                selectedThreadId = "thread-0",
+                isFiltering = false,
+                manuallyExpanded = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `preview auto expands when selected thread falls below collapsed cap`() {
+        val group = SidebarThreadGroup(
+            id = "project:/tmp/app",
+            label = "app",
+            kind = SidebarThreadGroupKind.PROJECT,
+            projectPath = "/tmp/app",
+            threads = (0 until 12).map { index ->
+                thread(
+                    id = "thread-$index",
+                    title = "Conversation $index",
+                    projectPath = "/tmp/app",
+                    lastUpdatedEpochMs = (12 - index).toLong(),
+                )
+            },
+        )
+
+        val visibleThreads = SidebarProjectThreadPreviewState.visibleRootThreads(
+            group = group,
+            selectedThreadId = "thread-11",
+            isFiltering = false,
+            manuallyExpanded = false,
+        )
+
+        assertEquals((0 until 12).map { "thread-$it" }, visibleThreads.map(RemodexThreadSummary::id))
+        assertFalse(
+            SidebarProjectThreadPreviewState.shouldShowMoreButton(
+                group = group,
+                selectedThreadId = "thread-11",
+                isFiltering = false,
+                manuallyExpanded = false,
+            ),
+        )
+    }
+
     private fun thread(
         id: String,
         title: String,
         preview: String = "",
         projectPath: String,
+        lastUpdatedEpochMs: Long = 0L,
         syncState: RemodexThreadSyncState = RemodexThreadSyncState.LIVE,
     ): RemodexThreadSummary {
         return RemodexThreadSummary(
@@ -180,6 +266,7 @@ class SidebarThreadGroupingTest {
             preview = preview,
             projectPath = projectPath,
             lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = lastUpdatedEpochMs,
             isRunning = false,
             syncState = syncState,
             queuedDrafts = 0,
