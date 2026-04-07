@@ -154,4 +154,22 @@ class ConversationMarkdownRendererTest {
         )
     }
 
+    @Test
+    fun `mermaid export script paints a white canvas background before drawing`() {
+        val script = buildMermaidExportJavascript(exportScale = 4)
+
+        assertTrue(script.contains("""const exportBackgroundColor = "#FFFFFF";"""))
+        assertTrue(script.contains("context.fillStyle = exportBackgroundColor;"))
+        assertTrue(script.contains("context.fillRect(0, 0, canvas.width, canvas.height);"))
+        assertTrue(script.indexOf("context.fillRect(0, 0, canvas.width, canvas.height);") < script.indexOf("context.scale(resolvedScale, resolvedScale);"))
+        assertTrue(script.indexOf("context.scale(resolvedScale, resolvedScale);") < script.indexOf("context.drawImage(image, 0, 0, width, height);"))
+    }
+
+    @Test
+    fun `javascript string literal escaping handles quotes slashes and newlines`() {
+        assertEquals(
+            "\"line 1\\n\\\"quoted\\\"\\\\path\"",
+            toJavaScriptStringLiteral("line 1\n\"quoted\"\\path"),
+        )
+    }
 }

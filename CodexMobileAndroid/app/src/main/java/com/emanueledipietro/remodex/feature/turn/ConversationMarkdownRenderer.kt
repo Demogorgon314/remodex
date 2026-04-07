@@ -118,7 +118,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.security.MessageDigest
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -1897,110 +1896,121 @@ private suspend fun requestMermaidPngDataUrl(
             }
         }
         webView.evaluateJavascript(
-            """
-            (function() {
-              const bridge = window.AndroidMermaid;
-              if (!bridge || typeof bridge.postExportDataUrl !== 'function') {
-                return;
-              }
-
-              const tryExport = function(attempt) {
-                try {
-                  const root = document.getElementById('root') || document.body;
-                  const svg = root ? root.querySelector('svg') : null;
-                  if (!svg) {
-                    if (attempt < 20) {
-                      window.setTimeout(function() { tryExport(attempt + 1); }, 120);
-                    } else {
-                      bridge.postExportDataUrl(null);
-                    }
-                    return;
-                  }
-
-                  const rect = svg.getBoundingClientRect();
-                  const viewBox = svg.viewBox && svg.viewBox.baseVal;
-                  const intrinsicWidth =
-                    (viewBox && viewBox.width) ||
-                    parseFloat(svg.getAttribute('width')) ||
-                    rect.width ||
-                    0;
-                  const intrinsicHeight =
-                    (viewBox && viewBox.height) ||
-                    parseFloat(svg.getAttribute('height')) ||
-                    rect.height ||
-                    0;
-                  const width = Math.max(
-                    1,
-                    Math.ceil(intrinsicWidth)
-                  );
-                  const height = Math.max(
-                    1,
-                    Math.ceil(intrinsicHeight)
-                  );
-                  const resolvedScale = Math.max(
-                    1,
-                    $exportScale,
-                    Math.ceil(window.devicePixelRatio || 1)
-                  );
-                  const clonedSvg = svg.cloneNode(true);
-                  clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-                  clonedSvg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
-                  if (!clonedSvg.getAttribute('viewBox') && viewBox && viewBox.width > 0 && viewBox.height > 0) {
-                    clonedSvg.setAttribute('viewBox', `${'$'}{viewBox.x} ${'$'}{viewBox.y} ${'$'}{viewBox.width} ${'$'}{viewBox.height}`);
-                  }
-                  if (!clonedSvg.getAttribute('width')) {
-                    clonedSvg.setAttribute('width', String(width));
-                  }
-                  if (!clonedSvg.getAttribute('height')) {
-                    clonedSvg.setAttribute('height', String(height));
-                  }
-                  const serializedSvg = new XMLSerializer().serializeToString(clonedSvg);
-                  const encodedSvg = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(serializedSvg);
-                  const image = new Image();
-                  image.onload = function() {
-                    try {
-                      const canvas = document.createElement('canvas');
-                      canvas.width = width * resolvedScale;
-                      canvas.height = height * resolvedScale;
-                      const context = canvas.getContext('2d');
-                      if (!context) {
-                        bridge.postExportDataUrl(null);
-                        return;
-                      }
-                      context.clearRect(0, 0, canvas.width, canvas.height);
-                      context.scale(resolvedScale, resolvedScale);
-                      context.drawImage(image, 0, 0, width, height);
-                      bridge.postExportDataUrl(canvas.toDataURL('image/png'));
-                    } catch (error) {
-                      bridge.postExportDataUrl(null);
-                    }
-                  };
-                  image.onerror = function() {
-                    if (attempt < 20) {
-                      window.setTimeout(function() { tryExport(attempt + 1); }, 120);
-                    } else {
-                      bridge.postExportDataUrl(null);
-                    }
-                  };
-                  image.src = encodedSvg;
-                } catch (error) {
-                  if (attempt < 20) {
-                    window.setTimeout(function() { tryExport(attempt + 1); }, 120);
-                  } else {
-                    bridge.postExportDataUrl(null);
-                  }
-                }
-              };
-
-              tryExport(0);
-            })();
-            """.trimIndent(),
+            buildMermaidExportJavascript(exportScale = exportScale),
             null,
         )
         continuation.invokeOnCancellation {
             bridge.onExportDataUrl = null
         }
     }
+
+internal fun buildMermaidExportJavascript(
+    exportScale: Int,
+    exportBackgroundCss: String = "#FFFFFF",
+): String {
+    val escapedBackground = toJavaScriptStringLiteral(exportBackgroundCss)
+    return """
+        (function() {
+          const bridge = window.AndroidMermaid;
+          if (!bridge || typeof bridge.postExportDataUrl !== 'function') {
+            return;
+          }
+          const exportBackgroundColor = $escapedBackground;
+
+          const tryExport = function(attempt) {
+            try {
+              const root = document.getElementById('root') || document.body;
+              const svg = root ? root.querySelector('svg') : null;
+              if (!svg) {
+                if (attempt < 20) {
+                  window.setTimeout(function() { tryExport(attempt + 1); }, 120);
+                } else {
+                  bridge.postExportDataUrl(null);
+                }
+                return;
+              }
+
+              const rect = svg.getBoundingClientRect();
+              const viewBox = svg.viewBox && svg.viewBox.baseVal;
+              const intrinsicWidth =
+                (viewBox && viewBox.width) ||
+                parseFloat(svg.getAttribute('width')) ||
+                rect.width ||
+                0;
+              const intrinsicHeight =
+                (viewBox && viewBox.height) ||
+                parseFloat(svg.getAttribute('height')) ||
+                rect.height ||
+                0;
+              const width = Math.max(
+                1,
+                Math.ceil(intrinsicWidth)
+              );
+              const height = Math.max(
+                1,
+                Math.ceil(intrinsicHeight)
+              );
+              const resolvedScale = Math.max(
+                1,
+                $exportScale,
+                Math.ceil(window.devicePixelRatio || 1)
+              );
+              const clonedSvg = svg.cloneNode(true);
+              clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+              clonedSvg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+              if (!clonedSvg.getAttribute('viewBox') && viewBox && viewBox.width > 0 && viewBox.height > 0) {
+                clonedSvg.setAttribute('viewBox', `${'$'}{viewBox.x} ${'$'}{viewBox.y} ${'$'}{viewBox.width} ${'$'}{viewBox.height}`);
+              }
+              if (!clonedSvg.getAttribute('width')) {
+                clonedSvg.setAttribute('width', String(width));
+              }
+              if (!clonedSvg.getAttribute('height')) {
+                clonedSvg.setAttribute('height', String(height));
+              }
+              const serializedSvg = new XMLSerializer().serializeToString(clonedSvg);
+              const encodedSvg = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(serializedSvg);
+              const image = new Image();
+              image.onload = function() {
+                try {
+                  const canvas = document.createElement('canvas');
+                  canvas.width = width * resolvedScale;
+                  canvas.height = height * resolvedScale;
+                  const context = canvas.getContext('2d');
+                  if (!context) {
+                    bridge.postExportDataUrl(null);
+                    return;
+                  }
+                  context.setTransform(1, 0, 0, 1, 0, 0);
+                  context.fillStyle = exportBackgroundColor;
+                  context.fillRect(0, 0, canvas.width, canvas.height);
+                  context.scale(resolvedScale, resolvedScale);
+                  context.drawImage(image, 0, 0, width, height);
+                  bridge.postExportDataUrl(canvas.toDataURL('image/png'));
+                } catch (error) {
+                  bridge.postExportDataUrl(null);
+                }
+              };
+              image.onerror = function() {
+                if (attempt < 20) {
+                  window.setTimeout(function() { tryExport(attempt + 1); }, 120);
+                } else {
+                  bridge.postExportDataUrl(null);
+                }
+              };
+              image.src = encodedSvg;
+            } catch (error) {
+              if (attempt < 20) {
+                window.setTimeout(function() { tryExport(attempt + 1); }, 120);
+              } else {
+                bridge.postExportDataUrl(null);
+              }
+            }
+          };
+
+          tryExport(0);
+        })();
+    """.trimIndent()
+}
 
 private suspend fun loadBitmapForSave(
     context: Context,
@@ -2025,7 +2035,7 @@ private fun buildMermaidHtml(
     exportMode: Boolean = false,
 ): String {
     val theme = if (isDark) "dark" else "neutral"
-    val escapedSource = JSONObject.quote(source)
+    val escapedSource = toJavaScriptStringLiteral(source)
     val accentCss = toCssColor(accentColor)
     val textCss = toCssColor(textColor)
     val borderCss = toCssColor(borderColor)
@@ -2120,6 +2130,32 @@ private fun buildMermaidHtml(
           </body>
         </html>
     """.trimIndent()
+}
+
+internal fun toJavaScriptStringLiteral(value: String): String = buildString(value.length + 2) {
+    append('"')
+    value.forEach { character ->
+        when (character) {
+            '\\' -> append("\\\\")
+            '"' -> append("\\\"")
+            '\b' -> append("\\b")
+            '\u000C' -> append("\\f")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            '\u2028' -> append("\\u2028")
+            '\u2029' -> append("\\u2029")
+            else -> {
+                if (character < ' ') {
+                    append("\\u")
+                    append(character.code.toString(16).padStart(4, '0'))
+                } else {
+                    append(character)
+                }
+            }
+        }
+    }
+    append('"')
 }
 
 private fun toCssColor(argb: Int): String {
