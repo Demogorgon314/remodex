@@ -668,6 +668,7 @@ class BridgeThreadSyncService(
     private val assistantResponseTraceByThread = mutableMapOf<String, AssistantResponseTrace>()
     private val latestAssistantTotalOutputTokensByThread = mutableMapOf<String, Int>()
     private val runningThreadFallbackIds = mutableSetOf<String>()
+    private val rememberedProjectPathByThreadId = mutableMapOf<String, String>()
     private val assistantCompletionFingerprintByThread = mutableMapOf<String, AssistantCompletionFingerprint>()
     private val assistantStreamingTextBuffers = mutableMapOf<AssistantStreamingTextBufferKey, AssistantStreamingTextBuffer>()
     private val locallyCompletedAssistantStreamingMessageKeys = mutableSetOf<AssistantStreamingTextBufferKey>()
@@ -817,6 +818,7 @@ class BridgeThreadSyncService(
                 },
             )
             .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        rememberProjectPaths(merged)
         backingThreads.value = merged
     }
 
@@ -948,6 +950,7 @@ class BridgeThreadSyncService(
             threadId = refreshedSnapshot.id,
             isRunning = refreshedSnapshot.isRunning,
         )
+        rememberProjectPath(normalizedSnapshot.id, normalizedSnapshot.projectPath)
         val currentThreads = backingThreads.value
         val updatedThreads = if (currentThreads.any { snapshot -> snapshot.id == normalizedSnapshot.id }) {
             currentThreads.map { snapshot ->
@@ -1149,6 +1152,7 @@ class BridgeThreadSyncService(
                 ),
             ),
         )
+        rememberProjectPath(snapshot.id, snapshot.projectPath)
         backingThreads.value = (backingThreads.value + snapshot)
             .distinctBy(ThreadSyncSnapshot::id)
             .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
@@ -2576,7 +2580,7 @@ class BridgeThreadSyncService(
         method: String,
         params: JsonObject = buildJsonObject {},
     ): RpcMessage {
-        val projectPath = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
+        val projectPath = resolvedProjectPath(threadId)
         require(projectPath.isNotEmpty()) { "Missing local working directory for $method." }
         return try {
             secureConnectionCoordinator.sendRequest(
@@ -2600,6 +2604,36 @@ class BridgeThreadSyncService(
         val errorCode = rpcError.data?.jsonObjectOrNull?.firstString("errorCode")
         val message = desktopHandoffUserFacingMessage(errorCode, rpcError.message)
         return IllegalStateException(message, rpcError)
+    }
+
+    private fun rememberProjectPath(
+        threadId: String,
+        projectPath: String?,
+    ) {
+        val normalizedThreadId = threadId.trim()
+        val normalizedProjectPath = projectPath?.trim()?.takeIf(String::isNotEmpty) ?: return
+        if (normalizedThreadId.isEmpty()) {
+            return
+        }
+        rememberedProjectPathByThreadId[normalizedThreadId] = normalizedProjectPath
+    }
+
+    private fun rememberProjectPaths(
+        snapshots: Iterable<ThreadSyncSnapshot>,
+    ) {
+        snapshots.forEach { snapshot ->
+            rememberProjectPath(snapshot.id, snapshot.projectPath)
+        }
+    }
+
+    private fun resolvedProjectPath(threadId: String): String {
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            return ""
+        }
+        return backingThreads.value.firstOrNull { it.id == normalizedThreadId }?.projectPath?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: rememberedProjectPathByThreadId[normalizedThreadId].orEmpty()
     }
 
     private fun gitUserFacingMessage(errorCode: String?, fallback: String): String {
@@ -9956,6 +9990,7 @@ class BridgeThreadSyncService(
                 snapshot
             }
         }
+        rememberProjectPaths(backingThreads.value)
     }
 
     private fun mergeRuntimeConfig(

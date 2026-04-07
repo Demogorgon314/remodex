@@ -4556,6 +4556,97 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `git diff still uses remembered project path after reconnect when new thread is missing from refreshed snapshots`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-reconnect-git-diff",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val diffRequests = mutableListOf<String?>()
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/start" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-reconnect-git-diff"))
+                                put("title", JsonPrimitive("Reconnect diff thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-reconnect-git-diff"))
+                            },
+                        )
+                    }
+                },
+                "git/diff" to { request ->
+                    diffRequests += request.params?.jsonObjectOrNull?.firstString("cwd")
+                    buildJsonObject {
+                        put("patch", JsonPrimitive("diff --git a/file.txt b/file.txt"))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        coordinator.rememberRelayPairing(payload)
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+        awaitSecureTransportReady(coordinator)
+        advanceUntilIdle()
+
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            val created = service.createThread(
+                preferredProjectPath = "/tmp/project-reconnect-git-diff",
+                runtimeDefaults = RemodexRuntimeDefaults(),
+            )
+            advanceUntilIdle()
+            assertEquals("/tmp/project-reconnect-git-diff", created?.projectPath)
+
+            val initialDiff = service.loadGitDiff("thread-reconnect-git-diff")
+            assertTrue(initialDiff.patch.isNotBlank())
+
+            coordinator.disconnect()
+            advanceUntilIdle()
+
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+
+            val reconnectedDiff = service.loadGitDiff("thread-reconnect-git-diff")
+            assertTrue(reconnectedDiff.patch.isNotBlank())
+            assertEquals(
+                listOf(
+                    "/tmp/project-reconnect-git-diff",
+                    "/tmp/project-reconnect-git-diff",
+                ),
+                diffRequests,
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `service tier retries once and future requests omit unsupported field`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
