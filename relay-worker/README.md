@@ -13,6 +13,7 @@ It exists alongside [`../relay/`](../relay/) and does not replace the existing N
 - WebSocket relay room semantics for one live Mac and one live iPhone per session
 - Trusted-session resolve via a per-Mac Durable Object registry
 - Mac absence grace window using Durable Object alarms
+- Detailed health output with aggregated relay traffic stats
 - Pure JavaScript state modules with Node unit tests
 
 ## Explicitly Out Of Scope
@@ -24,8 +25,10 @@ It exists alongside [`../relay/`](../relay/) and does not replace the existing N
 ## Layout
 
 - `src/index.js`: Worker entrypoint and request routing
+- `src/health-stats-do.js`: global health and traffic aggregation Durable Object
 - `src/session-relay-do.js`: per-session Durable Object
 - `src/trusted-registry-do.js`: per-Mac trusted-session registry Durable Object
+- `src/health/state.js`: pure health and traffic aggregation state
 - `src/session/state.js`: pure session-room state machine
 - `src/registry/state.js`: pure trusted-session registry state
 - `src/protocol/trusted-session.js`: shared transcript and signature helpers

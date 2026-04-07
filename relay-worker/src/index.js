@@ -1,8 +1,13 @@
+import { HealthStatsDurableObject } from "./health-stats-do.js";
 import { SessionRelayDurableObject } from "./session-relay-do.js";
 import { TrustedRegistryDurableObject } from "./trusted-registry-do.js";
 import { createHTTPError, isWebSocketUpgrade, jsonResponse, normalizeNonEmptyString, readJSONBody } from "./common.js";
 
-export { SessionRelayDurableObject, TrustedRegistryDurableObject };
+export {
+  HealthStatsDurableObject,
+  SessionRelayDurableObject,
+  TrustedRegistryDurableObject,
+};
 
 export default {
   async fetch(request, env) {
@@ -23,7 +28,8 @@ async function handleRequest(request, env) {
   const pathname = url.pathname;
 
   if (request.method === "GET" && pathname === "/health") {
-    return jsonResponse(200, { ok: true });
+    const stub = env.HEALTH_STATS_DO.get(env.HEALTH_STATS_DO.idFromName("global"));
+    return stub.fetch("https://health.internal/internal/health");
   }
 
   if (pathname.startsWith("/relay/")) {

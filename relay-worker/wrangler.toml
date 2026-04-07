@@ -10,6 +10,14 @@ class_name = "SessionRelayDurableObject"
 name = "TRUSTED_REGISTRY_DO"
 class_name = "TrustedRegistryDurableObject"
 
+[[durable_objects.bindings]]
+name = "HEALTH_STATS_DO"
+class_name = "HealthStatsDurableObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRelayDurableObject", "TrustedRegistryDurableObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["HealthStatsDurableObject"]

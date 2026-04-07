@@ -92,6 +92,7 @@ export class SessionRelayDurableObject extends DurableObject {
     }
 
     await this.commit(result.snapshot, result.effects);
+    await this.syncHealthSummary();
     if (result.reject) {
       server.close(result.reject.code, result.reject.reason);
     }
@@ -129,6 +130,7 @@ export class SessionRelayDurableObject extends DurableObject {
       for (const iphoneSocket of this.ctx.getWebSockets("iphone")) {
         iphoneSocket.send(normalizedMessage);
       }
+      await this.recordTraffic("macToIphone", normalizedMessage);
       return;
     }
 
@@ -139,6 +141,7 @@ export class SessionRelayDurableObject extends DurableObject {
     }
 
     macSocket.send(normalizedMessage);
+    await this.recordTraffic("iphoneToMac", normalizedMessage);
   }
 
   async webSocketClose(ws) {
@@ -149,12 +152,14 @@ export class SessionRelayDurableObject extends DurableObject {
       connectionId: attachment.connectionId,
     });
     await this.commit(result.snapshot, result.effects);
+    await this.syncHealthSummary();
   }
 
   async alarm() {
     await this.ready;
     const result = expireMacAbsenceIfNeeded(this.snapshot);
     await this.commit(result.snapshot, result.effects);
+    await this.syncHealthSummary();
   }
 
   async commit(nextSnapshot, effects = []) {
@@ -238,6 +243,35 @@ export class SessionRelayDurableObject extends DurableObject {
       },
       body: JSON.stringify({
         sessionId,
+      }),
+    });
+  }
+
+  async syncHealthSummary() {
+    const stub = this.env.HEALTH_STATS_DO.get(this.env.HEALTH_STATS_DO.idFromName("global"));
+    await stub.fetch("https://health.internal/internal/session-summary", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionId: this.snapshot.sessionId,
+        hasMac: Boolean(this.snapshot.macConnectionId),
+        clientCount: this.snapshot.iphoneConnectionId ? 1 : 0,
+      }),
+    });
+  }
+
+  async recordTraffic(channel, message) {
+    const stub = this.env.HEALTH_STATS_DO.get(this.env.HEALTH_STATS_DO.idFromName("global"));
+    await stub.fetch("https://health.internal/internal/traffic-record", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        channel,
+        message,
       }),
     });
   }
