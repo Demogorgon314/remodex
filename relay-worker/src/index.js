@@ -2,6 +2,7 @@ import { HealthStatsDurableObject } from "./health-stats-do.js";
 import { SessionRelayDurableObject } from "./session-relay-do.js";
 import { TrustedRegistryDurableObject } from "./trusted-registry-do.js";
 import { createHTTPError, isWebSocketUpgrade, jsonResponse, normalizeNonEmptyString, readJSONBody } from "./common.js";
+import { logRelayInfo, redactRelayPathname } from "./logging.js";
 
 export {
   HealthStatsDurableObject,
@@ -65,8 +66,13 @@ function routeRelayUpgrade(request, env) {
   }
 
   const url = new URL(request.url);
+  const loggedPathname = redactRelayPathname(url.pathname);
   const sessionId = normalizeNonEmptyString(url.pathname.match(/^\/relay\/([^/?]+)/)?.[1]);
   const role = normalizeNonEmptyString(request.headers.get("x-role"));
+  logRelayInfo(
+    `upgrade request path=${loggedPathname} cfRay=${request.headers.get("cf-ray") || "missing"} `
+    + `role=${role || "missing"}`
+  );
   if (!sessionId || (role !== "mac" && role !== "iphone")) {
     throw createHTTPError(400, "invalid_upgrade", "Missing sessionId or invalid x-role header.");
   }

@@ -12,6 +12,7 @@ import {
   readMacRegistrationHeaders,
   updateMacRegistration,
 } from "./session/state.js";
+import { classifyRelayTrafficLabel } from "./health/state.js";
 import {
   createHTTPError,
   isWebSocketUpgrade,
@@ -21,8 +22,18 @@ import {
   readJSONBody,
   safeParseJSON,
 } from "./common.js";
+import {
+  logRelayError,
+  logRelayInfo,
+  relayDeviceLogLabel,
+  relaySessionLogLabel,
+} from "./logging.js";
 
 const SNAPSHOT_KEY = "sessionSnapshot";
+// Health stats are best-effort observability, so batch them more aggressively
+// to keep `wrangler tail` readable during active relay sessions.
+const PENDING_TRAFFIC_FLUSH_INTERVAL_MS = 30_000;
+const PENDING_TRAFFIC_FLUSH_THRESHOLD = 256;
 
 export class SessionRelayDurableObject extends DurableObject {
   constructor(ctx, env) {
@@ -30,6 +41,7 @@ export class SessionRelayDurableObject extends DurableObject {
     this.ctx = ctx;
     this.env = env;
     this.snapshot = createSessionSnapshot();
+    this.pendingTraffic = createPendingTrafficState();
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const storedSnapshot = await this.ctx.storage.get(SNAPSHOT_KEY);
       this.snapshot = createSessionSnapshot(storedSnapshot);
@@ -94,7 +106,18 @@ export class SessionRelayDurableObject extends DurableObject {
     await this.commit(result.snapshot, result.effects);
     await this.syncHealthSummary();
     if (result.reject) {
+      logRelayInfo(
+        `rejecting ${role} connection -> ${relaySessionLogLabel(sessionId)} `
+        + `reason="${result.reject.reason}"`
+      );
       server.close(result.reject.code, result.reject.reason);
+    } else if (role === "mac") {
+      logRelayInfo(`Mac connected -> ${relaySessionLogLabel(sessionId)}`);
+    } else {
+      logRelayInfo(
+        `iPhone connected -> ${relaySessionLogLabel(sessionId)} `
+        + `(${this.snapshot.iphoneConnectionId ? 1 : 0} client(s))`
+      );
     }
 
     return new Response(null, {
@@ -124,6 +147,13 @@ export class SessionRelayDurableObject extends DurableObject {
           sessionId: this.snapshot.sessionId,
         });
         await this.commit(result.snapshot, result.effects);
+        await this.flushPendingTrafficIfDue({ force: true });
+        if (this.snapshot.registration?.macDeviceId) {
+          logRelayInfo(
+            `Mac registration updated -> ${relaySessionLogLabel(this.snapshot.sessionId)} `
+            + `${relayDeviceLogLabel("mac", this.snapshot.registration.macDeviceId)}`
+          );
+        }
         return;
       }
 
@@ -152,14 +182,42 @@ export class SessionRelayDurableObject extends DurableObject {
       connectionId: attachment.connectionId,
     });
     await this.commit(result.snapshot, result.effects);
+    await this.flushPendingTrafficIfDue({ force: true });
     await this.syncHealthSummary();
+    if (attachment.role === "mac") {
+      logRelayInfo(`Mac disconnected -> ${relaySessionLogLabel(this.snapshot.sessionId)}`);
+    } else if (attachment.role === "iphone") {
+      logRelayInfo(
+        `iPhone disconnected -> ${relaySessionLogLabel(this.snapshot.sessionId)} `
+        + `(${this.snapshot.iphoneConnectionId ? 1 : 0} remaining)`
+      );
+    }
   }
 
   async alarm() {
     await this.ready;
+    const hadIphone = Boolean(this.snapshot.iphoneConnectionId);
+    const sessionLabel = relaySessionLogLabel(this.snapshot.sessionId);
     const result = expireMacAbsenceIfNeeded(this.snapshot);
     await this.commit(result.snapshot, result.effects);
+    await this.flushPendingTrafficIfDue({ force: true });
     await this.syncHealthSummary();
+    if (hadIphone && !this.snapshot.iphoneConnectionId) {
+      logRelayInfo(`Mac absence grace expired -> ${sessionLabel}`);
+    }
+    if (!this.snapshot.macConnectionId && !this.snapshot.iphoneConnectionId) {
+      logRelayInfo(`${sessionLabel} cleaned up`);
+    }
+  }
+
+  async webSocketError(ws, error) {
+    await this.ready;
+    const attachment = ws.deserializeAttachment() || {};
+    logRelayError(
+      `WebSocket error (${attachment.role || "unknown"}, `
+      + `${relaySessionLogLabel(attachment.sessionId || this.snapshot.sessionId)}): `
+      + `${error?.message || error || "unknown error"}`
+    );
   }
 
   async commit(nextSnapshot, effects = []) {
@@ -198,12 +256,27 @@ export class SessionRelayDurableObject extends DurableObject {
     code,
     reason,
   }) {
+    let closedCount = 0;
     for (const socket of this.ctx.getWebSockets(role)) {
       const attachment = socket.deserializeAttachment() || {};
       if (attachment.connectionId === exceptConnectionId) {
         continue;
       }
       socket.close(code, reason);
+      closedCount += 1;
+    }
+
+    if (closedCount > 0 && role === "iphone") {
+      logRelayInfo(
+        `Replaced older iPhone connection(s) -> ${relaySessionLogLabel(this.snapshot.sessionId)} `
+        + `(${closedCount} closed)`
+      );
+    }
+    if (closedCount > 0 && role === "mac") {
+      logRelayInfo(
+        `Replaced older Mac connection(s) -> ${relaySessionLogLabel(this.snapshot.sessionId)} `
+        + `(${closedCount} closed)`
+      );
     }
   }
 
@@ -263,16 +336,107 @@ export class SessionRelayDurableObject extends DurableObject {
   }
 
   async recordTraffic(channel, message) {
+    const normalizedChannel = normalizeNonEmptyString(channel);
+    if (!normalizedChannel) {
+      return;
+    }
+
+    const label = classifyRelayTrafficLabel(message);
+    const bytes = byteLengthOfRelayTraffic(message);
+    if (bytes <= 0) {
+      return;
+    }
+
+    this.pendingTraffic = addPendingTrafficRecord(this.pendingTraffic, {
+      channel: normalizedChannel,
+      label,
+      bytes,
+    });
+    await this.flushPendingTrafficIfDue();
+  }
+
+  async flushPendingTrafficIfDue({ force = false } = {}) {
+    if (!this.pendingTraffic.totalMessages) {
+      return;
+    }
+
+    const now = Date.now();
+    const shouldFlush = force
+      || this.pendingTraffic.totalMessages >= PENDING_TRAFFIC_FLUSH_THRESHOLD
+      || now - this.pendingTraffic.startedAt >= PENDING_TRAFFIC_FLUSH_INTERVAL_MS;
+    if (!shouldFlush) {
+      return;
+    }
+
+    const payload = this.pendingTraffic;
+    this.pendingTraffic = createPendingTrafficState();
+
     const stub = this.env.HEALTH_STATS_DO.get(this.env.HEALTH_STATS_DO.idFromName("global"));
-    await stub.fetch("https://health.internal/internal/traffic-record", {
+    await stub.fetch("https://health.internal/internal/traffic-batch", {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        channel,
-        message,
+        channels: payload.channels,
       }),
     });
+  }
+}
+
+function createPendingTrafficState(now = Date.now()) {
+  return {
+    startedAt: now,
+    totalMessages: 0,
+    channels: {},
+  };
+}
+
+function addPendingTrafficRecord(state, { channel, label, bytes }) {
+  const nextState = {
+    startedAt: state?.startedAt || Date.now(),
+    totalMessages: Number(state?.totalMessages || 0),
+    channels: structuredClone(state?.channels || {}),
+  };
+  nextState.totalMessages += 1;
+
+  const nextChannel = nextState.channels[channel] || {
+    messages: 0,
+    bytes: 0,
+    labels: {},
+  };
+  nextChannel.messages += 1;
+  nextChannel.bytes += bytes;
+
+  const nextLabel = nextChannel.labels[label] || { messages: 0, bytes: 0 };
+  nextLabel.messages += 1;
+  nextLabel.bytes += bytes;
+  nextChannel.labels[label] = nextLabel;
+
+  nextState.channels[channel] = nextChannel;
+  return nextState;
+}
+
+function byteLengthOfRelayTraffic(value) {
+  if (typeof value === "string") {
+    return new TextEncoder().encode(value).length;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return value.byteLength;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return value.byteLength;
+  }
+
+  if (value == null) {
+    return 0;
+  }
+
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).length;
+  } catch {
+    return 0;
   }
 }
