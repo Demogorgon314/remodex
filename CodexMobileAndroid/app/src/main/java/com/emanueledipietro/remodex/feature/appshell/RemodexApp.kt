@@ -468,83 +468,97 @@ fun RemodexApp(
         handleShellBack()
     }
 
-    RemodexShell(
-        viewModel = viewModel,
-        uiState = uiState,
-        windowLayout = windowLayout,
-        shellRoute = shellRoute,
-        onShellRouteChange = { shellRoute = it },
-        onShellBack = handleShellBack,
-        isSidebarOpen = isSidebarOpen,
-        onSidebarOpenChange = { nextOpen ->
-            setSidebarOpen(
-                currentOpen = isSidebarOpen,
-                nextOpen = nextOpen,
-                view = view,
-            ) { isSidebarOpen = it }
-        },
-        isSidebarSearchActive = isSidebarSearchActive,
-        onSidebarSearchActiveChange = { isSidebarSearchActive = it },
-        notificationPermissionUiState = notificationPermissionUiState,
-        onNotificationAction = {
-            when {
-                notificationPermissionUiState.canRequestPermission &&
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+    Box(modifier = Modifier.fillMaxSize()) {
+        RemodexShell(
+            viewModel = viewModel,
+            uiState = uiState,
+            windowLayout = windowLayout,
+            shellRoute = shellRoute,
+            onShellRouteChange = { shellRoute = it },
+            onShellBack = handleShellBack,
+            isSidebarOpen = isSidebarOpen,
+            onSidebarOpenChange = { nextOpen ->
+                setSidebarOpen(
+                    currentOpen = isSidebarOpen,
+                    nextOpen = nextOpen,
+                    view = view,
+                ) { isSidebarOpen = it }
+            },
+            isSidebarSearchActive = isSidebarSearchActive,
+            onSidebarSearchActiveChange = { isSidebarSearchActive = it },
+            notificationPermissionUiState = notificationPermissionUiState,
+            onNotificationAction = {
+                when {
+                    notificationPermissionUiState.canRequestPermission &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
 
-                notificationPermissionUiState.requiresSystemSettings -> {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        },
-                    )
-                }
-            }
-        },
-        onOpenAttachmentPicker = {
-            viewModel.presentComposerMessage(null)
-            attachmentPickerLauncher.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-            )
-        },
-        onOpenCameraCapture = {
-            if (!canLaunchComposerCameraCapture(context)) {
-                viewModel.presentComposerMessage("Camera is not available on this device.")
-                return@RemodexShell
-            }
-
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                launchCameraCapture()
-            } else {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
-        },
-        onOpenScanner = {
-            viewModel.prepareForManualScan()
-            isScannerPresented = true
-        },
-        onRequestVoiceInput = {
-            when (uiState.composer.voice.buttonMode) {
-                ComposerVoiceButtonMode.RECORDING -> viewModel.stopVoiceRecording()
-                ComposerVoiceButtonMode.PREFLIGHTING,
-                ComposerVoiceButtonMode.TRANSCRIBING -> Unit
-                ComposerVoiceButtonMode.IDLE -> {
-                    if (
-                        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                        PackageManager.PERMISSION_GRANTED
-                    ) {
-                        viewModel.startVoiceRecording()
-                    } else {
-                        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    notificationPermissionUiState.requiresSystemSettings -> {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            },
+                        )
                     }
                 }
+            },
+            onOpenAttachmentPicker = {
+                viewModel.presentComposerMessage(null)
+                attachmentPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            },
+            onOpenCameraCapture = {
+                if (!canLaunchComposerCameraCapture(context)) {
+                    viewModel.presentComposerMessage("Camera is not available on this device.")
+                    return@RemodexShell
+                }
+
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    launchCameraCapture()
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            },
+            onOpenScanner = {
+                viewModel.prepareForManualScan()
+                isScannerPresented = true
+            },
+            onRequestVoiceInput = {
+                when (uiState.composer.voice.buttonMode) {
+                    ComposerVoiceButtonMode.RECORDING -> viewModel.stopVoiceRecording()
+                    ComposerVoiceButtonMode.PREFLIGHTING,
+                    ComposerVoiceButtonMode.TRANSCRIBING -> Unit
+                    ComposerVoiceButtonMode.IDLE -> {
+                        if (
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                            PackageManager.PERMISSION_GRANTED
+                        ) {
+                            viewModel.startVoiceRecording()
+                        } else {
+                            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                }
+            },
+            onCancelVoiceRecording = viewModel::cancelVoiceRecording,
+        )
+
+        if (shellRoute != ShellRoute.CONTENT) {
+            uiState.transientBanner?.let { banner ->
+                ShellTransientBanner(
+                    text = banner,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
             }
-        },
-        onCancelVoiceRecording = viewModel::cancelVoiceRecording,
-    )
+        }
+    }
 
     uiState.bridgeUpdatePrompt?.let { prompt ->
         AlertDialog(
@@ -644,6 +658,31 @@ private fun performRunCompletionHaptic(
     val didContextClick = view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
     if (!didContextClick) {
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+}
+
+@Composable
+private fun ShellTransientBanner(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = modifier,
+        color = chrome.accentSurface,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.bodyText,
+        )
     }
 }
 
