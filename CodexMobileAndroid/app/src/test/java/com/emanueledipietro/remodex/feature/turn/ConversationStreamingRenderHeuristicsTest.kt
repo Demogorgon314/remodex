@@ -136,6 +136,26 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
+    fun `streaming plain text line height extra matches markdown spacing math`() {
+        val lineHeightExtra = computeConversationTextLineHeightExtraPx(
+            lineHeightPx = 22f,
+            textSizePx = 15f,
+        )
+
+        assertEquals(7f, lineHeightExtra)
+    }
+
+    @Test
+    fun `streaming plain text line height extra never goes negative`() {
+        val lineHeightExtra = computeConversationTextLineHeightExtraPx(
+            lineHeightPx = 14f,
+            textSizePx = 15f,
+        )
+
+        assertEquals(0f, lineHeightExtra)
+    }
+
+    @Test
     fun `attachment thumbnails skip desktop file uris`() {
         assertFalse(
             canRenderAttachmentThumbnail(

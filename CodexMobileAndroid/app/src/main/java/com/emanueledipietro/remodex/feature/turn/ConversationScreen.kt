@@ -3041,6 +3041,16 @@ internal fun formatStreamingPlainTextForDisplay(text: String): String {
     return text
 }
 
+internal fun computeConversationTextLineHeightExtraPx(
+    lineHeightPx: Float,
+    textSizePx: Float,
+): Float {
+    if (lineHeightPx.isNaN() || textSizePx.isNaN()) {
+        return 0f
+    }
+    return (lineHeightPx - textSizePx).coerceAtLeast(0f)
+}
+
 private data class ConversationMarkdownPrewarmSpec(
     val textColorArgb: Int,
     val linkColorArgb: Int,
@@ -3072,7 +3082,10 @@ private fun rememberConversationMarkdownPrewarmSpec(
     }
     val lineHeightExtra = remember(style.lineHeight, textSizePx, density) {
         if (style.lineHeight != TextUnit.Unspecified && !textSizePx.isNaN()) {
-            (with(density) { style.lineHeight.toPx() } - textSizePx).coerceAtLeast(0f)
+            computeConversationTextLineHeightExtraPx(
+                lineHeightPx = with(density) { style.lineHeight.toPx() },
+                textSizePx = textSizePx,
+            )
         } else {
             0f
         }
@@ -8431,6 +8444,16 @@ private fun LightweightStreamingAssistantMarkdownText(
     val textSizePx = remember(bodyStyle.fontSize, density) {
         with(density) { bodyStyle.fontSize.toPx() }
     }
+    val lineHeightExtra = remember(bodyStyle.lineHeight, textSizePx, density) {
+        if (bodyStyle.lineHeight != TextUnit.Unspecified) {
+            computeConversationTextLineHeightExtraPx(
+                lineHeightPx = with(density) { bodyStyle.lineHeight.toPx() },
+                textSizePx = textSizePx,
+            )
+        } else {
+            0f
+        }
+    }
     if (streamingTextState != null) {
         AndroidView(
             modifier = Modifier.fillMaxWidth(),
@@ -8441,7 +8464,7 @@ private fun LightweightStreamingAssistantMarkdownText(
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                     )
                     includeFontPadding = false
-                    setLineSpacing(0f, 1f)
+                    setLineSpacing(lineHeightExtra, 1f)
                     setPadding(0, 0, 0, 0)
                     setTextColor(chrome.bodyText.toArgb())
                     setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
@@ -8456,6 +8479,7 @@ private fun LightweightStreamingAssistantMarkdownText(
             update = { textView ->
                 textView.setTextColor(chrome.bodyText.toArgb())
                 textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
+                textView.setLineSpacing(lineHeightExtra, 1f)
                 val previous = textView.tag as? StreamingAssistantTextRenderTag
                 val canAppendDelta =
                     previous?.handle === streamingTextState.handle &&
