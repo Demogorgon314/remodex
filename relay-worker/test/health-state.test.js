@@ -16,6 +16,10 @@ test("health state aggregates active sessions and connected clients", () => {
     sessionId: "session-a",
     hasMac: true,
     clientCount: 1,
+    macSocketCount: 2,
+    iphoneSocketCount: 1,
+    staleMacSocketCount: 1,
+    staleIphoneSocketCount: 0,
   }, {
     now: 2_000,
   });
@@ -23,6 +27,10 @@ test("health state aggregates active sessions and connected clients", () => {
     sessionId: "session-b",
     hasMac: false,
     clientCount: 1,
+    macSocketCount: 0,
+    iphoneSocketCount: 2,
+    staleMacSocketCount: 0,
+    staleIphoneSocketCount: 1,
   }, {
     now: 3_000,
   });
@@ -31,6 +39,10 @@ test("health state aggregates active sessions and connected clients", () => {
   assert.equal(relay.activeSessions, 2);
   assert.equal(relay.sessionsWithMac, 1);
   assert.equal(relay.totalClients, 2);
+  assert.equal(relay.totalMacSockets, 2);
+  assert.equal(relay.totalIphoneSockets, 3);
+  assert.equal(relay.totalStaleMacSockets, 1);
+  assert.equal(relay.totalStaleIphoneSockets, 1);
 });
 
 test("health state drops empty sessions when nothing is connected", () => {

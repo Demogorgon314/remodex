@@ -25,6 +25,10 @@ export function updateSessionSummary(
     sessionId,
     hasMac = false,
     clientCount = 0,
+    macSocketCount = 0,
+    iphoneSocketCount = 0,
+    staleMacSocketCount = 0,
+    staleIphoneSocketCount = 0,
   } = {},
   {
     now = Date.now(),
@@ -37,13 +41,26 @@ export function updateSessionSummary(
   }
 
   const normalizedClientCount = Math.max(0, Number(clientCount || 0));
+  const normalizedMacSocketCount = Math.max(0, Number(macSocketCount || 0));
+  const normalizedIphoneSocketCount = Math.max(0, Number(iphoneSocketCount || 0));
+  const normalizedStaleMacSocketCount = Math.max(0, Number(staleMacSocketCount || 0));
+  const normalizedStaleIphoneSocketCount = Math.max(0, Number(staleIphoneSocketCount || 0));
   const nextSessions = { ...normalizedSnapshot.sessions };
-  if (!hasMac && normalizedClientCount === 0) {
+  if (
+    !hasMac
+    && normalizedClientCount === 0
+    && normalizedMacSocketCount === 0
+    && normalizedIphoneSocketCount === 0
+  ) {
     delete nextSessions[normalizedSessionId];
   } else {
     nextSessions[normalizedSessionId] = {
       hasMac: Boolean(hasMac),
       clientCount: normalizedClientCount,
+      macSocketCount: normalizedMacSocketCount,
+      iphoneSocketCount: normalizedIphoneSocketCount,
+      staleMacSocketCount: normalizedStaleMacSocketCount,
+      staleIphoneSocketCount: normalizedStaleIphoneSocketCount,
     };
   }
 
@@ -172,12 +189,20 @@ export function buildRelayHealthStats(snapshot) {
   const normalizedSnapshot = createHealthSnapshot(snapshot);
   let sessionsWithMac = 0;
   let totalClients = 0;
+  let totalMacSockets = 0;
+  let totalIphoneSockets = 0;
+  let totalStaleMacSockets = 0;
+  let totalStaleIphoneSockets = 0;
 
   for (const session of Object.values(normalizedSnapshot.sessions)) {
     if (session.hasMac) {
       sessionsWithMac += 1;
     }
     totalClients += Number(session.clientCount || 0);
+    totalMacSockets += Number(session.macSocketCount || 0);
+    totalIphoneSockets += Number(session.iphoneSocketCount || 0);
+    totalStaleMacSockets += Number(session.staleMacSocketCount || 0);
+    totalStaleIphoneSockets += Number(session.staleIphoneSocketCount || 0);
   }
 
   const channels = {};
@@ -199,6 +224,10 @@ export function buildRelayHealthStats(snapshot) {
     activeSessions: Object.keys(normalizedSnapshot.sessions).length,
     sessionsWithMac,
     totalClients,
+    totalMacSockets,
+    totalIphoneSockets,
+    totalStaleMacSockets,
+    totalStaleIphoneSockets,
     traffic: {
       startedAt: new Date(normalizedSnapshot.traffic.startedAt).toISOString(),
       updatedAt: new Date(normalizedSnapshot.traffic.updatedAt).toISOString(),
@@ -243,6 +272,10 @@ function normalizeSessions(value) {
           {
             hasMac: Boolean(session?.hasMac),
             clientCount: Math.max(0, Number(session?.clientCount || 0)),
+            macSocketCount: Math.max(0, Number(session?.macSocketCount || 0)),
+            iphoneSocketCount: Math.max(0, Number(session?.iphoneSocketCount || 0)),
+            staleMacSocketCount: Math.max(0, Number(session?.staleMacSocketCount || 0)),
+            staleIphoneSocketCount: Math.max(0, Number(session?.staleIphoneSocketCount || 0)),
           },
         ];
       })

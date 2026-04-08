@@ -51,13 +51,6 @@ export function connectMac(
   return {
     snapshot: nextSnapshot,
     effects: [
-      {
-        type: "close_role",
-        role: "mac",
-        exceptConnectionId: normalizedConnectionId,
-        code: CLOSE_CODE_MAC_REPLACED,
-        reason: "Replaced by new Mac connection",
-      },
       ...registrationEffects(normalizedSnapshot.registration, normalizedRegistration, normalizedSnapshot.sessionId),
       {
         type: "delete_alarm",
@@ -93,13 +86,6 @@ export function connectIphone(
     },
     effects: [
       ...expired.effects,
-      {
-        type: "close_role",
-        role: "iphone",
-        exceptConnectionId: normalizeNonEmptyString(connectionId),
-        code: CLOSE_CODE_IPHONE_REPLACED,
-        reason: "Replaced by newer iPhone connection",
-      },
     ],
   };
 }
@@ -121,6 +107,55 @@ export function updateMacRegistration(snapshot, registration) {
       normalizedRegistration,
       normalizedSnapshot.sessionId
     ),
+  };
+}
+
+export function reconcileSnapshotWithConnections(
+  snapshot,
+  {
+    macConnectionIds = [],
+    iphoneConnectionIds = [],
+    now = Date.now(),
+  } = {}
+) {
+  let nextSnapshot = createSessionSnapshot(snapshot);
+  const effects = [];
+  const normalizedMacConnectionIds = normalizeConnectionIds(macConnectionIds);
+  const normalizedIphoneConnectionIds = normalizeConnectionIds(iphoneConnectionIds);
+
+  if (
+    nextSnapshot.macConnectionId
+    && !normalizedMacConnectionIds.includes(nextSnapshot.macConnectionId)
+  ) {
+    const result = closeConnection(nextSnapshot, {
+      role: "mac",
+      connectionId: nextSnapshot.macConnectionId,
+      now,
+    });
+    nextSnapshot = result.snapshot;
+    effects.push(...result.effects);
+  }
+
+  if (
+    nextSnapshot.iphoneConnectionId
+    && !normalizedIphoneConnectionIds.includes(nextSnapshot.iphoneConnectionId)
+  ) {
+    const result = closeConnection(nextSnapshot, {
+      role: "iphone",
+      connectionId: nextSnapshot.iphoneConnectionId,
+      now,
+    });
+    nextSnapshot = result.snapshot;
+    effects.push(...result.effects);
+  }
+
+  const expired = expireMacAbsenceIfNeeded(nextSnapshot, { now });
+  nextSnapshot = expired.snapshot;
+  effects.push(...expired.effects);
+
+  return {
+    snapshot: nextSnapshot,
+    effects,
   };
 }
 
@@ -322,4 +357,14 @@ function upsertEffects(nextRegistration) {
     type: "registry_upsert",
     registration: nextRegistration,
   }];
+}
+
+function normalizeConnectionIds(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return values
+    .map((value) => normalizeNonEmptyString(value))
+    .filter(Boolean);
 }

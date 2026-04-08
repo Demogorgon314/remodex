@@ -9,6 +9,7 @@ import {
   createSessionSnapshot,
   expireMacAbsenceIfNeeded,
   hasActiveMacSession,
+  reconcileSnapshotWithConnections,
   readMacRegistrationHeaders,
   updateMacRegistration,
 } from "./session/state.js";
@@ -50,17 +51,21 @@ export class SessionRelayDurableObject extends DurableObject {
 
   async fetch(request) {
     await this.ready;
+    await this.reconcileSnapshotWithSockets();
 
     const url = new URL(request.url);
     const pathname = url.pathname;
     if (request.method === "GET" && pathname === "/internal/status") {
-      const expired = expireMacAbsenceIfNeeded(this.snapshot);
-      await this.commit(expired.snapshot, expired.effects);
+      const inventory = this.socketInventory();
       return jsonResponse(200, {
         ok: true,
-        sessionId: expired.snapshot.sessionId,
-        hasActiveMac: hasActiveMacSession(expired.snapshot),
-        hasConnectedIphone: Boolean(expired.snapshot.iphoneConnectionId),
+        sessionId: this.snapshot.sessionId,
+        hasActiveMac: inventory.mac.hasActiveConnection,
+        hasConnectedIphone: inventory.iphone.hasActiveConnection,
+        macSocketCount: inventory.mac.totalCount,
+        iphoneSocketCount: inventory.iphone.totalCount,
+        staleMacSocketCount: inventory.mac.staleCount,
+        staleIphoneSocketCount: inventory.iphone.staleCount,
       });
     }
 
@@ -135,8 +140,10 @@ export class SessionRelayDurableObject extends DurableObject {
       return;
     }
 
-    const expired = expireMacAbsenceIfNeeded(this.snapshot);
-    await this.commit(expired.snapshot, expired.effects);
+    await this.reconcileSnapshotWithSockets();
+    if (!this.isActiveConnection(role, attachment.connectionId)) {
+      return;
+    }
 
     const normalizedMessage = normalizeWireMessage(message);
     if (role === "mac") {
@@ -157,14 +164,12 @@ export class SessionRelayDurableObject extends DurableObject {
         return;
       }
 
-      for (const iphoneSocket of this.ctx.getWebSockets("iphone")) {
-        iphoneSocket.send(normalizedMessage);
-      }
+      this.activeSocketForRole("iphone")?.send(normalizedMessage);
       await this.recordTraffic("macToIphone", normalizedMessage);
       return;
     }
 
-    const macSocket = this.ctx.getWebSockets("mac")[0] || null;
+    const macSocket = this.activeSocketForRole("mac");
     if (!macSocket || !hasActiveMacSession(this.snapshot)) {
       ws.close(CLOSE_CODE_MAC_ABSENCE_BUFFER_FULL, "Mac temporarily unavailable");
       return;
@@ -176,6 +181,7 @@ export class SessionRelayDurableObject extends DurableObject {
 
   async webSocketClose(ws) {
     await this.ready;
+    await this.reconcileSnapshotWithSockets();
     const attachment = ws.deserializeAttachment() || {};
     const result = closeConnection(this.snapshot, {
       role: attachment.role,
@@ -196,10 +202,9 @@ export class SessionRelayDurableObject extends DurableObject {
 
   async alarm() {
     await this.ready;
+    await this.reconcileSnapshotWithSockets();
     const hadIphone = Boolean(this.snapshot.iphoneConnectionId);
     const sessionLabel = relaySessionLogLabel(this.snapshot.sessionId);
-    const result = expireMacAbsenceIfNeeded(this.snapshot);
-    await this.commit(result.snapshot, result.effects);
     await this.flushPendingTrafficIfDue({ force: true });
     await this.syncHealthSummary();
     if (hadIphone && !this.snapshot.iphoneConnectionId) {
@@ -321,6 +326,7 @@ export class SessionRelayDurableObject extends DurableObject {
   }
 
   async syncHealthSummary() {
+    const inventory = this.socketInventory();
     const stub = this.env.HEALTH_STATS_DO.get(this.env.HEALTH_STATS_DO.idFromName("global"));
     await stub.fetch("https://health.internal/internal/session-summary", {
       method: "POST",
@@ -329,10 +335,116 @@ export class SessionRelayDurableObject extends DurableObject {
       },
       body: JSON.stringify({
         sessionId: this.snapshot.sessionId,
-        hasMac: Boolean(this.snapshot.macConnectionId),
-        clientCount: this.snapshot.iphoneConnectionId ? 1 : 0,
+        hasMac: inventory.mac.hasActiveConnection,
+        clientCount: inventory.iphone.hasActiveConnection ? 1 : 0,
+        macSocketCount: inventory.mac.totalCount,
+        iphoneSocketCount: inventory.iphone.totalCount,
+        staleMacSocketCount: inventory.mac.staleCount,
+        staleIphoneSocketCount: inventory.iphone.staleCount,
       }),
     });
+  }
+
+  isActiveConnection(role, connectionId) {
+    const normalizedRole = normalizeNonEmptyString(role);
+    const normalizedConnectionId = normalizeNonEmptyString(connectionId);
+    if (!normalizedRole || !normalizedConnectionId) {
+      return false;
+    }
+
+    if (normalizedRole === "mac") {
+      return this.snapshot.macConnectionId === normalizedConnectionId;
+    }
+
+    if (normalizedRole === "iphone") {
+      return this.snapshot.iphoneConnectionId === normalizedConnectionId;
+    }
+
+    return false;
+  }
+
+  activeSocketForRole(role) {
+    const normalizedRole = normalizeNonEmptyString(role);
+    if (!normalizedRole) {
+      return null;
+    }
+
+    const activeConnectionId = normalizedRole === "mac"
+      ? this.snapshot.macConnectionId
+      : this.snapshot.iphoneConnectionId;
+    if (!activeConnectionId) {
+      return null;
+    }
+
+    for (const socket of this.ctx.getWebSockets(normalizedRole)) {
+      const attachment = socket.deserializeAttachment() || {};
+      if (attachment.connectionId === activeConnectionId) {
+        return socket;
+      }
+    }
+
+    return null;
+  }
+
+  countRoleSockets(role) {
+    const normalizedRole = normalizeNonEmptyString(role);
+    if (!normalizedRole) {
+      return 0;
+    }
+
+    return this.ctx.getWebSockets(normalizedRole).length;
+  }
+
+  socketInventory() {
+    const mac = this.roleSocketInventory("mac", this.snapshot.macConnectionId);
+    const iphone = this.roleSocketInventory("iphone", this.snapshot.iphoneConnectionId);
+    return { mac, iphone };
+  }
+
+  roleSocketInventory(role, activeConnectionId) {
+    const sockets = this.ctx.getWebSockets(role);
+    const normalizedActiveConnectionId = normalizeNonEmptyString(activeConnectionId);
+    let activeCount = 0;
+    let staleCount = 0;
+
+    for (const socket of sockets) {
+      const attachment = socket.deserializeAttachment() || {};
+      if (
+        normalizedActiveConnectionId
+        && attachment.connectionId === normalizedActiveConnectionId
+      ) {
+        activeCount += 1;
+      } else {
+        staleCount += 1;
+      }
+    }
+
+    return {
+      totalCount: sockets.length,
+      activeCount,
+      staleCount,
+      hasActiveConnection: activeCount > 0,
+    };
+  }
+
+  async reconcileSnapshotWithSockets(now = Date.now()) {
+    const result = reconcileSnapshotWithConnections(this.snapshot, {
+      macConnectionIds: this.socketConnectionIds("mac"),
+      iphoneConnectionIds: this.socketConnectionIds("iphone"),
+      now,
+    });
+
+    if (JSON.stringify(result.snapshot) === JSON.stringify(this.snapshot) && result.effects.length === 0) {
+      return;
+    }
+
+    await this.commit(result.snapshot, result.effects);
+  }
+
+  socketConnectionIds(role) {
+    return this.ctx.getWebSockets(role)
+      .map((socket) => normalizeNonEmptyString(socket.deserializeAttachment()?.connectionId))
+      .filter(Boolean);
   }
 
   async recordTraffic(channel, message) {

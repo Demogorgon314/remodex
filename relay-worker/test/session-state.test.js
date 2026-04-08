@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  CLOSE_CODE_IPHONE_REPLACED,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   MAC_ABSENCE_GRACE_MS,
   closeConnection,
@@ -10,6 +9,7 @@ import {
   connectMac,
   createSessionSnapshot,
   expireMacAbsenceIfNeeded,
+  reconcileSnapshotWithConnections,
   updateMacRegistration,
 } from "../src/session/state.js";
 
@@ -35,7 +35,7 @@ test("session state accepts mac first and then iphone", () => {
   assert.equal(iphoneConnected.reject, undefined);
 });
 
-test("session state replaces the previous iphone connection", () => {
+test("session state tracks the latest iphone connection without forcing a replace close", () => {
   const macConnected = connectMac(createSessionSnapshot({ sessionId: "session-2" }), {
     connectionId: "mac-a",
   });
@@ -49,13 +49,58 @@ test("session state replaces the previous iphone connection", () => {
   });
 
   assert.equal(secondIphone.snapshot.iphoneConnectionId, "iphone-b");
-  assert.ok(
-    secondIphone.effects.some((effect) => (
-      effect.type === "close_role"
-      && effect.role === "iphone"
-      && effect.code === CLOSE_CODE_IPHONE_REPLACED
-    ))
-  );
+  assert.equal(secondIphone.effects.some((effect) => effect.type === "close_role"), false);
+});
+
+test("session state tracks the latest mac connection without forcing a replace close", () => {
+  const firstMac = connectMac(createSessionSnapshot({ sessionId: "session-mac-reconnect" }), {
+    connectionId: "mac-a",
+  });
+  const secondMac = connectMac(firstMac.snapshot, {
+    connectionId: "mac-b",
+  });
+
+  assert.equal(secondMac.snapshot.macConnectionId, "mac-b");
+  assert.equal(secondMac.effects.some((effect) => effect.type === "close_role"), false);
+});
+
+test("session state reconciles a missing mac socket into the absence window", () => {
+  const macConnected = connectMac(createSessionSnapshot({ sessionId: "session-reconcile-mac" }), {
+    connectionId: "mac-a",
+  });
+  const iphoneConnected = connectIphone(macConnected.snapshot, {
+    connectionId: "iphone-a",
+    now: 1_000,
+  });
+
+  const reconciled = reconcileSnapshotWithConnections(iphoneConnected.snapshot, {
+    macConnectionIds: [],
+    iphoneConnectionIds: ["iphone-a"],
+    now: 2_000,
+  });
+
+  assert.equal(reconciled.snapshot.macConnectionId, null);
+  assert.equal(reconciled.snapshot.iphoneConnectionId, "iphone-a");
+  assert.equal(reconciled.snapshot.macAbsenceDeadline, 2_000 + MAC_ABSENCE_GRACE_MS);
+});
+
+test("session state reconciles a missing iphone socket out of the snapshot", () => {
+  const macConnected = connectMac(createSessionSnapshot({ sessionId: "session-reconcile-iphone" }), {
+    connectionId: "mac-a",
+  });
+  const iphoneConnected = connectIphone(macConnected.snapshot, {
+    connectionId: "iphone-a",
+    now: 1_000,
+  });
+
+  const reconciled = reconcileSnapshotWithConnections(iphoneConnected.snapshot, {
+    macConnectionIds: ["mac-a"],
+    iphoneConnectionIds: [],
+    now: 2_000,
+  });
+
+  assert.equal(reconciled.snapshot.macConnectionId, "mac-a");
+  assert.equal(reconciled.snapshot.iphoneConnectionId, null);
 });
 
 test("session state enters a grace window when the mac disconnects", () => {
