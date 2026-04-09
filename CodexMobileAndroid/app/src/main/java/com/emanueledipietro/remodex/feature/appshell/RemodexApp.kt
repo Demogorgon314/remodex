@@ -112,7 +112,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.emanueledipietro.remodex.R
@@ -223,12 +222,12 @@ internal fun resolveShellTopBarTitleLayout(
 
 @Composable
 fun RemodexApp(
+    uiState: AppUiState,
     viewModel: AppViewModel,
     notificationManager: AndroidRemodexNotificationManager,
     pendingThreadDeepLinkId: String?,
     onThreadDeepLinkHandled: () -> Unit,
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var shellRoute by rememberSaveable { mutableStateOf(ShellRoute.CONTENT) }
     var isSidebarOpen by rememberSaveable { mutableStateOf(false) }
     var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }

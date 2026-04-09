@@ -30,6 +30,7 @@ data class RemodexSessionSnapshot(
     val supportsManagedWorktreeCreation: Boolean = true,
     val pendingApprovalRequest: RemodexApprovalRequest? = null,
     val threads: List<RemodexThreadSummary> = emptyList(),
+    val threadListSummaries: List<RemodexThreadSummary> = emptyList(),
     val selectedThreadId: String? = null,
     val selectedThreadSnapshot: RemodexThreadSummary? = null,
 ) {

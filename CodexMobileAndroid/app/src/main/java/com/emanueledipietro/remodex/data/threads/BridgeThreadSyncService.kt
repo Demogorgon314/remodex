@@ -956,6 +956,37 @@ class BridgeThreadSyncService(
         snapshot: ThreadSyncSnapshot,
     ): List<com.emanueledipietro.remodex.model.RemodexConversationItem> = timelineCache(snapshot).projectedItems
 
+    private val threadRecencyComparator =
+        compareByDescending<ThreadSyncSnapshot> { it.lastUpdatedEpochMs }
+            .thenBy(ThreadSyncSnapshot::id)
+
+    private fun mutateThreadSnapshot(
+        threadId: String,
+        resortByRecency: Boolean = false,
+        transform: (ThreadSyncSnapshot) -> ThreadSyncSnapshot,
+    ): ThreadSyncSnapshot? {
+        val currentThreads = backingThreads.value
+        val index = currentThreads.indexOfFirst { snapshot -> snapshot.id == threadId }
+        if (index < 0) {
+            return null
+        }
+
+        val nextSnapshot = transform(currentThreads[index]).withResolvedLiveThreadState(threadId = threadId)
+        val nextThreads = currentThreads.toMutableList()
+        if (resortByRecency) {
+            nextThreads.removeAt(index)
+            val insertAt = nextThreads.indexOfFirst { candidate ->
+                threadRecencyComparator.compare(nextSnapshot, candidate) < 0
+            }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: nextThreads.size
+            nextThreads.add(insertAt, nextSnapshot)
+        } else {
+            nextThreads[index] = nextSnapshot
+        }
+        backingThreads.value = nextThreads
+        rememberProjectPath(nextSnapshot.id, nextSnapshot.projectPath)
+        return nextSnapshot
+    }
+
     private fun upsertThreadSnapshot(refreshedSnapshot: ThreadSyncSnapshot) {
         val normalizedSnapshot = refreshedSnapshot.withResolvedLiveThreadState(
             threadId = refreshedSnapshot.id,
@@ -974,7 +1005,7 @@ class BridgeThreadSyncService(
         } else {
             currentThreads + normalizedSnapshot
         }
-        backingThreads.value = updatedThreads.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        backingThreads.value = updatedThreads.sortedWith(threadRecencyComparator)
     }
 
     private fun mergeThreadSnapshotResponse(
@@ -5799,19 +5830,15 @@ class BridgeThreadSyncService(
         isRunning: Boolean? = null,
     ) {
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id != threadId) {
-                snapshot
-            } else {
-                snapshot.copy(
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = isRunning,
-                )
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { snapshot ->
+            snapshot.copy(
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(
+                threadId = threadId,
+                isRunning = isRunning,
+            )
+        }
     }
 
     private fun appendTimelineMutation(
@@ -5820,35 +5847,31 @@ class BridgeThreadSyncService(
         isRunning: Boolean? = null,
     ) {
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id != threadId) {
-                snapshot
-            } else {
-                val baseTimelineItems = reducedTimelineItems(snapshot)
-                val nextMutations = snapshot.timelineMutations + mutation
-                val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, mutation)
-                if (reviewDebugThreadIds.contains(threadId)) {
-                    val projected = timelineCache(threadId = threadId, timelineItems = nextTimelineItems).projectedItems
-                    emitReviewDebugLog(
-                        "stage=timelineMutation threadId=$threadId mutation=${describeReviewDebugMutation(mutation)} projectedCount=${projected.size} lastProjected=${projected.lastOrNull()?.let(::describeReviewDebugItem).orEmpty()}",
-                    )
-                }
-                snapshot.copy(
-                    timelineMutations = nextMutations,
-                    timelineItems = nextTimelineItems,
-                    preview = if (mutationAffectsThreadPreview(mutation)) {
-                        derivePreview(nextTimelineItems, snapshot.preview)
-                    } else {
-                        snapshot.preview
-                    },
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = isRunning,
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { snapshot ->
+            val baseTimelineItems = reducedTimelineItems(snapshot)
+            val nextMutations = snapshot.timelineMutations + mutation
+            val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, mutation)
+            if (reviewDebugThreadIds.contains(threadId)) {
+                val projected = timelineCache(threadId = threadId, timelineItems = nextTimelineItems).projectedItems
+                emitReviewDebugLog(
+                    "stage=timelineMutation threadId=$threadId mutation=${describeReviewDebugMutation(mutation)} projectedCount=${projected.size} lastProjected=${projected.lastOrNull()?.let(::describeReviewDebugItem).orEmpty()}",
                 )
             }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+            snapshot.copy(
+                timelineMutations = nextMutations,
+                timelineItems = nextTimelineItems,
+                preview = if (mutationAffectsThreadPreview(mutation)) {
+                    derivePreview(nextTimelineItems, snapshot.preview)
+                } else {
+                    snapshot.preview
+                },
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(
+                threadId = threadId,
+                isRunning = isRunning,
+            )
+        }
         if (mutation is TimelineMutation.Complete) {
             clearAssistantStreamingTextBuffer(
                 threadId = threadId,
@@ -5875,41 +5898,37 @@ class BridgeThreadSyncService(
     ) {
         val now = nowEpochMs()
         val upsertMutation = TimelineMutation.Upsert(item)
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id != threadId) {
-                snapshot
-            } else {
-                val baseTimelineItems = reducedTimelineItems(snapshot)
-                val nextMutations = coalesceStreamingMessageMutations(
-                    mutations = snapshot.timelineMutations,
-                    item = item,
-                )
-                opportunisticallyPrimeAssistantTimelineCache(
-                    threadId = threadId,
-                    snapshot = snapshot,
-                    baseTimelineItems = baseTimelineItems,
-                    item = item,
-                )
-                val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, upsertMutation)
-                snapshot.copy(
-                    timelineMutations = nextMutations,
-                    timelineItems = nextTimelineItems,
-                    preview = if (mutationAffectsThreadPreview(upsertMutation)) {
-                        previewAfterAssistantUpsert(
-                            snapshot = snapshot,
-                            item = item,
-                        )
-                    } else {
-                        snapshot.preview
-                    },
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = isRunning,
-                )
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { snapshot ->
+            val baseTimelineItems = reducedTimelineItems(snapshot)
+            val nextMutations = coalesceStreamingMessageMutations(
+                mutations = snapshot.timelineMutations,
+                item = item,
+            )
+            opportunisticallyPrimeAssistantTimelineCache(
+                threadId = threadId,
+                snapshot = snapshot,
+                baseTimelineItems = baseTimelineItems,
+                item = item,
+            )
+            val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, upsertMutation)
+            snapshot.copy(
+                timelineMutations = nextMutations,
+                timelineItems = nextTimelineItems,
+                preview = if (mutationAffectsThreadPreview(upsertMutation)) {
+                    previewAfterAssistantUpsert(
+                        snapshot = snapshot,
+                        item = item,
+                    )
+                } else {
+                    snapshot.preview
+                },
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(
+                threadId = threadId,
+                isRunning = isRunning,
+            )
+        }
         if (!item.isStreaming) {
             clearLocallyCompletedAssistantStreamingMessage(
                 threadId = threadId,
@@ -5961,32 +5980,28 @@ class BridgeThreadSyncService(
     ) {
         val now = nowEpochMs()
         val upsertMutation = TimelineMutation.Upsert(item)
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id != threadId) {
-                snapshot
-            } else {
-                val baseTimelineItems = reducedTimelineItems(snapshot)
-                val nextMutations = coalesceStreamingMessageMutations(
-                    mutations = snapshot.timelineMutations,
-                    item = item,
-                )
-                val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, upsertMutation)
-                snapshot.copy(
-                    timelineMutations = nextMutations,
-                    timelineItems = nextTimelineItems,
-                    preview = if (mutationAffectsThreadPreview(upsertMutation)) {
-                        derivePreview(nextTimelineItems, snapshot.preview)
-                    } else {
-                        snapshot.preview
-                    },
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = isRunning,
-                )
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { snapshot ->
+            val baseTimelineItems = reducedTimelineItems(snapshot)
+            val nextMutations = coalesceStreamingMessageMutations(
+                mutations = snapshot.timelineMutations,
+                item = item,
+            )
+            val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, upsertMutation)
+            snapshot.copy(
+                timelineMutations = nextMutations,
+                timelineItems = nextTimelineItems,
+                preview = if (mutationAffectsThreadPreview(upsertMutation)) {
+                    derivePreview(nextTimelineItems, snapshot.preview)
+                } else {
+                    snapshot.preview
+                },
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(
+                threadId = threadId,
+                isRunning = isRunning,
+            )
+        }
     }
 
     private fun coalesceStreamingMessageMutations(
@@ -6774,22 +6789,18 @@ class BridgeThreadSyncService(
             return
         }
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { existing ->
-            if (existing.id != threadId) {
-                existing
-            } else {
-                val nextTimelineItems = applyTimelineMutations(
-                    items = reducedTimelineItems(existing),
-                    mutations = completionMutations,
-                )
-                existing.copy(
-                    timelineMutations = existing.timelineMutations + completionMutations,
-                    timelineItems = nextTimelineItems,
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(threadId = threadId)
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
+            val nextTimelineItems = applyTimelineMutations(
+                items = reducedTimelineItems(existing),
+                mutations = completionMutations,
+            )
+            existing.copy(
+                timelineMutations = existing.timelineMutations + completionMutations,
+                timelineItems = nextTimelineItems,
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(threadId = threadId)
+        }
         clearAssistantStreamingTextBuffers(
             threadId = threadId,
             messageIds = completionItems.map(com.emanueledipietro.remodex.model.RemodexConversationItem::id),
@@ -6827,22 +6838,18 @@ class BridgeThreadSyncService(
             return
         }
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { existing ->
-            if (existing.id != threadId) {
-                existing
-            } else {
-                val nextTimelineItems = applyTimelineMutations(
-                    items = reducedTimelineItems(existing),
-                    mutations = finalizedMutations,
-                )
-                existing.copy(
-                    timelineMutations = existing.timelineMutations + finalizedMutations,
-                    timelineItems = nextTimelineItems,
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(threadId = threadId)
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
+            val nextTimelineItems = applyTimelineMutations(
+                items = reducedTimelineItems(existing),
+                mutations = finalizedMutations,
+            )
+            existing.copy(
+                timelineMutations = existing.timelineMutations + finalizedMutations,
+                timelineItems = nextTimelineItems,
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(threadId = threadId)
+        }
     }
 
     private fun finalizeAssistantChangeSet(
@@ -7083,22 +7090,18 @@ class BridgeThreadSyncService(
             }
         }
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { existing ->
-            if (existing.id != threadId) {
-                existing
-            } else {
-                val nextTimelineItems = reducedTimelineItems(existing).filterNot { item ->
-                    item.id == targetItem.id
-                }
-                existing.copy(
-                    timelineMutations = nextMutations,
-                    timelineItems = nextTimelineItems,
-                    preview = derivePreview(nextTimelineItems, existing.preview),
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(threadId = threadId)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
+            val nextTimelineItems = reducedTimelineItems(existing).filterNot { item ->
+                item.id == targetItem.id
             }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+            existing.copy(
+                timelineMutations = nextMutations,
+                timelineItems = nextTimelineItems,
+                preview = derivePreview(nextTimelineItems, existing.preview),
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(threadId = threadId)
+        }
     }
 
     private fun markLatestPendingUserMessageFailed(
@@ -7172,22 +7175,18 @@ class BridgeThreadSyncService(
             return
         }
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { existing ->
-            if (existing.id != threadId) {
-                existing
-            } else {
-                val nextTimelineItems = reducedTimelineItems(existing).filterNot { item ->
-                    item.id == messageId
-                }
-                existing.copy(
-                    timelineMutations = nextMutations,
-                    timelineItems = nextTimelineItems,
-                    preview = derivePreview(nextTimelineItems, existing.preview),
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(threadId = threadId)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
+            val nextTimelineItems = reducedTimelineItems(existing).filterNot { item ->
+                item.id == messageId
             }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+            existing.copy(
+                timelineMutations = nextMutations,
+                timelineItems = nextTimelineItems,
+                preview = derivePreview(nextTimelineItems, existing.preview),
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(threadId = threadId)
+        }
     }
 
     private fun completeStreamingItemsForThread(
@@ -7226,22 +7225,18 @@ class BridgeThreadSyncService(
             return
         }
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { existing ->
-            if (existing.id != threadId) {
-                existing
-            } else {
-                val nextTimelineItems = applyTimelineMutations(
-                    items = reducedTimelineItems(existing),
-                    mutations = completionMutations,
-                )
-                existing.copy(
-                    timelineMutations = existing.timelineMutations + completionMutations,
-                    timelineItems = nextTimelineItems,
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                ).withResolvedLiveThreadState(threadId = threadId)
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
+            val nextTimelineItems = applyTimelineMutations(
+                items = reducedTimelineItems(existing),
+                mutations = completionMutations,
+            )
+            existing.copy(
+                timelineMutations = existing.timelineMutations + completionMutations,
+                timelineItems = nextTimelineItems,
+                lastUpdatedEpochMs = now,
+                lastUpdatedLabel = relativeUpdatedLabel(now),
+            ).withResolvedLiveThreadState(threadId = threadId)
+        }
         clearAssistantStreamingTextBuffers(
             threadId = threadId,
             messageIds = completionItems

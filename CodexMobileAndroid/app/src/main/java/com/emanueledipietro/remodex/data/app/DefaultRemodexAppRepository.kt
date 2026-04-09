@@ -221,6 +221,7 @@ class DefaultRemodexAppRepository(
             availableModels = threadSyncService.availableModels.value,
             pendingApprovalRequest = threadSyncService.pendingApprovalRequest.value,
             threads = initialBaseThreads,
+            threadListSummaries = projectThreadListSummaries(initialBaseThreads),
             selectedThreadId = initialSelectedThread?.id,
             selectedThreadSnapshot = initialSelectedThread,
         ),
@@ -464,6 +465,10 @@ class DefaultRemodexAppRepository(
                 )
                 cancelPendingThreadListPublish()
                 sessionState.update { snapshot ->
+                    val threadListSummaries = projectThreadListSummaries(
+                        threads = threads,
+                        previous = snapshot.threadListSummaries,
+                    )
                     snapshot.copy(
                         onboardingCompleted = preferences.onboardingCompleted,
                         connectionStatus = secureConnection.toConnectionStatus(),
@@ -484,6 +489,7 @@ class DefaultRemodexAppRepository(
                         supportsManagedWorktreeCreation = inputs.supportsManagedWorktreeCreation,
                         pendingApprovalRequest = inputs.pendingApprovalRequest,
                         threads = threads,
+                        threadListSummaries = threadListSummaries,
                         selectedThreadId = selectedThreadId,
                         selectedThreadSnapshot = selectedThreadSnapshot,
                         notificationRegistration = inputs.notificationRegistration,
@@ -2567,6 +2573,7 @@ class DefaultRemodexAppRepository(
             snapshot.copy(
                 availableModels = resolveAvailableModels(emptyList()),
                 threads = emptyList(),
+                threadListSummaries = emptyList(),
                 selectedThreadId = null,
                 selectedThreadSnapshot = null,
             )
@@ -3204,6 +3211,10 @@ class DefaultRemodexAppRepository(
             availableModels = availableModels,
         )
         val currentSessionSnapshot = sessionState.value
+        val threadListSummaries = projectThreadListSummaries(
+            threads = threads,
+            previous = currentSessionSnapshot.threadListSummaries,
+        )
         val previousSessionSelectedThreadId = currentSessionSnapshot.selectedThreadId
         val previousSelectedThreadSnapshot = currentSessionSnapshot.selectedThreadSnapshot
         val inMemorySelectedThreadId = preferredSelectedThreadId.get()
@@ -3252,6 +3263,7 @@ class DefaultRemodexAppRepository(
                     },
                 ),
                 threads = threads,
+                threadListSummaries = threadListSummaries,
                 selectedThreadId = selectedThreadId,
                 selectedThreadSnapshot = nextSelectedThreadSnapshot,
                 notificationRegistration = notificationRegistration,
@@ -3536,6 +3548,52 @@ private fun materializeThreads(
                 availableModels = availableModels,
             )
         }
+}
+
+private fun projectThreadListSummaries(
+    threads: List<RemodexThreadSummary>,
+    previous: List<RemodexThreadSummary> = emptyList(),
+): List<RemodexThreadSummary> {
+    val previousById = previous.associateBy(RemodexThreadSummary::id)
+    return threads.map { thread ->
+        previousById[thread.id]?.takeIf { summary ->
+            summary.matchesThreadListSummary(thread)
+        } ?: thread.toThreadListSummary()
+    }
+}
+
+private fun RemodexThreadSummary.toThreadListSummary(): RemodexThreadSummary {
+    return if (messages.isEmpty()) {
+        this
+    } else {
+        copy(messages = emptyList())
+    }
+}
+
+private fun RemodexThreadSummary.matchesThreadListSummary(
+    source: RemodexThreadSummary,
+): Boolean {
+    return id == source.id &&
+        title == source.title &&
+        name == source.name &&
+        preview == source.preview &&
+        projectPath == source.projectPath &&
+        lastUpdatedLabel == source.lastUpdatedLabel &&
+        lastUpdatedEpochMs == source.lastUpdatedEpochMs &&
+        isRunning == source.isRunning &&
+        isWaitingOnApproval == source.isWaitingOnApproval &&
+        syncState == source.syncState &&
+        parentThreadId == source.parentThreadId &&
+        agentNickname == source.agentNickname &&
+        agentRole == source.agentRole &&
+        activeTurnId == source.activeTurnId &&
+        latestTurnTerminalState == source.latestTurnTerminalState &&
+        stoppedTurnIds == source.stoppedTurnIds &&
+        queuedDrafts == source.queuedDrafts &&
+        queuedDraftItems == source.queuedDraftItems &&
+        runtimeLabel == source.runtimeLabel &&
+        runtimeConfig == source.runtimeConfig &&
+        messages.isEmpty()
 }
 
 private fun RemodexThreadSummary.applyAssociatedManagedWorktreePreference(

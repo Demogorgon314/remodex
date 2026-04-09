@@ -252,6 +252,110 @@ class SidebarThreadGroupingTest {
         )
     }
 
+    @Test
+    fun `row builder keeps collapsed project to a single header row`() {
+        val group = SidebarThreadGroup(
+            id = "project:/tmp/app",
+            label = "app",
+            kind = SidebarThreadGroupKind.PROJECT,
+            projectPath = "/tmp/app",
+            threads = listOf(
+                thread(id = "parent", title = "Parent", projectPath = "/tmp/app", lastUpdatedEpochMs = 2),
+                thread(id = "child", title = "Child", projectPath = "/tmp/app", lastUpdatedEpochMs = 1)
+                    .copy(parentThreadId = "parent"),
+            ),
+        )
+
+        val rows = SidebarRowsBuilder.buildRows(
+            groups = listOf(group),
+            selectedThreadId = null,
+            isFiltering = false,
+            expandedProjectIds = emptySet(),
+            revealedProjectGroupIds = emptySet(),
+            expandedSubagentParentIds = emptySet(),
+            canCreateThread = true,
+            isCreatingThread = false,
+            archivedExpanded = false,
+        )
+
+        assertEquals(1, rows.size)
+        assertTrue(rows.single() is ProjectHeaderSidebarRow)
+    }
+
+    @Test
+    fun `row builder flattens expanded project threads with subagent depth`() {
+        val group = SidebarThreadGroup(
+            id = "project:/tmp/app",
+            label = "app",
+            kind = SidebarThreadGroupKind.PROJECT,
+            projectPath = "/tmp/app",
+            threads = listOf(
+                thread(id = "parent", title = "Parent", projectPath = "/tmp/app", lastUpdatedEpochMs = 2),
+                thread(id = "child", title = "Child", projectPath = "/tmp/app", lastUpdatedEpochMs = 1)
+                    .copy(parentThreadId = "parent"),
+            ),
+        )
+
+        val rows = SidebarRowsBuilder.buildRows(
+            groups = listOf(group),
+            selectedThreadId = "child",
+            isFiltering = false,
+            expandedProjectIds = setOf(group.id),
+            revealedProjectGroupIds = emptySet(),
+            expandedSubagentParentIds = setOf("parent"),
+            canCreateThread = true,
+            isCreatingThread = false,
+            archivedExpanded = false,
+        )
+
+        assertEquals(
+            listOf(
+                ProjectHeaderSidebarRow::class.java,
+                ThreadSidebarRow::class.java,
+                ThreadSidebarRow::class.java,
+            ),
+            rows.map(Any::javaClass),
+        )
+        val threadRows = rows.filterIsInstance<ThreadSidebarRow>()
+        assertEquals(listOf("parent", "child"), threadRows.map { row -> row.thread.id })
+        assertEquals(listOf(0, 1), threadRows.map(ThreadSidebarRow::depth))
+        assertTrue(threadRows.last().isSelected)
+    }
+
+    @Test
+    fun `row builder appends show more row when project preview is capped`() {
+        val group = SidebarThreadGroup(
+            id = "project:/tmp/app",
+            label = "app",
+            kind = SidebarThreadGroupKind.PROJECT,
+            projectPath = "/tmp/app",
+            threads = (0 until 12).map { index ->
+                thread(
+                    id = "thread-$index",
+                    title = "Conversation $index",
+                    projectPath = "/tmp/app",
+                    lastUpdatedEpochMs = (12 - index).toLong(),
+                )
+            },
+        )
+
+        val rows = SidebarRowsBuilder.buildRows(
+            groups = listOf(group),
+            selectedThreadId = null,
+            isFiltering = false,
+            expandedProjectIds = setOf(group.id),
+            revealedProjectGroupIds = emptySet(),
+            expandedSubagentParentIds = emptySet(),
+            canCreateThread = true,
+            isCreatingThread = false,
+            archivedExpanded = false,
+        )
+
+        assertEquals(10, rows.filterIsInstance<ThreadSidebarRow>().size)
+        assertEquals(1, rows.filterIsInstance<ProjectShowMoreSidebarRow>().size)
+        assertEquals(2, rows.filterIsInstance<ProjectShowMoreSidebarRow>().single().hiddenCount)
+    }
+
     private fun thread(
         id: String,
         title: String,

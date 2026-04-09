@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -109,6 +110,47 @@ private data class DeleteManagedWorktreePromptState(
     val isPresented: Boolean = false,
 )
 
+internal sealed interface SidebarRowModel {
+    val key: String
+    val contentType: String
+}
+
+internal data class ProjectHeaderSidebarRow(
+    val group: SidebarThreadGroup,
+    val canCreateThread: Boolean,
+    val isCreatingThread: Boolean,
+) : SidebarRowModel {
+    override val key: String = "project-header:${group.id}"
+    override val contentType: String = "project_header"
+}
+
+internal data class ArchivedHeaderSidebarRow(
+    val group: SidebarThreadGroup,
+    val isExpanded: Boolean,
+) : SidebarRowModel {
+    override val key: String = "archived-header:${group.id}"
+    override val contentType: String = "archived_header"
+}
+
+internal data class ThreadSidebarRow(
+    val thread: RemodexThreadSummary,
+    val depth: Int,
+    val isSelected: Boolean,
+    val hasChildren: Boolean,
+    val isExpanded: Boolean,
+) : SidebarRowModel {
+    override val key: String = "thread:${thread.id}"
+    override val contentType: String = "thread"
+}
+
+internal data class ProjectShowMoreSidebarRow(
+    val groupId: String,
+    val hiddenCount: Int,
+) : SidebarRowModel {
+    override val key: String = "project-show-more:$groupId"
+    override val contentType: String = "project_show_more"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ThreadsScreen(
@@ -176,6 +218,44 @@ fun ThreadsScreen(
             selectedThreadId = selectedThreadId,
         )
     }
+    val visibleRows = remember(
+        groups,
+        selectedThreadId,
+        searchText,
+        expandedProjectIds,
+        revealedProjectGroupIds,
+        expandedSubagentParentIds,
+        uiState.canCreateThread,
+        uiState.isCreatingThread,
+        archivedExpanded,
+    ) {
+        SidebarRowsBuilder.buildRows(
+            groups = groups,
+            selectedThreadId = selectedThreadId,
+            isFiltering = searchText.isNotBlank(),
+            expandedProjectIds = expandedProjectIds,
+            revealedProjectGroupIds = revealedProjectGroupIds,
+            expandedSubagentParentIds = expandedSubagentParentIds,
+            canCreateThread = uiState.canCreateThread,
+            isCreatingThread = uiState.isCreatingThread,
+            archivedExpanded = archivedExpanded,
+        )
+    }
+    val toggleSubagentExpansion: (String) -> Unit = { threadId ->
+        expandedSubagentParentIds = expandedSubagentParentIds.toMutableSet().apply {
+            if (!add(threadId)) {
+                remove(threadId)
+            }
+        }
+    }
+    val presentRenamePrompt: (String, String) -> Unit = { threadId, currentTitle ->
+        renamePromptState = ThreadRenamePromptState(
+            threadId = threadId,
+            currentTitle = currentTitle,
+            draftTitle = currentTitle,
+            isPresented = true,
+        )
+    }
 
     LaunchedEffect(projectGroupIds, uiState.collapsedProjectGroupIds) {
         val snapshot = SidebarProjectExpansionState.synchronizedState(
@@ -237,97 +317,80 @@ fun ThreadsScreen(
                         )
                     }
                 } else {
-                    groups.forEach { group ->
-                        item(key = group.id) {
-                            when (group.kind) {
-                                SidebarThreadGroupKind.PROJECT -> {
-                                    ProjectGroupSection(
-                                        group = group,
-                                        selectedThreadId = selectedThreadId,
-                                        expanded = expandedProjectIds.contains(group.id),
-                                        isFiltering = searchText.isNotBlank(),
-                                        manuallyExpanded = revealedProjectGroupIds.contains(group.id),
-                                        expandedSubagentParentIds = expandedSubagentParentIds,
-                                        onToggleExpanded = {
-                                            val isCurrentlyExpanded = group.id in expandedProjectIds
-                                            expandedProjectIds = expandedProjectIds.toMutableSet().apply {
-                                                if (isCurrentlyExpanded) {
-                                                    remove(group.id)
-                                                } else {
-                                                    add(group.id)
-                                                }
-                                            }
+                    items(
+                        items = visibleRows,
+                        key = SidebarRowModel::key,
+                        contentType = SidebarRowModel::contentType,
+                    ) { row ->
+                        when (row) {
+                            is ProjectHeaderSidebarRow -> {
+                                ProjectHeaderRow(
+                                    group = row.group,
+                                    canCreateThread = row.canCreateThread,
+                                    isCreatingThread = row.isCreatingThread,
+                                    onToggleExpanded = {
+                                        val isCurrentlyExpanded = row.group.id in expandedProjectIds
+                                        expandedProjectIds = expandedProjectIds.toMutableSet().apply {
                                             if (isCurrentlyExpanded) {
-                                                revealedProjectGroupIds = revealedProjectGroupIds - group.id
+                                                remove(row.group.id)
+                                            } else {
+                                                add(row.group.id)
                                             }
-                                            onSetProjectGroupCollapsed(group.id, isCurrentlyExpanded)
-                                        },
-                                        onToggleSubagentExpansion = { threadId ->
-                                            expandedSubagentParentIds = expandedSubagentParentIds.toMutableSet().apply {
-                                                if (!add(threadId)) {
-                                                    remove(threadId)
-                                                }
-                                            }
-                                        },
-                                        onRevealAll = {
-                                            revealedProjectGroupIds = revealedProjectGroupIds + group.id
-                                        },
-                                        canCreateThread = uiState.canCreateThread,
-                                        isCreatingThread = uiState.isCreatingThread,
-                                        onCreateThread = { onCreateThread(group.projectPath) },
-                                        onArchiveProject = {
-                                            group.projectPath?.let(onArchiveProject)
-                                        },
-                                        onDeleteManagedWorktreeProject = { projectPath, projectLabel ->
-                                            deleteManagedWorktreePromptState = DeleteManagedWorktreePromptState(
-                                                projectPath = projectPath,
-                                                projectLabel = projectLabel,
-                                                isPresented = true,
-                                            )
-                                        },
-                                        onSelectThread = onSelectThread,
-                                        onRenameThread = { threadId, currentTitle ->
-                                            renamePromptState = ThreadRenamePromptState(
-                                                threadId = threadId,
-                                                currentTitle = currentTitle,
-                                                draftTitle = currentTitle,
-                                                isPresented = true,
-                                            )
-                                        },
-                                        onArchiveThread = onArchiveThread,
-                                        onUnarchiveThread = onUnarchiveThread,
-                                        onDeleteThread = onDeleteThread,
-                                    )
-                                }
+                                        }
+                                        if (isCurrentlyExpanded) {
+                                            revealedProjectGroupIds = revealedProjectGroupIds - row.group.id
+                                        }
+                                        onSetProjectGroupCollapsed(row.group.id, isCurrentlyExpanded)
+                                    },
+                                    onCreateThread = { onCreateThread(row.group.projectPath) },
+                                    onArchiveProject = {
+                                        row.group.projectPath?.let(onArchiveProject)
+                                    },
+                                    onDeleteManagedWorktreeProject = { projectPath, projectLabel ->
+                                        deleteManagedWorktreePromptState = DeleteManagedWorktreePromptState(
+                                            projectPath = projectPath,
+                                            projectLabel = projectLabel,
+                                            isPresented = true,
+                                        )
+                                    },
+                                )
+                            }
 
-                                SidebarThreadGroupKind.ARCHIVED -> {
-                                    ArchivedSection(
-                                        group = group,
-                                        selectedThreadId = selectedThreadId,
-                                        archivedExpanded = archivedExpanded,
-                                        expandedSubagentParentIds = expandedSubagentParentIds,
-                                        onArchivedExpandedChange = { archivedExpanded = it },
-                                        onToggleSubagentExpansion = { threadId ->
-                                            expandedSubagentParentIds = expandedSubagentParentIds.toMutableSet().apply {
-                                                if (!add(threadId)) {
-                                                    remove(threadId)
-                                                }
-                                            }
-                                        },
-                                        onSelectThread = onSelectThread,
-                                        onRenameThread = { threadId, currentTitle ->
-                                            renamePromptState = ThreadRenamePromptState(
-                                                threadId = threadId,
-                                                currentTitle = currentTitle,
-                                                draftTitle = currentTitle,
-                                                isPresented = true,
-                                            )
-                                        },
-                                        onArchiveThread = onArchiveThread,
-                                        onUnarchiveThread = onUnarchiveThread,
-                                        onDeleteThread = onDeleteThread,
-                                    )
-                                }
+                            is ArchivedHeaderSidebarRow -> {
+                                ArchivedHeaderRow(
+                                    group = row.group,
+                                    archivedExpanded = row.isExpanded,
+                                    onArchivedExpandedChange = { archivedExpanded = it },
+                                )
+                            }
+
+                            is ThreadSidebarRow -> {
+                                ThreadRow(
+                                    thread = row.thread,
+                                    isSelected = row.isSelected,
+                                    depth = row.depth,
+                                    hasChildren = row.hasChildren,
+                                    isExpanded = row.isExpanded,
+                                    onToggleExpanded = if (row.hasChildren) {
+                                        { toggleSubagentExpansion(row.thread.id) }
+                                    } else {
+                                        null
+                                    },
+                                    onSelectThread = { onSelectThread(row.thread.id) },
+                                    onRenameThread = presentRenamePrompt,
+                                    onArchiveThread = { onArchiveThread(row.thread.id) },
+                                    onUnarchiveThread = { onUnarchiveThread(row.thread.id) },
+                                    onDeleteThread = { onDeleteThread(row.thread.id) },
+                                )
+                            }
+
+                            is ProjectShowMoreSidebarRow -> {
+                                ShowMoreButton(
+                                    hiddenCount = row.hiddenCount,
+                                    onRevealAll = {
+                                        revealedProjectGroupIds = revealedProjectGroupIds + row.groupId
+                                    },
+                                )
                             }
                         }
                     }
@@ -911,145 +974,80 @@ private fun SidebarSearchField(
 }
 
 @Composable
-private fun ProjectGroupSection(
+private fun ProjectHeaderRow(
     group: SidebarThreadGroup,
-    selectedThreadId: String?,
-    expanded: Boolean,
-    isFiltering: Boolean,
-    manuallyExpanded: Boolean,
-    expandedSubagentParentIds: Set<String>,
     canCreateThread: Boolean,
     isCreatingThread: Boolean,
     onToggleExpanded: () -> Unit,
-    onToggleSubagentExpansion: (String) -> Unit,
-    onRevealAll: () -> Unit,
     onCreateThread: () -> Unit,
     onArchiveProject: () -> Unit,
     onDeleteManagedWorktreeProject: (String, String) -> Unit,
-    onSelectThread: (String) -> Unit,
-    onRenameThread: (String, String) -> Unit,
-    onArchiveThread: (String) -> Unit,
-    onUnarchiveThread: (String) -> Unit,
-    onDeleteThread: (String) -> Unit,
 ) {
-    val visibleRoots = remember(group.threads, selectedThreadId, isFiltering, manuallyExpanded) {
-        SidebarProjectThreadPreviewState.visibleRootThreads(
-            group = group,
-            selectedThreadId = selectedThreadId,
-            isFiltering = isFiltering,
-            manuallyExpanded = manuallyExpanded,
-        )
-    }
-    val shouldShowMoreButton = remember(group.threads, selectedThreadId, isFiltering, manuallyExpanded) {
-        SidebarProjectThreadPreviewState.shouldShowMoreButton(
-            group = group,
-            selectedThreadId = selectedThreadId,
-            isFiltering = isFiltering,
-            manuallyExpanded = manuallyExpanded,
-        )
-    }
-    val childrenByParentId = remember(group.threads) {
-        group.threads
-            .filter { thread -> !thread.parentThreadId.isNullOrBlank() }
-            .groupBy { thread -> thread.parentThreadId.orEmpty() }
-    }
     var projectMenuExpanded by remember(group.id) { mutableStateOf(false) }
     val managedWorktreeProjectPath = remember(group.projectPath) {
         group.projectPath?.takeIf(::isCodexManagedWorktreeProject)
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 12.dp, top = 18.dp, bottom = 10.dp),
     ) {
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 12.dp, top = 18.dp, bottom = 10.dp),
+                .padding(end = 52.dp)
+                .combinedClickable(
+                    role = Role.Button,
+                    onClick = onToggleExpanded,
+                    onLongClick = { projectMenuExpanded = true },
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(end = 52.dp)
-                    .combinedClickable(
-                        role = Role.Button,
-                        onClick = onToggleExpanded,
-                        onLongClick = { projectMenuExpanded = true },
-                    ),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = sidebarSymbolImageVector(group.iconSystemName),
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = group.label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            ProjectHeaderActionButton(
-                icon = Icons.Outlined.Add,
-                contentDescription = "New conversation in ${group.label}",
-                enabled = canCreateThread && !isCreatingThread,
-                isLoading = isCreatingThread,
-                onClick = onCreateThread,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .testTag("$SidebarProjectNewChatButtonTagPrefix${group.label}"),
+            Icon(
+                imageVector = sidebarSymbolImageVector(group.iconSystemName),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
             )
-
-            DropdownMenu(
-                expanded = projectMenuExpanded,
-                onDismissRequest = { projectMenuExpanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text("Archive Project") },
-                    onClick = {
-                        projectMenuExpanded = false
-                        onArchiveProject()
-                    },
-                )
-                managedWorktreeProjectPath?.let { projectPath ->
-                    DropdownMenuItem(
-                        text = { Text("Delete Worktree") },
-                        onClick = {
-                            projectMenuExpanded = false
-                            onDeleteManagedWorktreeProject(projectPath, group.label)
-                        },
-                    )
-                }
-            }
+            Text(
+                text = group.label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
 
-        if (expanded) {
-            visibleRoots.forEach { thread ->
-                ThreadTreeRow(
-                    thread = thread,
-                    selectedThreadId = selectedThreadId,
-                    depth = 0,
-                    childrenByParentId = childrenByParentId,
-                    expandedSubagentParentIds = expandedSubagentParentIds,
-                    onToggleSubagentExpansion = onToggleSubagentExpansion,
-                    onSelectThread = onSelectThread,
-                    onRenameThread = onRenameThread,
-                    onArchiveThread = onArchiveThread,
-                    onUnarchiveThread = onUnarchiveThread,
-                    onDeleteThread = onDeleteThread,
-                )
-            }
+        ProjectHeaderActionButton(
+            icon = Icons.Outlined.Add,
+            contentDescription = "New conversation in ${group.label}",
+            enabled = canCreateThread && !isCreatingThread,
+            isLoading = isCreatingThread,
+            onClick = onCreateThread,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .testTag("$SidebarProjectNewChatButtonTagPrefix${group.label}"),
+        )
 
-            if (shouldShowMoreButton) {
-                ShowMoreButton(
-                    hiddenCount = SidebarProjectThreadPreviewState.hiddenRootThreadCount(
-                        group = group,
-                        selectedThreadId = selectedThreadId,
-                    ),
-                    onRevealAll = onRevealAll,
+        DropdownMenu(
+            expanded = projectMenuExpanded,
+            onDismissRequest = { projectMenuExpanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("Archive Project") },
+                onClick = {
+                    projectMenuExpanded = false
+                    onArchiveProject()
+                },
+            )
+            managedWorktreeProjectPath?.let { projectPath ->
+                DropdownMenuItem(
+                    text = { Text("Delete Worktree") },
+                    onClick = {
+                        projectMenuExpanded = false
+                        onDeleteManagedWorktreeProject(projectPath, group.label)
+                    },
                 )
             }
         }
@@ -1118,75 +1116,39 @@ private fun ShowMoreButton(
 }
 
 @Composable
-private fun ArchivedSection(
+private fun ArchivedHeaderRow(
     group: SidebarThreadGroup,
-    selectedThreadId: String?,
     archivedExpanded: Boolean,
-    expandedSubagentParentIds: Set<String>,
     onArchivedExpandedChange: (Boolean) -> Unit,
-    onToggleSubagentExpansion: (String) -> Unit,
-    onSelectThread: (String) -> Unit,
-    onRenameThread: (String, String) -> Unit,
-    onArchiveThread: (String) -> Unit,
-    onUnarchiveThread: (String) -> Unit,
-    onDeleteThread: (String) -> Unit,
 ) {
-    val childrenByParentId = remember(group.threads) {
-        group.threads
-            .filter { thread -> !thread.parentThreadId.isNullOrBlank() }
-            .groupBy { thread -> thread.parentThreadId.orEmpty() }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                role = Role.Button,
+                onClick = { onArchivedExpandedChange(!archivedExpanded) },
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    role = Role.Button,
-                    onClick = { onArchivedExpandedChange(!archivedExpanded) },
-                )
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                imageVector = sidebarSymbolImageVector(group.iconSystemName),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = group.label,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                imageVector = Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.alpha(if (archivedExpanded) 1f else 0.8f),
-            )
-        }
-
-        if (archivedExpanded) {
-            rootThreads(group.threads).forEach { thread ->
-                ThreadTreeRow(
-                    thread = thread,
-                    selectedThreadId = selectedThreadId,
-                    depth = 0,
-                    childrenByParentId = childrenByParentId,
-                    expandedSubagentParentIds = expandedSubagentParentIds,
-                    onToggleSubagentExpansion = onToggleSubagentExpansion,
-                    onSelectThread = onSelectThread,
-                    onRenameThread = onRenameThread,
-                    onArchiveThread = onArchiveThread,
-                    onUnarchiveThread = onUnarchiveThread,
-                    onDeleteThread = onDeleteThread,
-                )
-            }
-        }
+        Icon(
+            imageVector = sidebarSymbolImageVector(group.iconSystemName),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = group.label,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            imageVector = Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.alpha(if (archivedExpanded) 1f else 0.8f),
+        )
     }
 }
 
@@ -1657,6 +1619,134 @@ private fun rootThreads(threads: List<RemodexThreadSummary>): List<RemodexThread
     return threads.filter { thread ->
         thread.parentThreadId.isNullOrBlank() || thread.parentThreadId !in ids
     }
+}
+
+internal object SidebarRowsBuilder {
+    fun buildRows(
+        groups: List<SidebarThreadGroup>,
+        selectedThreadId: String?,
+        isFiltering: Boolean,
+        expandedProjectIds: Set<String>,
+        revealedProjectGroupIds: Set<String>,
+        expandedSubagentParentIds: Set<String>,
+        canCreateThread: Boolean,
+        isCreatingThread: Boolean,
+        archivedExpanded: Boolean,
+    ): List<SidebarRowModel> {
+        return buildList {
+            groups.forEach { group ->
+                when (group.kind) {
+                    SidebarThreadGroupKind.PROJECT -> {
+                        add(
+                            ProjectHeaderSidebarRow(
+                                group = group,
+                                canCreateThread = canCreateThread,
+                                isCreatingThread = isCreatingThread,
+                            ),
+                        )
+                        if (group.id !in expandedProjectIds) {
+                            return@forEach
+                        }
+
+                        val visibleRoots = SidebarProjectThreadPreviewState.visibleRootThreads(
+                            group = group,
+                            selectedThreadId = selectedThreadId,
+                            isFiltering = isFiltering,
+                            manuallyExpanded = group.id in revealedProjectGroupIds,
+                        )
+                        val childrenByParentId = group.threads.childThreadsByParentId()
+                        visibleRoots.forEach { thread ->
+                            appendThreadRows(
+                                thread = thread,
+                                depth = 0,
+                                selectedThreadId = selectedThreadId,
+                                childrenByParentId = childrenByParentId,
+                                expandedSubagentParentIds = expandedSubagentParentIds,
+                            )
+                        }
+                        if (
+                            SidebarProjectThreadPreviewState.shouldShowMoreButton(
+                                group = group,
+                                selectedThreadId = selectedThreadId,
+                                isFiltering = isFiltering,
+                                manuallyExpanded = group.id in revealedProjectGroupIds,
+                            )
+                        ) {
+                            add(
+                                ProjectShowMoreSidebarRow(
+                                    groupId = group.id,
+                                    hiddenCount = SidebarProjectThreadPreviewState.hiddenRootThreadCount(
+                                        group = group,
+                                        selectedThreadId = selectedThreadId,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+
+                    SidebarThreadGroupKind.ARCHIVED -> {
+                        add(
+                            ArchivedHeaderSidebarRow(
+                                group = group,
+                                isExpanded = archivedExpanded,
+                            ),
+                        )
+                        if (!archivedExpanded) {
+                            return@forEach
+                        }
+
+                        val childrenByParentId = group.threads.childThreadsByParentId()
+                        rootThreads(group.threads).forEach { thread ->
+                            appendThreadRows(
+                                thread = thread,
+                                depth = 0,
+                                selectedThreadId = selectedThreadId,
+                                childrenByParentId = childrenByParentId,
+                                expandedSubagentParentIds = expandedSubagentParentIds,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun MutableList<SidebarRowModel>.appendThreadRows(
+        thread: RemodexThreadSummary,
+        depth: Int,
+        selectedThreadId: String?,
+        childrenByParentId: Map<String, List<RemodexThreadSummary>>,
+        expandedSubagentParentIds: Set<String>,
+    ) {
+        val childThreads = childrenByParentId[thread.id].orEmpty()
+        val isExpanded = thread.id in expandedSubagentParentIds
+        add(
+            ThreadSidebarRow(
+                thread = thread,
+                depth = depth,
+                isSelected = selectedThreadId == thread.id,
+                hasChildren = childThreads.isNotEmpty(),
+                isExpanded = isExpanded,
+            ),
+        )
+        if (!isExpanded) {
+            return
+        }
+        childThreads.forEach { child ->
+            appendThreadRows(
+                thread = child,
+                depth = depth + 1,
+                selectedThreadId = selectedThreadId,
+                childrenByParentId = childrenByParentId,
+                expandedSubagentParentIds = expandedSubagentParentIds,
+            )
+        }
+    }
+}
+
+private fun List<RemodexThreadSummary>.childThreadsByParentId(): Map<String, List<RemodexThreadSummary>> {
+    return filter { thread -> !thread.parentThreadId.isNullOrBlank() }
+        .groupBy { thread -> thread.parentThreadId.orEmpty() }
 }
 
 internal object SidebarProjectThreadPreviewState {

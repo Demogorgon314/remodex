@@ -574,6 +574,7 @@ class AppViewModel(
             val snapshot = sessionRenderState.snapshot
             val (headline, message) = connectionCopy(snapshot.secureConnection)
             val selectedThread = snapshot.selectedThread
+            val threadListSummaries = resolvedThreadListSummaries(snapshot)
             val draftText = selectedThread?.id?.let(renderStateA.draftsByThread::get).orEmpty()
             val attachments = selectedThread?.id?.let(renderStateA.attachmentsByThread::get).orEmpty()
             val mentionedFiles = selectedThread?.id?.let(renderStateA.mentionedFilesByThread::get).orEmpty()
@@ -596,7 +597,7 @@ class AppViewModel(
                 connectionMessage = message,
                 recoveryState = snapshot.secureConnection,
                 collapsedProjectGroupIds = snapshot.collapsedProjectGroupIds,
-                threads = snapshot.threads,
+                threads = threadListSummaries,
                 selectedThread = selectedThread,
                 repoRefreshSignal = selectedThread?.messages?.let(::buildRepoRefreshSignal),
                 notificationRegistration = snapshot.notificationRegistration,
@@ -4504,6 +4505,20 @@ class AppViewModel(
                 siblingChangeSets = sameRepoReadyChangeSets,
             )
         }.toMap()
+    }
+
+    private fun resolvedThreadListSummaries(
+        snapshot: RemodexSessionSnapshot,
+    ): List<RemodexThreadSummary> {
+        return snapshot.threadListSummaries.ifEmpty {
+            snapshot.threads.map { thread ->
+                if (thread.messages.isEmpty()) {
+                    thread
+                } else {
+                    thread.copy(messages = emptyList())
+                }
+            }
+        }
     }
 
     private fun buildRepoRefreshSignal(

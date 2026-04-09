@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
                 appFontStyle = uiState.appFontStyle,
             ) {
                 RemodexApp(
+                    uiState = uiState,
                     viewModel = viewModel,
                     notificationManager = appContainer.notificationManager,
                     pendingThreadDeepLinkId = pendingThreadDeepLinkId,
