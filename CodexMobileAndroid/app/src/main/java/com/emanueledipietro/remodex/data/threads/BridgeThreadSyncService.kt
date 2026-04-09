@@ -3728,6 +3728,29 @@ class BridgeThreadSyncService(
         }
     }
 
+    private fun restoreRunningStateFromStructuredLifecycleEvent(
+        threadId: String,
+        resolvedTurnId: String?,
+        explicitTurnId: String?,
+    ) {
+        val normalizedTurnId = resolvedTurnId?.trim()?.takeIf(String::isNotEmpty)
+        if (explicitTurnId != null && normalizedTurnId != null) {
+            if (
+                activeTurnIdByThread[threadId] != normalizedTurnId ||
+                !threadHasKnownRunningState(threadId) ||
+                latestTurnTerminalStateByThread[threadId] != null
+            ) {
+                setActiveTurnId(threadId = threadId, turnId = normalizedTurnId)
+            }
+            confirmLatestPendingUserMessage(threadId = threadId, turnId = normalizedTurnId)
+            return
+        }
+        restoreRunningStateFromStreamingEvent(
+            threadId = threadId,
+            resolvedTurnId = normalizedTurnId,
+        )
+    }
+
     private fun shouldSuppressRunningRevivalForLateAssistantDelta(
         threadId: String,
         resolvedTurnId: String,
@@ -4994,11 +5017,19 @@ class BridgeThreadSyncService(
         }
         val eventObject = envelopeEventObject(paramsObject)
         val threadId = resolveThreadId(paramsObject, turnIdHint = extractedTurnId) ?: return true
+        val explicitTurnId = extractedTurnId?.trim()?.takeIf(String::isNotEmpty)
         val resolvedTurnId = resolveLifecycleTurnId(
             threadId = threadId,
             extractedTurnId = extractedTurnId,
             isCompleted = isCompleted,
         )
+        if (!isCompleted) {
+            restoreRunningStateFromStructuredLifecycleEvent(
+                threadId = threadId,
+                resolvedTurnId = resolvedTurnId,
+                explicitTurnId = explicitTurnId,
+            )
+        }
         val debugEnabled = reviewDebugThreadIds.contains(threadId)
         if (itemType == "enteredreviewmode" || itemType == "exitedreviewmode") {
             logReviewDebug(

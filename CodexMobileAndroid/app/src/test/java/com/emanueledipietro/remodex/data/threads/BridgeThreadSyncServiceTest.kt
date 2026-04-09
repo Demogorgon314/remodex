@@ -1444,6 +1444,83 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `structured item started with explicit turn id adopts the new turn and confirms pending user`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-structured-turn-adopt",
+                    title = "Structured turn adopt",
+                    preview = "Hello",
+                    projectPath = "/tmp/project-structured-turn-adopt",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-structured-turn-adopt",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Hello",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-structured-turn-adopt",
+            "turn-structured-stale",
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-structured-turn-adopt"))
+                put("turnId", JsonPrimitive("turn-structured-fresh"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("reasoning-structured-fresh"))
+                        put("type", JsonPrimitive("reasoning"))
+                        put("summary", buildJsonArray {})
+                        put("content", buildJsonArray {})
+                    },
+                )
+            },
+            false,
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-structured-turn-adopt" }
+        val items = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+        val userItem = items.single { it.speaker == ConversationSpeaker.USER }
+        val reasoningItem = items.single { it.kind == ConversationItemKind.REASONING }
+
+        assertTrue(thread.isRunning)
+        assertEquals("turn-structured-fresh", thread.activeTurnId)
+        assertEquals(RemodexMessageDeliveryState.CONFIRMED, userItem.deliveryState)
+        assertEquals("turn-structured-fresh", userItem.turnId)
+        assertEquals("turn-structured-fresh", reasoningItem.turnId)
+        assertTrue(reasoningItem.isStreaming)
+    }
+
+    @Test
     fun `late assistant delta for the already completed turn does not revive running state`() = runTest {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(

@@ -659,6 +659,15 @@ class DefaultRemodexAppRepository(
         }
     }
 
+    private fun sanitizedResumeFailureMessage(message: String?): String {
+        val normalized = message
+            ?.replace('\n', ' ')
+            ?.replace('\r', ' ')
+            ?.trim()
+            .orEmpty()
+        return normalized.ifEmpty { "n/a" }.take(160)
+    }
+
     private suspend fun hydrateThreadAndRecoverLiveSessionIfNeeded(
         threadId: String,
         wasRunningBeforeHydrate: Boolean = false,
@@ -898,19 +907,28 @@ class DefaultRemodexAppRepository(
             return false
         }
         var didResume = false
+        var resumeFailure: Throwable? = null
         runHydrationSafely {
-            resumeService.resumeThread(
-                threadId = threadId,
-                preferredProjectPath = preferredProjectPath,
-                modelIdentifier = modelIdentifier,
-            )
-            didResume = true
+            try {
+                resumeService.resumeThread(
+                    threadId = threadId,
+                    preferredProjectPath = preferredProjectPath,
+                    modelIdentifier = modelIdentifier,
+                )
+                didResume = true
+            } catch (error: Throwable) {
+                resumeFailure = error
+                throw error
+            }
         }
         if (didResume) {
             refreshBaseThreadsFromSync()
         } else {
             runCatching {
-                Log.w(logTag, "event=resumeThread completedWithoutSnapshot threadId=$threadId force=$force")
+                Log.w(
+                    logTag,
+                    "event=resumeThread completedWithoutSnapshot threadId=$threadId force=$force errorType=${resumeFailure?.javaClass?.simpleName ?: "unknown"} errorMessage=${sanitizedResumeFailureMessage(resumeFailure?.message)}",
+                )
             }
         }
         return didResume
