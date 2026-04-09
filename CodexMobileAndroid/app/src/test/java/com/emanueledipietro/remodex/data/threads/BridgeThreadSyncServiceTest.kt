@@ -4688,6 +4688,96 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `create thread preserves managed worktree path when bridge reports the local checkout cwd`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-thread-start-managed-worktree-cwd",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val managedWorktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
+        val localCheckoutPath = "/Users/wangkai/Developer/github/remodex"
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-start-managed-worktree"))
+                                        put("title", JsonPrimitive("Managed worktree thread"))
+                                        put("cwd", JsonPrimitive(localCheckoutPath))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/start" to { request ->
+                    assertEquals(
+                        managedWorktreePath,
+                        request.params?.jsonObjectOrNull?.firstString("cwd"),
+                    )
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-start-managed-worktree"))
+                                put("title", JsonPrimitive("Managed worktree thread"))
+                                put("cwd", JsonPrimitive(localCheckoutPath))
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            val created = service.createThread(
+                preferredProjectPath = managedWorktreePath,
+                runtimeDefaults = RemodexRuntimeDefaults(),
+            )
+            advanceUntilIdle()
+
+            assertEquals(managedWorktreePath, created?.projectPath)
+
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            assertEquals(
+                managedWorktreePath,
+                service.threads.value.firstOrNull { snapshot ->
+                    snapshot.id == "thread-start-managed-worktree"
+                }?.projectPath,
+            )
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `create managed worktree uses the provided project path and returns detached metadata`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
@@ -4752,6 +4842,56 @@ class BridgeThreadSyncServiceTest {
             assertEquals("main", result.baseBranch)
             assertEquals("detached", result.headMode)
             assertFalse(result.transferredChanges)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `remove managed worktree uses the provided project path`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-managed-worktree-remove",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "git/removeWorktree" to { request ->
+                    assertEquals(
+                        "/tmp/project-managed-worktree/.codex/worktrees/managed",
+                        request.params?.jsonObjectOrNull?.firstString("cwd"),
+                    )
+                    buildJsonObject {
+                        put("success", JsonPrimitive(true))
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            awaitSecureTransportReady(coordinator)
+            advanceUntilIdle()
+
+            service.removeManagedWorktree("/tmp/project-managed-worktree/.codex/worktrees/managed")
+            advanceUntilIdle()
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
@@ -6968,6 +7108,122 @@ class BridgeThreadSyncServiceTest {
             assertEquals("M app/src/Main.kt", details?.outputTail)
             assertEquals(RemodexCommandExecutionLiveStatus.COMPLETED, details?.liveStatus)
             assertEquals(RemodexCommandExecutionSource.USER_SHELL, details?.source)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `hydrate thread adopts managed worktree path from command execution cwd`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-command-managed-worktree-path",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val managedWorktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
+        val localCheckoutPath = "/Users/wangkai/Developer/github/remodex"
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    val archived = message.params?.jsonObjectOrNull?.firstString("archived") == "true"
+                    buildJsonObject {
+                        put(
+                            "data",
+                            buildJsonArray {
+                                if (!archived) {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("thread-command-managed-worktree"))
+                                            put("title", JsonPrimitive("Managed command thread"))
+                                            put("cwd", JsonPrimitive(localCheckoutPath))
+                                            put("updatedAt", JsonPrimitive(1_713_222_224))
+                                        },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-command-managed-worktree"))
+                                put("title", JsonPrimitive("Managed command thread"))
+                                put("cwd", JsonPrimitive(localCheckoutPath))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-command-managed-worktree"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("command-item-managed-worktree"))
+                                                                put("type", JsonPrimitive("command_execution"))
+                                                                put("command", JsonPrimitive("git status --short"))
+                                                                put("cwd", JsonPrimitive(managedWorktreePath))
+                                                                put("source", JsonPrimitive("userShell"))
+                                                                put("exitCode", JsonPrimitive(0))
+                                                                put("durationMs", JsonPrimitive(1450))
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            advanceUntilIdle()
+
+            service.refreshThreads()
+            awaitThreads(service, expectedCount = 1)
+            assertEquals(
+                localCheckoutPath,
+                service.threads.value.firstOrNull { snapshot ->
+                    snapshot.id == "thread-command-managed-worktree"
+                }?.projectPath,
+            )
+
+            service.hydrateThread("thread-command-managed-worktree")
+            advanceUntilIdle()
+
+            assertEquals(
+                managedWorktreePath,
+                service.threads.value.firstOrNull { snapshot ->
+                    snapshot.id == "thread-command-managed-worktree"
+                }?.projectPath,
+            )
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()

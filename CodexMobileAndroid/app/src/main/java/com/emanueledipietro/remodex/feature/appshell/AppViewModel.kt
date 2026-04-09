@@ -1109,6 +1109,17 @@ class AppViewModel(
         }
     }
 
+    fun deleteManagedWorktreeProject(projectPath: String) {
+        val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty) ?: return
+        viewModelScope.launch {
+            runCatching {
+                repository.deleteManagedWorktreeProject(normalizedProjectPath)
+            }.onFailure { error ->
+                presentTransientBanner(error.message ?: "Could not delete worktree.")
+            }
+        }
+    }
+
     fun archiveProject(projectPath: String) {
         viewModelScope.launch {
             repository.archiveProject(projectPath)

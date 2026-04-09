@@ -84,6 +84,8 @@ interface RemodexAppRepository {
 
     suspend fun deleteThread(threadId: String)
 
+    suspend fun deleteManagedWorktreeProject(projectPath: String)
+
     suspend fun archiveProject(projectPath: String)
 
     suspend fun sendPrompt(

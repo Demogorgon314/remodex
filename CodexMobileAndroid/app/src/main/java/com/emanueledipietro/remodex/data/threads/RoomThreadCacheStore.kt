@@ -210,6 +210,8 @@ class ProfileAwareThreadCacheStore internal constructor(
 
     override val threads: Flow<List<CachedThreadRecord>> = backingThreads
 
+    override fun peekThreads(): List<CachedThreadRecord> = backingThreads.value
+
     override fun setActiveProfileId(profileId: String?) {
         val normalizedProfileId = profileId?.trim()?.takeIf(String::isNotBlank)
         val nextDatabaseName = normalizedProfileId?.let(databaseNameResolver)

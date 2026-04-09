@@ -32,6 +32,8 @@ interface ThreadCacheStore {
 
     fun setActiveProfileId(profileId: String?) = Unit
 
+    fun peekThreads(): List<CachedThreadRecord> = emptyList()
+
     suspend fun replaceThreads(threads: List<CachedThreadRecord>)
 
     fun close() = Unit

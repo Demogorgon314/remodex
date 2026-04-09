@@ -12,6 +12,7 @@ import com.emanueledipietro.remodex.data.connection.createTestMacIdentity
 import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.data.preferences.AppPreferences
 import com.emanueledipietro.remodex.data.preferences.AppPreferencesRepository
+import com.emanueledipietro.remodex.data.threads.CachedThreadRecord
 import com.emanueledipietro.remodex.data.threads.FakeThreadSyncService
 import com.emanueledipietro.remodex.data.threads.InMemoryThreadCacheStore
 import com.emanueledipietro.remodex.data.threads.ThreadHydrationService
@@ -54,12 +55,14 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -1591,6 +1594,54 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `delete managed worktree project removes its chats after cleanup succeeds`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository()
+        val managedProjectPath = "/tmp/remodex/.codex/worktrees/e12e"
+        val syncService = FakeThreadSyncService(
+            initialThreads = listOf(
+                testThreadSnapshot(
+                    id = "thread-worktree-root",
+                    title = "Worktree root",
+                    projectPath = managedProjectPath,
+                    lastUpdatedEpochMs = 3L,
+                ),
+                testThreadSnapshot(
+                    id = "thread-worktree-child",
+                    title = "Worktree child",
+                    projectPath = managedProjectPath,
+                    lastUpdatedEpochMs = 2L,
+                    parentThreadId = "thread-worktree-root",
+                ),
+                testThreadSnapshot(
+                    id = "thread-local",
+                    title = "Local thread",
+                    projectPath = "/tmp/remodex",
+                    lastUpdatedEpochMs = 1L,
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            preferencesRepository = preferencesRepository,
+            syncService = syncService,
+        )
+        advanceUntilIdle()
+
+        repository.selectThread("thread-worktree-root")
+        advanceUntilIdle()
+        repository.deleteManagedWorktreeProject(managedProjectPath)
+        advanceUntilIdle()
+
+        assertEquals(listOf(managedProjectPath), syncService.removeManagedWorktreeRequests)
+        assertEquals(listOf("thread-local"), repository.session.value.threads.map(RemodexThreadSummary::id))
+        assertEquals("thread-local", repository.session.value.selectedThread?.id)
+        assertEquals(
+            setOf("thread-worktree-root", "thread-worktree-child"),
+            preferencesRepository.preferencesState.value.deletedThreadIds,
+        )
+    }
+
+    @Test
     fun `move thread to project path reverts local change when resume fails for materialized thread`() = runTest {
         val syncService = LocalProjectMoveSyncService(
             shouldFailResumeForThreadId = "thread-notifications",
@@ -1697,6 +1748,125 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
 
         assertEquals("/tmp/local-main/.codex/worktrees/managed", repository.session.value.selectedThread?.projectPath)
+    }
+
+    @Test
+    fun `create worktree thread persists to cache so it survives repository recreation`() = runTest {
+        val cacheStore = InMemoryThreadCacheStore()
+        val syncService = FakeThreadSyncService(initialThreads = emptyList())
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = syncService,
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        repository.createWorktreeThread(preferredProjectPath = "/tmp/local-main")
+        advanceUntilIdle()
+        withTimeout(5_000) {
+            cacheStore.threads.first { threads ->
+                threads.any { thread ->
+                    thread.projectPath == "/tmp/local-main/.codex/worktrees/managed"
+                }
+            }
+        }
+
+        val recreatedRepository = createRepository(
+            scope = backgroundScope,
+            syncService = FakeThreadSyncService(initialThreads = emptyList()),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "/tmp/local-main/.codex/worktrees/managed",
+            recreatedRepository.session.value.threads.firstOrNull()?.projectPath,
+        )
+    }
+
+    @Test
+    fun `cached thread history restores managed worktree path on repository startup`() = runTest {
+        val worktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
+        val cacheStore = InMemoryThreadCacheStore(
+            initialThreads = listOf(
+                CachedThreadRecord(
+                    id = "legacy-worktree-thread",
+                    title = "Conversation",
+                    preview = "Worktree chat",
+                    projectPath = "/Users/wangkai/Developer/github/remodex",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1_000L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineItems = listOf(
+                        RemodexConversationItem(
+                            id = "legacy-worktree-command",
+                            speaker = ConversationSpeaker.SYSTEM,
+                            kind = ConversationItemKind.COMMAND_EXECUTION,
+                            text = """completed /bin/zsh -lc 'git -C "$worktreePath" status --short'""",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = FakeThreadSyncService(initialThreads = emptyList()),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            worktreePath,
+            repository.session.value.threads.firstOrNull()?.projectPath,
+        )
+    }
+
+    @Test
+    fun `sync keeps restored managed worktree path when live snapshot still reports local checkout`() = runTest {
+        val worktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
+        val cacheStore = InMemoryThreadCacheStore(
+            initialThreads = listOf(
+                CachedThreadRecord(
+                    id = "legacy-worktree-thread",
+                    title = "Conversation",
+                    preview = "Worktree chat",
+                    projectPath = "/Users/wangkai/Developer/github/remodex",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1_000L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineItems = listOf(
+                        RemodexConversationItem(
+                            id = "legacy-worktree-command",
+                            speaker = ConversationSpeaker.SYSTEM,
+                            kind = ConversationItemKind.COMMAND_EXECUTION,
+                            text = """completed /bin/zsh -lc 'git -C "$worktreePath" status --short'""",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = FakeThreadSyncService(
+                initialThreads = listOf(
+                    testThreadSnapshot(
+                        id = "legacy-worktree-thread",
+                        title = "Conversation",
+                        projectPath = "/Users/wangkai/Developer/github/remodex",
+                        lastUpdatedEpochMs = 2_000L,
+                    ),
+                ),
+            ),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            worktreePath,
+            repository.session.value.threads.firstOrNull()?.projectPath,
+        )
     }
 
     @Test
@@ -3001,11 +3171,12 @@ class DefaultRemodexAppRepositoryTest {
         scope: CoroutineScope,
         preferencesRepository: TestAppPreferencesRepository = TestAppPreferencesRepository(),
         syncService: FakeThreadSyncService = FakeThreadSyncService(),
+        threadCacheStore: InMemoryThreadCacheStore = InMemoryThreadCacheStore(),
     ): DefaultRemodexAppRepository {
         return DefaultRemodexAppRepository(
             appPreferencesRepository = preferencesRepository,
             secureConnectionCoordinator = createSecureCoordinator(scope),
-            threadCacheStore = InMemoryThreadCacheStore(),
+            threadCacheStore = threadCacheStore,
             threadSyncService = syncService,
             threadCommandService = syncService,
             threadHydrationService = null,

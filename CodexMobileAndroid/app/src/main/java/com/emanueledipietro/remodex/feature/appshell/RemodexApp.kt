@@ -822,6 +822,7 @@ private fun RemodexShell(
                         onArchiveThread = viewModel::archiveThread,
                         onUnarchiveThread = viewModel::unarchiveThread,
                         onDeleteThread = viewModel::deleteThread,
+                        onDeleteManagedWorktreeProject = viewModel::deleteManagedWorktreeProject,
                         onArchiveProject = viewModel::archiveProject,
                         onOpenSettings = { onShellRouteChange(ShellRoute.SETTINGS) },
                         onOpenMyMacs = { onShellRouteChange(ShellRoute.MY_MACS) },
@@ -953,6 +954,7 @@ private fun RemodexShell(
                         onArchiveThread = viewModel::archiveThread,
                         onUnarchiveThread = viewModel::unarchiveThread,
                         onDeleteThread = viewModel::deleteThread,
+                        onDeleteManagedWorktreeProject = viewModel::deleteManagedWorktreeProject,
                         onArchiveProject = viewModel::archiveProject,
                         onOpenSettings = {
                             onShellRouteChange(ShellRoute.SETTINGS)

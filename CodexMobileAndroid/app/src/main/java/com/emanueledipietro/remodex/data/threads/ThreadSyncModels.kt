@@ -232,6 +232,10 @@ interface ThreadCommandService {
         throw UnsupportedOperationException("Managed worktree creation is not available.")
     }
 
+    suspend fun removeManagedWorktree(projectPath: String) {
+        throw UnsupportedOperationException("Managed worktree cleanup is not available.")
+    }
+
     suspend fun commitGitChanges(
         threadId: String,
         message: String? = null,

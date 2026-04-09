@@ -84,6 +84,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.emanueledipietro.remodex.R
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
+import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
@@ -102,6 +103,12 @@ private data class ThreadRenamePromptState(
     val isPresented: Boolean = false,
 )
 
+private data class DeleteManagedWorktreePromptState(
+    val projectPath: String = "",
+    val projectLabel: String = "",
+    val isPresented: Boolean = false,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ThreadsScreen(
@@ -116,6 +123,7 @@ fun ThreadsScreen(
     onArchiveThread: (String) -> Unit,
     onUnarchiveThread: (String) -> Unit,
     onDeleteThread: (String) -> Unit,
+    onDeleteManagedWorktreeProject: (String) -> Unit,
     onArchiveProject: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMyMacs: () -> Unit,
@@ -127,6 +135,9 @@ fun ThreadsScreen(
     var isNewChatSheetPresented by rememberSaveable { mutableStateOf(false) }
     var renamePromptState by remember {
         mutableStateOf(ThreadRenamePromptState())
+    }
+    var deleteManagedWorktreePromptState by remember {
+        mutableStateOf(DeleteManagedWorktreePromptState())
     }
     var expandedProjectIds by remember { mutableStateOf(setOf<String>()) }
     var knownProjectGroupIds by remember { mutableStateOf(setOf<String>()) }
@@ -267,6 +278,13 @@ fun ThreadsScreen(
                                         onArchiveProject = {
                                             group.projectPath?.let(onArchiveProject)
                                         },
+                                        onDeleteManagedWorktreeProject = { projectPath, projectLabel ->
+                                            deleteManagedWorktreePromptState = DeleteManagedWorktreePromptState(
+                                                projectPath = projectPath,
+                                                projectLabel = projectLabel,
+                                                isPresented = true,
+                                            )
+                                        },
                                         onSelectThread = onSelectThread,
                                         onRenameThread = { threadId, currentTitle ->
                                             renamePromptState = ThreadRenamePromptState(
@@ -362,6 +380,19 @@ fun ThreadsScreen(
                 val targetThreadId = renamePromptState.threadId
                 renamePromptState = renamePromptState.copy(isPresented = false)
                 onRenameThread(targetThreadId, trimmedTitle)
+            },
+        )
+    }
+
+    if (deleteManagedWorktreePromptState.isPresented) {
+        DeleteManagedWorktreeDialog(
+            state = deleteManagedWorktreePromptState,
+            onDismiss = {
+                deleteManagedWorktreePromptState = deleteManagedWorktreePromptState.copy(isPresented = false)
+            },
+            onConfirmDelete = { projectPath ->
+                deleteManagedWorktreePromptState = deleteManagedWorktreePromptState.copy(isPresented = false)
+                onDeleteManagedWorktreeProject(projectPath)
             },
         )
     }
@@ -894,6 +925,7 @@ private fun ProjectGroupSection(
     onRevealAll: () -> Unit,
     onCreateThread: () -> Unit,
     onArchiveProject: () -> Unit,
+    onDeleteManagedWorktreeProject: (String, String) -> Unit,
     onSelectThread: (String) -> Unit,
     onRenameThread: (String, String) -> Unit,
     onArchiveThread: (String) -> Unit,
@@ -922,6 +954,9 @@ private fun ProjectGroupSection(
             .groupBy { thread -> thread.parentThreadId.orEmpty() }
     }
     var projectMenuExpanded by remember(group.id) { mutableStateOf(false) }
+    val managedWorktreeProjectPath = remember(group.projectPath) {
+        group.projectPath?.takeIf(::isCodexManagedWorktreeProject)
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -979,6 +1014,15 @@ private fun ProjectGroupSection(
                         onArchiveProject()
                     },
                 )
+                managedWorktreeProjectPath?.let { projectPath ->
+                    DropdownMenuItem(
+                        text = { Text("Delete Worktree") },
+                        onClick = {
+                            projectMenuExpanded = false
+                            onDeleteManagedWorktreeProject(projectPath, group.label)
+                        },
+                    )
+                }
             }
         }
 
@@ -1417,6 +1461,39 @@ private fun ThreadRenameDialog(
                 label = { Text("Name") },
                 modifier = Modifier.testTag(SidebarRenameTextFieldTag),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            )
+        },
+    )
+}
+
+@Composable
+private fun DeleteManagedWorktreeDialog(
+    state: DeleteManagedWorktreePromptState,
+    onDismiss: () -> Unit,
+    onConfirmDelete: (String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirmDelete(state.projectPath) },
+            ) {
+                Text(
+                    text = "Delete Worktree",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        title = { Text("Delete worktree") },
+        text = {
+            Text(
+                "Delete the managed worktree for ${state.projectLabel} and remove its chats from Android? " +
+                    "Your main local checkout will stay untouched.",
             )
         },
     )

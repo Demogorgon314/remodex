@@ -10,6 +10,8 @@ class InMemoryThreadCacheStore(
 
     override val threads: Flow<List<CachedThreadRecord>> = backingThreads
 
+    override fun peekThreads(): List<CachedThreadRecord> = backingThreads.value
+
     override suspend fun replaceThreads(threads: List<CachedThreadRecord>) {
         backingThreads.value = threads.sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
     }

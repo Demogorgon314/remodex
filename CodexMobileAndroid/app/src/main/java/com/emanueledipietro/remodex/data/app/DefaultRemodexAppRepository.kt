@@ -22,6 +22,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadSyncSnapshot
 import com.emanueledipietro.remodex.data.threads.shouldRetryAfterThreadMaterializationValue
 import com.emanueledipietro.remodex.data.threads.shouldTreatAsThreadNotFoundValue
 import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
+import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
@@ -67,6 +68,8 @@ import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.model.androidUserMessageText
+import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
+import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
 import com.emanueledipietro.remodex.model.remodexInitialGptAccountSnapshot
 import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
@@ -161,10 +164,30 @@ class DefaultRemodexAppRepository(
     private var activeBridgeProfileId: String? = secureConnectionCoordinator.bridgeProfiles.value.activeProfileId
     private var suppressBridgeScopedThreadsUntilNextSync = false
     private val reconnectCatchupJobByThread = mutableMapOf<String, Job>()
-    private val initialBaseThreads = threadSyncService.threads.value
-        .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
-        .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
-        .map(CachedThreadRecord::toBaseThreadSummary)
+    private val initialBaseThreads = run {
+        threadCacheStore.setActiveProfileId(activeBridgeProfileId)
+        val cachedThreads = threadCacheStore.peekThreads()
+            .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
+            .map(CachedThreadRecord::toBaseThreadSummary)
+        val cachedThreadsById = cachedThreads.associateBy(RemodexThreadSummary::id)
+        val syncedThreads = threadSyncService.threads.value
+            .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
+            .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
+            .map(CachedThreadRecord::toBaseThreadSummary)
+            .map { syncedThread ->
+                cachedThreadsById[syncedThread.id]?.let { cachedThread ->
+                    syncedThread.withPreferredManagedWorktreePath(
+                        cachedThread.preferredManagedWorktreeProjectPathForSync(),
+                    )
+                } ?: syncedThread
+            }
+        buildList {
+            addAll(syncedThreads)
+            addAll(cachedThreads.filterNot { cachedThread ->
+                syncedThreads.any { syncedThread -> syncedThread.id == cachedThread.id }
+            })
+        }.sortedByDescending(RemodexThreadSummary::lastUpdatedEpochMs)
+    }
     private val initialSelectedThread = initialBaseThreads.firstOrNull()
     private val threadListPublishGeneration = AtomicLong(0L)
     private val preferredSelectedThreadId = AtomicReference<String?>(initialSelectedThread?.id)
@@ -1519,6 +1542,49 @@ class DefaultRemodexAppRepository(
         threadCommandService.deleteThread(threadId)
     }
 
+    override suspend fun deleteManagedWorktreeProject(projectPath: String) {
+        val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty) ?: return
+        threadCommandService.removeManagedWorktree(normalizedProjectPath)
+
+        val removedThreadIds = baseThreadsState.value
+            .filter { thread -> thread.projectPath == normalizedProjectPath }
+            .map(RemodexThreadSummary::id)
+            .toSet()
+        if (removedThreadIds.isEmpty()) {
+            return
+        }
+
+        val updatedThreads = baseThreadsState.value.filterNot { thread ->
+            thread.projectPath == normalizedProjectPath
+        }
+        val nextSelectedThreadId = if (sessionState.value.selectedThreadId in removedThreadIds) {
+            updatedThreads.firstOrNull { it.syncState == RemodexThreadSyncState.LIVE }?.id
+                ?: updatedThreads.firstOrNull()?.id
+        } else {
+            sessionState.value.selectedThreadId
+        }
+        baseThreadsState.value = updatedThreads
+        val resolvedAvailableModels = resolveAvailableModels(updatedThreads)
+        persistSelectedThreadIdLocally(nextSelectedThreadId)
+        publishSelectedThreadSnapshot(
+            baseThreads = updatedThreads,
+            preferences = preferencesState.value,
+            availableModels = resolvedAvailableModels,
+            selectedThreadId = nextSelectedThreadId,
+        )
+        cancelPendingThreadListPublish()
+        publishMaterializedThreads(
+            baseThreads = updatedThreads,
+            preferences = preferencesState.value,
+            availableModels = resolvedAvailableModels,
+            secureConnection = sessionState.value.secureConnection,
+            notificationRegistration = sessionState.value.notificationRegistration,
+        )
+        removedThreadIds.forEach { removedThreadId ->
+            setThreadDeletedLocally(threadId = removedThreadId, deleted = true)
+        }
+    }
+
     override suspend fun archiveProject(projectPath: String) {
         val rootThreadIds = baseThreadsState.value
             .filter { thread ->
@@ -2442,7 +2508,7 @@ class DefaultRemodexAppRepository(
     }
 
     private suspend fun syncThreads(snapshots: List<ThreadSyncSnapshot>) {
-        if (shouldPreserveThreadsDuringConnectionRecovery(snapshots)) {
+        if (shouldPreserveThreadsUntilEncryptedSync(snapshots)) {
             return
         }
         val projected = withContext(Dispatchers.Default) {
@@ -2463,7 +2529,9 @@ class DefaultRemodexAppRepository(
             deferThreadListUpdate = shouldDeferThreadListUpdate,
         )
         scheduleThreadCacheWrite(
-            cachedThreads = projected.cachedThreads,
+            cachedThreads = projected.mergedBaseThreads
+                .map(RemodexThreadSummary::toCachedThreadRecord)
+                .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs),
             debounce = snapshots.any(ThreadSyncSnapshot::isRunning),
         )
     }
@@ -2496,18 +2564,13 @@ class DefaultRemodexAppRepository(
         }
     }
 
-    private fun shouldPreserveThreadsDuringConnectionRecovery(
+    private fun shouldPreserveThreadsUntilEncryptedSync(
         snapshots: List<ThreadSyncSnapshot>,
     ): Boolean {
-        if (snapshots.isNotEmpty() || baseThreadsState.value.isEmpty()) {
+        if (snapshots.isNotEmpty()) {
             return false
         }
-        return secureConnectionCoordinator.state.value.secureState in setOf(
-            SecureConnectionState.TRUSTED_MAC,
-            SecureConnectionState.LIVE_SESSION_UNRESOLVED,
-            SecureConnectionState.RECONNECTING,
-            SecureConnectionState.HANDSHAKING,
-        )
+        return secureConnectionCoordinator.state.value.secureState != SecureConnectionState.ENCRYPTED
     }
 
     private fun projectThreadTimelineItems(snapshot: ThreadSyncSnapshot): List<com.emanueledipietro.remodex.model.RemodexConversationItem> {
@@ -2638,6 +2701,12 @@ class DefaultRemodexAppRepository(
         refreshThreadsLocally(
             baseThreads = mergedBaseThreads,
             preferredSelectedThreadIdOverride = preferredSelectedThreadIdOverride,
+        )
+        scheduleThreadCacheWrite(
+            cachedThreads = mergedBaseThreads
+                .map(RemodexThreadSummary::toCachedThreadRecord)
+                .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs),
+            debounce = mergedBaseThreads.any(RemodexThreadSummary::isRunning),
         )
     }
 
@@ -3208,6 +3277,10 @@ class DefaultRemodexAppRepository(
             val localThread = localById[syncedThread.id]
             mergedById[syncedThread.id] = if (localThread != null) {
                 syncedThread.copy(
+                    projectPath = preferredManagedWorktreePath(
+                        primaryProjectPath = syncedThread.projectPath,
+                        fallbackProjectPath = localThread.preferredManagedWorktreeProjectPathForSync(),
+                    ),
                     syncState = if (localThread.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL) {
                         RemodexThreadSyncState.ARCHIVED_LOCAL
                     } else {
@@ -3294,6 +3367,29 @@ private fun nextLocalOrderIndex(thread: RemodexThreadSummary): Long {
 
 private const val ThreadCacheStreamingWriteDebounceMs = 120L
 private const val SelectedThreadStreamingThreadListDebounceMs = 180L
+
+private fun RemodexThreadSummary.toCachedThreadRecord(): CachedThreadRecord {
+    return CachedThreadRecord(
+        id = id,
+        title = title,
+        name = name,
+        preview = preview,
+        projectPath = projectPath,
+        lastUpdatedLabel = lastUpdatedLabel,
+        lastUpdatedEpochMs = lastUpdatedEpochMs,
+        isRunning = isRunning,
+        isWaitingOnApproval = isWaitingOnApproval,
+        syncState = syncState,
+        parentThreadId = parentThreadId,
+        agentNickname = agentNickname,
+        agentRole = agentRole,
+        activeTurnId = activeTurnId,
+        latestTurnTerminalState = latestTurnTerminalState,
+        stoppedTurnIds = stoppedTurnIds,
+        runtimeConfig = runtimeConfig,
+        timelineItems = messages,
+    )
+}
 
 private fun ThreadSyncSnapshot.toCachedThreadRecord(
     timelineItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
@@ -3404,12 +3500,13 @@ private fun RemodexThreadSummary.materialize(
 }
 
 internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
+    val restoredProjectPath = restoredManagedWorktreeProjectPath()
     return RemodexThreadSummary(
         id = id,
         title = title,
         name = name,
         preview = preview,
-        projectPath = projectPath,
+        projectPath = restoredProjectPath,
         lastUpdatedLabel = lastUpdatedLabel,
         lastUpdatedEpochMs = lastUpdatedEpochMs,
         isRunning = isRunning,
@@ -3428,6 +3525,118 @@ internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
         messages = timelineItems,
     )
 }
+
+private fun RemodexThreadSummary.withPreferredManagedWorktreePath(
+    cachedProjectPath: String?,
+): RemodexThreadSummary {
+    val preferredProjectPath = preferredManagedWorktreePath(
+        primaryProjectPath = projectPath,
+        fallbackProjectPath = cachedProjectPath,
+    )
+    return if (preferredProjectPath == projectPath) {
+        this
+    } else {
+        copy(projectPath = preferredProjectPath)
+    }
+}
+
+private fun preferredManagedWorktreePath(
+    primaryProjectPath: String,
+    fallbackProjectPath: String?,
+): String {
+    val normalizedPrimaryProjectPath = normalizeRemodexFilesystemProjectPath(primaryProjectPath)
+        ?: primaryProjectPath.trim()
+    val normalizedFallbackProjectPath = normalizeRemodexFilesystemProjectPath(fallbackProjectPath)
+        ?: fallbackProjectPath?.trim().orEmpty()
+    return if (
+        normalizedFallbackProjectPath.isNotEmpty() &&
+        isCodexManagedWorktreeProject(normalizedFallbackProjectPath) &&
+        !isCodexManagedWorktreeProject(normalizedPrimaryProjectPath)
+    ) {
+        normalizedFallbackProjectPath
+    } else {
+        normalizedPrimaryProjectPath
+    }
+}
+
+private fun CachedThreadRecord.restoredManagedWorktreeProjectPath(): String {
+    val normalizedProjectPath = normalizeRemodexFilesystemProjectPath(projectPath)
+        ?: projectPath.trim()
+    if (normalizedProjectPath.isEmpty() || isCodexManagedWorktreeProject(normalizedProjectPath)) {
+        return normalizedProjectPath
+    }
+    val expectedRepoLabel = normalizedProjectPath.substringAfterLast('/').takeIf(String::isNotBlank)
+    val restoredProjectPath = timelineItems
+        .asSequence()
+        .sortedBy { item ->
+            when (item.kind) {
+                ConversationItemKind.COMMAND_EXECUTION -> 0
+                ConversationItemKind.FILE_CHANGE -> 1
+                else -> 2
+            }
+        }
+        .flatMap { item -> sequenceOf(item.supportingText, item.text) }
+        .filterNotNull()
+        .mapNotNull { text -> firstManagedWorktreePathInText(text, expectedRepoLabel) }
+        .firstOrNull()
+    return restoredProjectPath ?: normalizedProjectPath
+}
+
+private fun RemodexThreadSummary.preferredManagedWorktreeProjectPathForSync(): String? {
+    val normalizedProjectPath = normalizeRemodexFilesystemProjectPath(projectPath)
+        ?: projectPath.trim()
+    if (!isCodexManagedWorktreeProject(normalizedProjectPath)) {
+        return null
+    }
+    if (messages.isEmpty()) {
+        return normalizedProjectPath
+    }
+    val expectedRepoLabel = normalizedProjectPath.substringAfterLast('/').takeIf(String::isNotBlank)
+    val observedManagedWorktreePath = messages
+        .asSequence()
+        .sortedBy { item ->
+            when (item.kind) {
+                ConversationItemKind.COMMAND_EXECUTION -> 0
+                ConversationItemKind.FILE_CHANGE -> 1
+                else -> 2
+            }
+        }
+        .flatMap { item -> sequenceOf(item.supportingText, item.text) }
+        .filterNotNull()
+        .mapNotNull { text -> firstManagedWorktreePathInText(text, expectedRepoLabel) }
+        .firstOrNull()
+    return if (observedManagedWorktreePath == normalizedProjectPath) {
+        normalizedProjectPath
+    } else {
+        null
+    }
+}
+
+private fun firstManagedWorktreePathInText(
+    text: String,
+    expectedRepoLabel: String?,
+): String? {
+    return ManagedWorktreePathRegex.findAll(text)
+        .mapNotNull { match ->
+            val candidate = match.value.trimEnd(',', '.', ':', ';', ')', ']', '}', '"', '\'', '`')
+            val normalizedCandidate = normalizeRemodexFilesystemProjectPath(candidate) ?: return@mapNotNull null
+            if (!isCodexManagedWorktreeProject(normalizedCandidate)) {
+                return@mapNotNull null
+            }
+            if (
+                expectedRepoLabel != null &&
+                normalizedCandidate.substringAfterLast('/').trim() != expectedRepoLabel
+            ) {
+                return@mapNotNull null
+            }
+            normalizedCandidate
+        }
+        .firstOrNull()
+}
+
+private val ManagedWorktreePathRegex = Regex(
+    """(?:~|/|[A-Za-z]:[\\/])[^"'`\s]*?[\\/]\.codex[\\/]worktrees[\\/][^"'`\s\\/]+[\\/][^"'`\s\\/]+""",
+)
 
 private fun SecureConnectionSnapshot.toConnectionStatus(): RemodexConnectionStatus {
     val phase = when (secureState) {

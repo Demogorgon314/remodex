@@ -70,6 +70,7 @@ class FakeThreadSyncService(
     private val gitStateByThreadId = initialThreads.associate { snapshot ->
         snapshot.id to seedGitState(snapshot)
     }.toMutableMap()
+    val removeManagedWorktreeRequests = mutableListOf<String>()
     var activeThreadHint: String? = null
         private set
 
@@ -805,6 +806,14 @@ class FakeThreadSyncService(
             headMode = "detached",
             transferredChanges = changeTransfer == RemodexGitWorktreeChangeTransferMode.MOVE,
         )
+    }
+
+    override suspend fun removeManagedWorktree(projectPath: String) {
+        val normalizedProjectPath = projectPath.trim()
+        if (normalizedProjectPath.isEmpty()) {
+            return
+        }
+        removeManagedWorktreeRequests += normalizedProjectPath
     }
 
     override suspend fun commitGitChanges(

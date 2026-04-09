@@ -1121,6 +1121,10 @@ class BridgeThreadSyncService(
             return null
         }
         val normalizedPreferredProjectPath = preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)
+        val preferredManagedWorktreePath = normalizedPreferredProjectPath?.takeIf { path ->
+            val normalizedPath = path.replace('\\', '/')
+            normalizedPath.contains("/.codex/worktrees/") || normalizedPath.contains("/.codex/worktrees")
+        }
         val response = sendRequestWithThreadHistoryFallback(
             method = "thread/start",
             accessMode = runtimeDefaults.accessMode,
@@ -1148,10 +1152,12 @@ class BridgeThreadSyncService(
             existing = null,
         ) ?: return null
         val snapshot = parsedSnapshot.copy(
-            projectPath = if (parsedSnapshot.projectPath.isBlank() && normalizedPreferredProjectPath != null) {
-                normalizedPreferredProjectPath
-            } else {
-                parsedSnapshot.projectPath
+            projectPath = when {
+                preferredManagedWorktreePath != null && !parsedSnapshot.projectPath.isManagedWorktreePath() ->
+                    preferredManagedWorktreePath
+                parsedSnapshot.projectPath.isBlank() && normalizedPreferredProjectPath != null ->
+                    normalizedPreferredProjectPath
+                else -> parsedSnapshot.projectPath
             },
             runtimeConfig = mergeRuntimeConfig(
                 existing = null,
@@ -1163,12 +1169,9 @@ class BridgeThreadSyncService(
                 ),
             ),
         )
-        rememberProjectPath(snapshot.id, snapshot.projectPath)
-        backingThreads.value = (backingThreads.value + snapshot)
-            .distinctBy(ThreadSyncSnapshot::id)
-            .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        upsertThreadSnapshot(snapshot)
         resumedThreadIds.add(snapshot.id)
-        return backingThreads.value.firstOrNull { it.id == snapshot.id } ?: snapshot
+        return snapshot
     }
 
     override suspend fun renameThread(
@@ -2024,6 +2027,13 @@ class BridgeThreadSyncService(
             baseBranch = resultObject.firstString("baseBranch").orEmpty(),
             headMode = resultObject.firstString("headMode").orEmpty(),
             transferredChanges = resultObject.firstBoolean("transferredChanges") ?: false,
+        )
+    }
+
+    override suspend fun removeManagedWorktree(projectPath: String) {
+        runGitRequestForProjectPath(
+            projectPath = projectPath,
+            method = "git/removeWorktree",
         )
     }
 
@@ -8507,6 +8517,19 @@ class BridgeThreadSyncService(
             paramsObject = paramsObject,
             isCompleted = isCompleted,
         )
+        state.cwd?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.takeIf { path -> path.isManagedWorktreePath() }
+            ?.let { managedWorktreePath ->
+                rememberProjectPath(context.threadId, managedWorktreePath)
+                updateThread(context.threadId) { snapshot ->
+                    if (snapshot.projectPath.isManagedWorktreePath()) {
+                        snapshot
+                    } else {
+                        snapshot.copy(projectPath = managedWorktreePath)
+                    }
+                }
+            }
         val itemId = context.itemId?.takeIf(String::isNotBlank) ?: state.itemId?.takeIf(String::isNotBlank) ?: return
         backingCommandExecutionDetails.value = backingCommandExecutionDetails.value.toMutableMap().apply {
             val existing = this[itemId]
@@ -8802,11 +8825,20 @@ class BridgeThreadSyncService(
         val preview = threadObject.firstString("preview")
             ?: existing?.preview
             ?: ""
-        val projectPath = threadObject.firstString(
+        val observedProjectPath = threadObject.firstString(
             "cwd",
             "current_working_directory",
             "working_directory",
-        ) ?: existing?.projectPath.orEmpty()
+        )?.trim()?.takeIf(String::isNotEmpty)
+        val rememberedProjectPath = rememberedProjectPathByThreadId[id]?.trim()?.takeIf(String::isNotEmpty)
+        val projectPath = when {
+            observedProjectPath == null -> existing?.projectPath?.trim()?.takeIf(String::isNotEmpty)
+                ?: rememberedProjectPath
+                ?: ""
+            rememberedProjectPath?.isManagedWorktreePath() == true && !observedProjectPath.isManagedWorktreePath() ->
+                rememberedProjectPath
+            else -> observedProjectPath
+        }
         val updatedEpochMs = decodeTimestampMillis(
             threadObject.firstDouble("updatedAt", "updated_at")
                 ?: threadObject.firstDouble("createdAt", "created_at"),

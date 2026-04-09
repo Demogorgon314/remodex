@@ -2078,6 +2078,40 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `delete managed worktree project forwards the project path to the repository`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.deleteManagedWorktreeProject("/tmp/remodex/.codex/worktrees/managed")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("/tmp/remodex/.codex/worktrees/managed"),
+            repository.deleteManagedWorktreeProjectRequests,
+        )
+    }
+
+    @Test
+    fun `delete managed worktree project shows a failure banner when cleanup fails`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            deleteManagedWorktreeProjectError = IllegalStateException(
+                "Only managed worktrees can be cleaned up automatically.",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.deleteManagedWorktreeProject("/tmp/remodex/.codex/worktrees/managed")
+        advanceUntilIdle()
+
+        assertEquals(
+            "Only managed worktrees can be cleaned up automatically.",
+            viewModel.uiState.value.transientBanner,
+        )
+    }
+
+    @Test
     fun `send clears composer immediately and restores full state on failure`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
@@ -3730,6 +3764,7 @@ class AppViewModelTest {
         val codeReviewRequests = mutableListOf<Pair<String, RemodexCodeReviewRequest>>()
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
         val createWorktreeThreadRequests = mutableListOf<Pair<String, String?>>()
+        val deleteManagedWorktreeProjectRequests = mutableListOf<String>()
         val checkoutGitBranchRequests = mutableListOf<Pair<String, String>>()
         val createGitBranchRequests = mutableListOf<Pair<String, String>>()
         val createGitWorktreeRequests = mutableListOf<GitWorktreeRequest>()
@@ -3766,6 +3801,7 @@ class AppViewModelTest {
         var createThreadDelayMs = 0L
         var createThreadError: Throwable? = null
         var createWorktreeThreadError: Throwable? = null
+        var deleteManagedWorktreeProjectError: Throwable? = null
         var sendPromptError: Throwable? = null
         var sendQueuedDraftError: Throwable? = null
         var compactThreadError: Throwable? = null
@@ -3926,6 +3962,11 @@ class AppViewModelTest {
         override suspend fun unarchiveThread(threadId: String) = Unit
 
         override suspend fun deleteThread(threadId: String) = Unit
+
+        override suspend fun deleteManagedWorktreeProject(projectPath: String) {
+            deleteManagedWorktreeProjectRequests += projectPath
+            deleteManagedWorktreeProjectError?.let { throw it }
+        }
 
         override suspend fun archiveProject(projectPath: String) = Unit
 
