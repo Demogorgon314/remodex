@@ -5,5 +5,5 @@ const val remodexBridgeUpdateCommand = "npm install -g @deepdream314/remodex@lat
 data class RemodexBridgeUpdatePrompt(
     val title: String,
     val message: String,
-    val command: String = remodexBridgeUpdateCommand,
+    val command: String? = remodexBridgeUpdateCommand,
 )

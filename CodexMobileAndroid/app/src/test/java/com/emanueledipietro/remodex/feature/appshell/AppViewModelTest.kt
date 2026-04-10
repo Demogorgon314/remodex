@@ -158,6 +158,27 @@ class AppViewModelTest {
     }
 
     @Test
+    fun `bridge update prompt can omit a Mac command`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
+                    title = "Update Remodex on this Android phone",
+                    message = "This bridge requires a newer Android app.",
+                    command = null,
+                ),
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Update Remodex on this Android phone",
+            viewModel.uiState.value.bridgeUpdatePrompt?.title,
+        )
+        assertEquals(null, viewModel.uiState.value.bridgeUpdatePrompt?.command)
+    }
+
+    @Test
     fun `pending approval is shown only for the selected thread and approve delegates to repository`() = runTest {
         val repository = TestRemodexAppRepository()
         val selectedThread = threadSummary(

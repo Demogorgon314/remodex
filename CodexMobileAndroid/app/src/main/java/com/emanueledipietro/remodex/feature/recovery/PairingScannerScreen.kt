@@ -327,6 +327,7 @@ private fun PairingBridgeUpdateView(
     onCopyCommand: (String) -> Unit,
     onContinue: () -> Unit,
 ) {
+    val command = prompt.command?.trim()?.takeIf(String::isNotEmpty)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -354,34 +355,53 @@ private fun PairingBridgeUpdateView(
         Column(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(
-                text = "Run this on your Mac",
-                style = MaterialTheme.typography.labelLarge,
-                color = Color.White.copy(alpha = 0.7f),
-            )
+            if (command != null) {
+                Text(
+                    text = "Run this on your Mac",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White.copy(alpha = 0.7f),
+                )
 
-            PairingBridgeUpdateStep(
-                number = "1",
-                title = "Update Remodex",
-                detail = prompt.command,
-                buttonLabel = if (didCopyCommand) "Copied" else "Copy",
-                onButtonClick = { onCopyCommand(prompt.command) },
-            )
-            PairingBridgeUpdateStep(
-                number = "2",
-                title = "Restart the bridge",
-                detail = "Run remodex up",
-            )
-            PairingBridgeUpdateStep(
-                number = "3",
-                title = "Show a new QR code",
-                detail = "Use the new QR shown in the terminal",
-            )
-            PairingBridgeUpdateStep(
-                number = "4",
-                title = "Scan it here",
-                detail = "Then scan the new QR code from this phone",
-            )
+                PairingBridgeUpdateStep(
+                    number = "1",
+                    title = "Update Remodex",
+                    detail = command,
+                    buttonLabel = if (didCopyCommand) "Copied" else "Copy",
+                    onButtonClick = { onCopyCommand(command) },
+                )
+                PairingBridgeUpdateStep(
+                    number = "2",
+                    title = "Restart the bridge",
+                    detail = "Run remodex up",
+                )
+                PairingBridgeUpdateStep(
+                    number = "3",
+                    title = "Show a new QR code",
+                    detail = "Use the new QR shown in the terminal",
+                )
+                PairingBridgeUpdateStep(
+                    number = "4",
+                    title = "Scan it here",
+                    detail = "Then scan the new QR code from this phone",
+                )
+            } else {
+                Text(
+                    text = "Do this on your Android phone",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White.copy(alpha = 0.7f),
+                )
+
+                PairingBridgeUpdateStep(
+                    number = "1",
+                    title = "Update Remodex",
+                    detail = "Install the latest Remodex build on this Android phone.",
+                )
+                PairingBridgeUpdateStep(
+                    number = "2",
+                    title = "Try again",
+                    detail = "Come back here, then retry the connection or scan a fresh QR code.",
+                )
+            }
         }
 
         Button(

@@ -667,6 +667,7 @@ class BridgeThreadSyncService(
     private val backingContextWindowUsageByThreadId =
         MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
+    private val pendingApprovalRequests = mutableListOf<RemodexApprovalRequest>()
     private val backingBridgeUpdatePrompt = MutableStateFlow<RemodexBridgeUpdatePrompt?>(null)
     private val backingSupportsThreadFork = MutableStateFlow(true)
     private val backingSupportsManagedWorktreeCreation = MutableStateFlow(true)
@@ -722,6 +723,35 @@ class BridgeThreadSyncService(
 
     override fun setActiveThreadHint(threadId: String?) {
         activeThreadIdHint = threadId?.trim()?.takeIf(String::isNotEmpty)
+        refreshVisiblePendingApprovalRequest()
+    }
+
+    private fun refreshVisiblePendingApprovalRequest() {
+        backingPendingApprovalRequest.value = resolveVisiblePendingApprovalRequest()
+    }
+
+    private fun resolveVisiblePendingApprovalRequest(): RemodexApprovalRequest? {
+        val activeThreadId = resolveActiveThreadHint()
+        if (activeThreadId != null) {
+            pendingApprovalRequests.firstOrNull { request -> request.threadId == activeThreadId }?.let { return it }
+            pendingApprovalRequests.firstOrNull { request -> request.threadId == null }?.let { return it }
+        }
+        return pendingApprovalRequests.firstOrNull()
+    }
+
+    private fun enqueuePendingApprovalRequest(request: RemodexApprovalRequest) {
+        val existingIndex = pendingApprovalRequests.indexOfFirst { pending -> pending.id == request.id }
+        if (existingIndex >= 0) {
+            pendingApprovalRequests[existingIndex] = request
+        } else {
+            pendingApprovalRequests += request
+        }
+        refreshVisiblePendingApprovalRequest()
+    }
+
+    private fun clearPendingApprovalRequests() {
+        pendingApprovalRequests.clear()
+        refreshVisiblePendingApprovalRequest()
     }
 
     init {
@@ -781,7 +811,7 @@ class BridgeThreadSyncService(
                     backingCommandExecutionDetails.value = emptyMap()
                     backingAssistantResponseMetricsByThreadId.value = emptyMap()
                     backingContextWindowUsageByThreadId.value = emptyMap()
-                    backingPendingApprovalRequest.value = null
+                    clearPendingApprovalRequests()
                 }
             }
         }
@@ -4110,12 +4140,6 @@ class BridgeThreadSyncService(
     private fun handleServerRequestResolvedNotification(paramsObject: JsonObject) {
         val requestId = paramsObject.firstValue("requestId", "request_id") ?: return
         val threadId = resolveThreadId(paramsObject)
-        if (backingPendingApprovalRequest.value?.requestId == requestId && threadId != null) {
-            updateThreadWaitingOnApproval(
-                threadId = threadId,
-                isWaitingOnApproval = false,
-            )
-        }
         removePendingApprovalRequest(
             requestId = requestId,
             threadIdHint = threadId,
@@ -4170,7 +4194,7 @@ class BridgeThreadSyncService(
                         isWaitingOnApproval = true,
                     )
                 }
-                backingPendingApprovalRequest.value = request
+                enqueuePendingApprovalRequest(request)
             }
             return
         }
@@ -4180,17 +4204,14 @@ class BridgeThreadSyncService(
                 isWaitingOnApproval = true,
             )
         }
-        backingPendingApprovalRequest.value = request
+        enqueuePendingApprovalRequest(request)
     }
 
     private fun clearPendingApprovalRequest(request: RemodexApprovalRequest) {
-        backingPendingApprovalRequest.value = null
-        request.threadId?.let { threadId ->
-            updateThreadWaitingOnApproval(
-                threadId = threadId,
-                isWaitingOnApproval = false,
-            )
-        }
+        removePendingApprovalRequest(
+            requestId = request.requestId,
+            threadIdHint = request.threadId,
+        )
     }
 
     private fun decodeRequestedPermissions(paramsObject: JsonObject?): RemodexRequestedPermissions? {
@@ -5524,14 +5545,28 @@ class BridgeThreadSyncService(
         threadIdHint: String? = null,
     ) {
         val resolvedRequestId = rpcIdKey(requestId) ?: return
-        val currentRequest = backingPendingApprovalRequest.value ?: return
-        if (currentRequest.id != resolvedRequestId) {
+        val removedIndex = pendingApprovalRequests.indexOfFirst { request -> request.id == resolvedRequestId }
+        if (removedIndex < 0) {
             return
         }
-        if (threadIdHint != null && currentRequest.threadId != null && currentRequest.threadId != threadIdHint) {
+        val removedRequest = pendingApprovalRequests[removedIndex]
+        if (threadIdHint != null &&
+            removedRequest.threadId != null &&
+            removedRequest.threadId != threadIdHint
+        ) {
             return
         }
-        backingPendingApprovalRequest.value = null
+        pendingApprovalRequests.removeAt(removedIndex)
+        refreshVisiblePendingApprovalRequest()
+        removedRequest.threadId?.let { removedThreadId ->
+            val stillWaitingOnApproval = pendingApprovalRequests.any { request ->
+                request.threadId == removedThreadId
+            }
+            updateThreadWaitingOnApproval(
+                threadId = removedThreadId,
+                isWaitingOnApproval = stillWaitingOnApproval,
+            )
+        }
     }
 
     private fun approvalAccessMode(threadId: String?): RemodexAccessMode {

@@ -430,6 +430,140 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `pending approvals prefer the active thread without overwriting the queue`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+        seedThreads(
+            service,
+            listOf(
+                threadSnapshot(id = "thread-a", isWaitingOnApproval = true),
+                threadSnapshot(id = "thread-b", isWaitingOnApproval = true),
+            ),
+        )
+        setPendingApprovalQueue(
+            service,
+            listOf(
+                RemodexApprovalRequest(
+                    id = "approval-b",
+                    requestId = JsonPrimitive("req-b"),
+                    method = "item/commandExecution/requestApproval",
+                    threadId = "thread-b",
+                ),
+                RemodexApprovalRequest(
+                    id = "approval-a",
+                    requestId = JsonPrimitive("req-a"),
+                    method = "item/fileChange/requestApproval",
+                    threadId = "thread-a",
+                ),
+            ),
+        )
+
+        service.setActiveThreadHint("thread-a")
+
+        assertEquals("req-a", service.pendingApprovalRequest.value?.id)
+    }
+
+    @Test
+    fun `server request resolved removes only the matching pending approval`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+        seedThreads(
+            service,
+            listOf(
+                threadSnapshot(id = "thread-a", isWaitingOnApproval = true),
+                threadSnapshot(id = "thread-b", isWaitingOnApproval = true),
+            ),
+        )
+        setPendingApprovalQueue(
+            service,
+            listOf(
+                RemodexApprovalRequest(
+                    id = "approval-a",
+                    requestId = JsonPrimitive("req-a"),
+                    method = "item/commandExecution/requestApproval",
+                    threadId = "thread-a",
+                ),
+                RemodexApprovalRequest(
+                    id = "approval-b",
+                    requestId = JsonPrimitive("req-b"),
+                    method = "item/fileChange/requestApproval",
+                    threadId = "thread-b",
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleServerRequestResolvedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-a"))
+                put("requestId", JsonPrimitive("req-a"))
+            },
+        )
+
+        assertEquals("req-b", service.pendingApprovalRequest.value?.id)
+        assertFalse(service.threads.value.first { it.id == "thread-a" }.isWaitingOnApproval)
+        assertTrue(service.threads.value.first { it.id == "thread-b" }.isWaitingOnApproval)
+    }
+
+    @Test
+    fun `approving one pending approval keeps later queued approvals available`() = runTest {
+        val connected = createConnectedBridgeService()
+
+        try {
+            seedThreads(
+                connected.service,
+                listOf(
+                    threadSnapshot(id = "thread-a", isWaitingOnApproval = true),
+                    threadSnapshot(id = "thread-b", isWaitingOnApproval = true),
+                ),
+            )
+            setPendingApprovalQueue(
+                connected.service,
+                listOf(
+                    RemodexApprovalRequest(
+                        id = "approval-a",
+                        requestId = JsonPrimitive("req-a"),
+                        method = "item/commandExecution/requestApproval",
+                        threadId = "thread-a",
+                    ),
+                    RemodexApprovalRequest(
+                        id = "approval-b",
+                        requestId = JsonPrimitive("req-b"),
+                        method = "item/fileChange/requestApproval",
+                        threadId = "thread-b",
+                    ),
+                ),
+            )
+            connected.service.setActiveThreadHint("thread-a")
+
+            connected.service.approvePendingApproval()
+            advanceUntilIdle()
+
+            val response = connected.relayFactory.receivedRequests.last()
+            assertEquals(JsonPrimitive("req-a"), response.id)
+            assertEquals("req-b", connected.service.pendingApprovalRequest.value?.id)
+        } finally {
+            connected.coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `granting pending permissions approval echoes requested permissions with scope`() = runTest {
         val connected = createConnectedBridgeService()
         val requestedPermissions = buildJsonObject {
@@ -13561,16 +13695,47 @@ class BridgeThreadSyncServiceTest {
         service: BridgeThreadSyncService,
         request: RemodexApprovalRequest?,
     ) {
-        val field = service.javaClass.getDeclaredField("backingPendingApprovalRequest")
+        setPendingApprovalQueue(service, request?.let(::listOf).orEmpty())
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setPendingApprovalQueue(
+        service: BridgeThreadSyncService,
+        requests: List<RemodexApprovalRequest>,
+    ) {
+        val field = service.javaClass.getDeclaredField("pendingApprovalRequests")
         field.isAccessible = true
-        val state = field.get(service) as kotlinx.coroutines.flow.MutableStateFlow<RemodexApprovalRequest?>
-        state.value = request
+        val queue = field.get(service) as MutableList<RemodexApprovalRequest>
+        queue.clear()
+        queue.addAll(
+            requests.map { request ->
+                val normalizedId = request.requestId.jsonPrimitive.contentOrNull ?: request.id
+                request.copy(id = normalizedId)
+            },
+        )
+        invokePrivateMethod(service, "refreshVisiblePendingApprovalRequest")
     }
 
     private data class ConnectedBridgeService(
         val service: BridgeThreadSyncService,
         val coordinator: SecureConnectionCoordinator,
         val relayFactory: ScriptedRpcRelayWebSocketFactory,
+    )
+
+    private fun threadSnapshot(
+        id: String,
+        isWaitingOnApproval: Boolean = false,
+    ) = ThreadSyncSnapshot(
+        id = id,
+        title = id,
+        preview = "",
+        projectPath = "/tmp/$id",
+        lastUpdatedLabel = "",
+        lastUpdatedEpochMs = 0L,
+        isRunning = false,
+        isWaitingOnApproval = isWaitingOnApproval,
+        runtimeConfig = RemodexRuntimeConfig(),
+        timelineMutations = emptyList(),
     )
 
 }

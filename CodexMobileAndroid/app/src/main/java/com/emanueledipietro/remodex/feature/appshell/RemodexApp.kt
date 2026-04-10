@@ -1399,6 +1399,7 @@ private fun BridgeUpdateDialogBody(
     onCopyCommand: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val command = prompt.command?.trim()?.takeIf(String::isNotEmpty)
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1408,39 +1409,47 @@ private fun BridgeUpdateDialogBody(
             style = MaterialTheme.typography.bodyMedium,
             color = chrome.bodyText,
         )
-        Surface(
-            shape = RoundedCornerShape(18.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-            border = BorderStroke(1.dp, chrome.subtleBorder),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+        if (command != null) {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
             ) {
-                Text(
-                    text = "Run this on your Mac",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = chrome.secondaryText,
-                )
-                Text(
-                    text = prompt.command,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.bodyText,
-                )
-                TextButton(
-                    onClick = { onCopyCommand(prompt.command) },
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text(if (didCopyCommand) "Copied" else "Copy")
+                    Text(
+                        text = "Run this on your Mac",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = chrome.secondaryText,
+                    )
+                    Text(
+                        text = command,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = chrome.bodyText,
+                    )
+                    TextButton(
+                        onClick = { onCopyCommand(command) },
+                    ) {
+                        Text(if (didCopyCommand) "Copied" else "Copy")
+                    }
                 }
             }
+            Text(
+                text = "After the package updates, restart the bridge on your Mac and come back here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        } else {
+            Text(
+                text = "Install the latest Remodex build on this Android phone, then reconnect to the Mac bridge.",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
         }
-        Text(
-            text = "After the package updates, restart the bridge on your Mac and come back here.",
-            style = MaterialTheme.typography.bodySmall,
-            color = chrome.secondaryText,
-        )
     }
 }
 

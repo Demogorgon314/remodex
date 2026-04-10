@@ -210,9 +210,16 @@ fun RecoveryScreen(
         }
 
         bridgeUpdatePrompt?.let { prompt ->
+            val body = buildString {
+                append(prompt.message)
+                prompt.command?.trim()?.takeIf(String::isNotEmpty)?.let { command ->
+                    append("\n\nRun: ")
+                    append(command)
+                }
+            }
             RecoveryStatusCard(
                 title = prompt.title,
-                body = "${prompt.message}\n\nRun: ${prompt.command}",
+                body = body,
                 actionLabel = "Scan again after updating",
                 onAction = {
                     bridgeUpdatePrompt = null
