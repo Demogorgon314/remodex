@@ -3442,7 +3442,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun `switching branches with dirty changes prompts for commit and continue`() = runTest {
+    fun `switching branches with dirty changes proceeds without commit prompt`() = runTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
                 threads = listOf(threadSummary(id = "thread-1", title = "Git thread")),
@@ -3474,17 +3474,9 @@ class AppViewModelTest {
         viewModel.checkoutGitBranch("feature/test")
         advanceUntilIdle()
 
-        assertTrue(repository.checkoutGitBranchRequests.isEmpty())
-        assertEquals(
-            listOf("Cancel", "Commit & Switch"),
-            viewModel.uiState.value.gitSyncAlert?.buttons?.map { button -> button.title },
-        )
-
-        viewModel.performGitSyncAlertAction(RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION)
-        advanceUntilIdle()
-
-        assertEquals(listOf("thread-1" to "WIP before switching branches"), repository.commitGitChangesRequests)
         assertEquals(listOf("thread-1" to "feature/test"), repository.checkoutGitBranchRequests)
+        assertTrue(repository.commitGitChangesRequests.isEmpty())
+        assertNull(viewModel.uiState.value.gitSyncAlert)
     }
 
     @Test

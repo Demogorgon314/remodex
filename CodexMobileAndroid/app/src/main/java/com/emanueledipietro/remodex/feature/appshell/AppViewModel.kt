@@ -4381,28 +4381,7 @@ class AppViewModel(
                 }
             }
             is PendingGitBranchOperation.SwitchBranch -> {
-                if (!isDirty) {
-                    null
-                } else {
-                    RemodexGitSyncAlertUiState(
-                        title = "Commit changes before switching branch?",
-                        message = dirtyBranchAlertMessage(
-                            gitState = gitState,
-                            intro = "These local changes can block checkout or be hard to reason about after the switch. Commit them on ${currentBranch.ifEmpty { "the current branch" }} first, then switch to '${operation.branchName}'.",
-                        ),
-                        buttons = listOf(
-                            RemodexGitSyncAlertButtonUiState(
-                                title = "Cancel",
-                                role = RemodexGitSyncAlertButtonRole.CANCEL,
-                                action = RemodexGitSyncAlertAction.DISMISS_ONLY,
-                            ),
-                            RemodexGitSyncAlertButtonUiState(
-                                title = "Commit & Switch",
-                                action = RemodexGitSyncAlertAction.COMMIT_AND_CONTINUE_GIT_BRANCH_OPERATION,
-                            ),
-                        ),
-                    )
-                }
+                null
             }
         }
     }
