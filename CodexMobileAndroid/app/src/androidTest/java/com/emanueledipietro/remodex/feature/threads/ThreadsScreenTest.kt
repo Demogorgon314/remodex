@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.feature.threads
 
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -300,6 +301,45 @@ class ThreadsScreenTest {
         composeRule.onNodeWithText("Show 2 more").assertIsDisplayed()
         composeRule.onAllNodesWithText("Conversation 10").assertCountEquals(0)
         composeRule.onAllNodesWithText("Conversation 11").assertCountEquals(0)
+    }
+
+    @Composable
+    private fun ThreadsScreen(
+        uiState: AppUiState,
+        onSelectThread: (String) -> Unit,
+        onRefreshThreads: () -> Unit,
+        onRetryConnection: () -> Unit,
+        onCreateThread: (String?) -> Unit,
+        onSetProjectGroupCollapsed: (String, Boolean) -> Unit,
+        onRenameThread: (String, String) -> Unit,
+        onArchiveThread: (String) -> Unit,
+        onUnarchiveThread: (String) -> Unit,
+        onDeleteThread: (String) -> Unit,
+        onArchiveProject: (String) -> Unit,
+        onOpenSettings: () -> Unit,
+        onOpenMyMacs: () -> Unit,
+        onSearchActiveChange: (Boolean) -> Unit,
+        modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier,
+    ) {
+        com.emanueledipietro.remodex.feature.threads.ThreadsScreen(
+            uiState = uiState,
+            onSelectThread = onSelectThread,
+            onRefreshThreads = onRefreshThreads,
+            onRetryConnection = onRetryConnection,
+            onCreateThread = onCreateThread,
+            onCreateWorktreeThread = {},
+            onSetProjectGroupCollapsed = onSetProjectGroupCollapsed,
+            onRenameThread = onRenameThread,
+            onArchiveThread = onArchiveThread,
+            onUnarchiveThread = onUnarchiveThread,
+            onDeleteThread = onDeleteThread,
+            onDeleteManagedWorktreeProject = {},
+            onArchiveProject = onArchiveProject,
+            onOpenSettings = onOpenSettings,
+            onOpenMyMacs = onOpenMyMacs,
+            onSearchActiveChange = onSearchActiveChange,
+            modifier = modifier,
+        )
     }
 
     private fun threadSummary(

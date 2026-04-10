@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.view.ViewGroup
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +33,8 @@ import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
+import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexComposerAutocompletePanel
@@ -45,6 +48,7 @@ import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.ui.theme.RemodexTheme
+import kotlinx.serialization.json.JsonElement
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -117,6 +121,139 @@ class ConversationScreenTest {
         composeRule.onAllNodesWithTag(ComposerAutocompletePanelTag).assertCountEquals(1)
         composeRule.onNodeWithTag(ComposerAutocompleteDismissLayerTag).performClick()
         composeRule.onAllNodesWithTag(ComposerAutocompletePanelTag).assertCountEquals(0)
+    }
+
+    @Test
+    fun tappingComposerAttachmentOpensImagePreviewDialog() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        composerAttachments = listOf(
+                            RemodexComposerAttachment(
+                                id = "composer-attachment-1",
+                                uriString = "content://media/external/images/media/1",
+                                displayName = "Composer image",
+                                payloadDataUrl = sampleInlineImageDataUrl(),
+                            ),
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ComposerAttachmentPreviewCardTag).performClick()
+        composeRule.onNodeWithTag(AttachmentImagePreviewDialogTag).assertIsDisplayed()
+    }
+
+    @Test
+    fun tappingMessageAttachmentOpensImagePreviewDialog() {
+        composeRule.setContent {
+            RemodexTheme {
+                ConversationScreen(
+                    uiState = conversationUiState(
+                        autocompleteState = RemodexComposerAutocompleteState(),
+                        messages = listOf(
+                            RemodexConversationItem(
+                                id = "message-1",
+                                speaker = ConversationSpeaker.USER,
+                                text = "",
+                                attachments = listOf(
+                                    RemodexConversationAttachment(
+                                        id = "message-attachment-1",
+                                        uriString = "remodex://history-image-elided",
+                                        displayName = "Sent image",
+                                        previewDataUrl = sampleInlineImageDataUrl(),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    onRetryConnection = {},
+                    onComposerInputChanged = {},
+                    onSendPrompt = {},
+                    onStopTurn = {},
+                    onRestoreLatestQueuedDraft = {},
+                    onSelectModel = {},
+                    onSelectPlanningMode = {},
+                    onSelectReasoningEffort = {},
+                    onSelectAccessMode = {},
+                    onSelectServiceTier = {},
+                    onOpenAttachmentPicker = {},
+                    onOpenCameraCapture = {},
+                    onRemoveAttachment = {},
+                    onSelectFileAutocomplete = {},
+                    onRemoveMentionedFile = {},
+                    onSelectSkillAutocomplete = {},
+                    onRemoveMentionedSkill = {},
+                    onSelectSlashCommand = {},
+                    onSelectCodeReviewTarget = {},
+                    onSelectCodeReviewBranch = {},
+                    onSelectCodeReviewCommit = {},
+                    onClearReviewSelection = {},
+                    onClearSubagentsSelection = {},
+                    onCloseComposerAutocomplete = {},
+                    onSelectGitBaseBranch = {},
+                    onRefreshGitState = {},
+                    onCheckoutGitBranch = {},
+                    onCreateGitBranch = {},
+                    onCreateGitWorktree = {},
+                    onCommitGitChanges = {},
+                    onPullGitChanges = {},
+                    onPushGitChanges = {},
+                    onDiscardRuntimeChangesAndSync = {},
+                    onForkThread = {},
+                    onOpenSubagentThread = {},
+                    onHydrateSubagentThread = {},
+                    onStartAssistantRevertPreview = {},
+                    onConfirmAssistantRevert = {},
+                    onDismissAssistantRevertSheet = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag(ConversationAttachmentPreviewCardTag).performClick()
+        composeRule.onNodeWithTag(AttachmentImagePreviewDialogTag).assertIsDisplayed()
     }
 
     @Test
@@ -1808,6 +1945,7 @@ class ConversationScreenTest {
         canStop: Boolean = false,
         isSelectedThreadHydrating: Boolean = false,
         messages: List<RemodexConversationItem> = emptyList(),
+        composerAttachments: List<RemodexComposerAttachment> = emptyList(),
         voice: ComposerVoiceUiState = ComposerVoiceUiState(isConnected = true),
         commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails> = emptyMap(),
         statusSheetSignal: Long = 0L,
@@ -1838,6 +1976,7 @@ class ConversationScreenTest {
                 draftText = "",
                 canStop = canStop,
                 voice = voice,
+                attachments = composerAttachments,
                 autocomplete = autocompleteState,
                 queuedDrafts = queuedDraftItems,
                 canRestoreQueuedDrafts = canRestoreQueuedDrafts,
@@ -1850,12 +1989,142 @@ class ConversationScreenTest {
         )
     }
 
+    @Composable
+    private fun ConversationScreen(
+        uiState: AppUiState,
+        onRetryConnection: () -> Unit,
+        onComposerInputChanged: (String) -> Unit,
+        onSendPrompt: () -> Unit,
+        onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit = { _, _ -> },
+        onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit = { _, _ -> },
+        onDismissPlanComposerSession: () -> Unit = {},
+        onStopTurn: () -> Unit,
+        onRestoreLatestQueuedDraft: () -> Unit = {},
+        onRestoreQueuedDraft: (String) -> Unit = {},
+        onSteerQueuedDraft: (String) -> Unit = {},
+        onRemoveQueuedDraft: (String) -> Unit = {},
+        onResumeQueue: () -> Unit = {},
+        onSelectModel: (String?) -> Unit,
+        onSelectPlanningMode: (com.emanueledipietro.remodex.model.RemodexPlanningMode) -> Unit,
+        onSelectReasoningEffort: (String) -> Unit,
+        onSelectAccessMode: (com.emanueledipietro.remodex.model.RemodexAccessMode) -> Unit,
+        onSelectServiceTier: (com.emanueledipietro.remodex.model.RemodexServiceTier?) -> Unit,
+        onOpenAttachmentPicker: () -> Unit,
+        onOpenCameraCapture: () -> Unit,
+        onReceiveComposerAttachmentUris: (List<Uri>) -> Unit = {},
+        onTapVoiceButton: () -> Unit = {},
+        onCancelVoiceRecording: () -> Unit = {},
+        onRemoveAttachment: (String) -> Unit,
+        onSelectFileAutocomplete: (com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch) -> Unit,
+        onRemoveMentionedFile: (String) -> Unit,
+        onSelectSkillAutocomplete: (com.emanueledipietro.remodex.model.RemodexSkillMetadata) -> Unit,
+        onRemoveMentionedSkill: (String) -> Unit,
+        onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
+        onSelectCodeReviewTarget: (com.emanueledipietro.remodex.model.RemodexComposerReviewTarget) -> Unit,
+        onSelectCodeReviewBranch: (String) -> Unit,
+        onSelectCodeReviewCommit: (com.emanueledipietro.remodex.model.RemodexGitCommit) -> Unit,
+        onClearReviewSelection: () -> Unit,
+        onClearSubagentsSelection: () -> Unit,
+        onCloseComposerAutocomplete: () -> Unit,
+        onPrepareForkDestinationSelection: () -> Unit = {},
+        onSelectGitBaseBranch: (String) -> Unit,
+        onRefreshGitState: () -> Unit,
+        onSyncGitChanges: () -> Unit = onRefreshGitState,
+        onScheduleGitStateRefresh: () -> Unit = onRefreshGitState,
+        onRefreshUsageStatus: () -> Unit = {},
+        onRequestContinueOnMac: () -> Unit = {},
+        onCheckoutGitBranch: (String) -> Unit,
+        onCreateGitBranch: (String) -> Unit,
+        onCreateGitWorktree: () -> Unit = {},
+        onCommitGitChanges: () -> Unit,
+        onCommitAndPushGitChanges: () -> Unit = {},
+        onPullGitChanges: () -> Unit,
+        onPushGitChanges: () -> Unit,
+        onCreatePullRequest: () -> Unit = {},
+        onDiscardRuntimeChangesAndSync: () -> Unit,
+        onForkThread: (com.emanueledipietro.remodex.model.RemodexComposerForkDestination) -> Unit,
+        onOpenSubagentThread: (String) -> Unit,
+        onHydrateSubagentThread: (String) -> Unit,
+        onStartAssistantRevertPreview: (String) -> Unit,
+        onConfirmAssistantRevert: () -> Unit,
+        onDismissAssistantRevertSheet: () -> Unit,
+        modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier,
+    ) {
+        com.emanueledipietro.remodex.feature.turn.ConversationScreen(
+            uiState = uiState,
+            onRetryConnection = onRetryConnection,
+            onComposerInputChanged = onComposerInputChanged,
+            onSendPrompt = onSendPrompt,
+            onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+            onSubmitPlanFollowUp = onSubmitPlanFollowUp,
+            onDismissPlanComposerSession = onDismissPlanComposerSession,
+            onStopTurn = onStopTurn,
+            onRestoreLatestQueuedDraft = onRestoreLatestQueuedDraft,
+            onRestoreQueuedDraft = onRestoreQueuedDraft,
+            onSteerQueuedDraft = onSteerQueuedDraft,
+            onRemoveQueuedDraft = onRemoveQueuedDraft,
+            onResumeQueue = onResumeQueue,
+            onSelectModel = onSelectModel,
+            onSelectPlanningMode = onSelectPlanningMode,
+            onSelectReasoningEffort = onSelectReasoningEffort,
+            onSelectAccessMode = onSelectAccessMode,
+            onSelectServiceTier = onSelectServiceTier,
+            onOpenAttachmentPicker = onOpenAttachmentPicker,
+            onOpenCameraCapture = onOpenCameraCapture,
+            onReceiveComposerAttachmentUris = onReceiveComposerAttachmentUris,
+            onTapVoiceButton = onTapVoiceButton,
+            onCancelVoiceRecording = onCancelVoiceRecording,
+            onRemoveAttachment = onRemoveAttachment,
+            onSelectFileAutocomplete = onSelectFileAutocomplete,
+            onRemoveMentionedFile = onRemoveMentionedFile,
+            onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+            onRemoveMentionedSkill = onRemoveMentionedSkill,
+            onSelectSlashCommand = onSelectSlashCommand,
+            onSelectCodeReviewTarget = onSelectCodeReviewTarget,
+            onSelectCodeReviewBranch = onSelectCodeReviewBranch,
+            onSelectCodeReviewCommit = onSelectCodeReviewCommit,
+            onClearReviewSelection = onClearReviewSelection,
+            onClearSubagentsSelection = onClearSubagentsSelection,
+            onCloseComposerAutocomplete = onCloseComposerAutocomplete,
+            onPrepareForkDestinationSelection = onPrepareForkDestinationSelection,
+            onSelectGitBaseBranch = onSelectGitBaseBranch,
+            onRefreshGitState = onRefreshGitState,
+            onSyncGitChanges = onSyncGitChanges,
+            onScheduleGitStateRefresh = onScheduleGitStateRefresh,
+            onRefreshUsageStatus = onRefreshUsageStatus,
+            onRequestContinueOnMac = onRequestContinueOnMac,
+            onCheckoutGitBranch = onCheckoutGitBranch,
+            onCreateGitBranch = onCreateGitBranch,
+            onCommitGitChanges = onCommitGitChanges,
+            onCommitAndPushGitChanges = onCommitAndPushGitChanges,
+            onPullGitChanges = onPullGitChanges,
+            onPushGitChanges = onPushGitChanges,
+            onCreatePullRequest = onCreatePullRequest,
+            onDiscardRuntimeChangesAndSync = onDiscardRuntimeChangesAndSync,
+            onHandoffThreadToWorktree = { _, _ -> onCreateGitWorktree() },
+            onForkThreadIntoNewWorktree = { _, _ -> onCreateGitWorktree() },
+            onForkThread = onForkThread,
+            onOpenSubagentThread = onOpenSubagentThread,
+            onHydrateSubagentThread = onHydrateSubagentThread,
+            onStartAssistantRevertPreview = onStartAssistantRevertPreview,
+            onConfirmAssistantRevert = onConfirmAssistantRevert,
+            onDismissAssistantRevertSheet = onDismissAssistantRevertSheet,
+            modifier = modifier,
+        )
+    }
+
     private fun queuedDraft(id: String, text: String): RemodexQueuedDraft {
         return RemodexQueuedDraft(
             id = id,
             text = text,
             createdAtEpochMs = 1L,
         )
+    }
+
+    private fun sampleInlineImageDataUrl(): String {
+        return "data:image/png;base64," +
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAA" +
+            "AAC0lEQVR42mP8/x8AAwMCAO+aM6sAAAAASUVORK5CYII="
     }
 
     private fun planItem(

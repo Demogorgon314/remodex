@@ -11,6 +11,7 @@ import android.text.format.DateFormat
 import android.util.TypedValue
 import android.view.HapticFeedbackConstants
 import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -72,6 +73,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -268,10 +270,12 @@ import com.emanueledipietro.remodex.ui.theme.RemodexConversationShapes
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.drawscope.Stroke
+import coil.load
 import io.noties.markwon.syntax.Prism4jSyntaxHighlight
 import io.noties.markwon.syntax.Prism4jThemeDarkula
 import io.noties.markwon.syntax.Prism4jThemeDefault
@@ -284,6 +288,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import com.emanueledipietro.remodex.R
+import com.github.chrisbanes.photoview.PhotoView
 
 private val ComposerFollowBottomThreshold = 12.dp
 private val ComposerTrailingButtonSize = 32.dp
@@ -326,6 +331,11 @@ private data class TimelineBottomAnchorRequest(
     val autocompleteVisible: Boolean,
     val queuedDraftCount: Int,
     val pinnedPlanItemId: String?,
+)
+
+private data class AttachmentImagePreviewState(
+    val imageUri: String,
+    val title: String,
 )
 
 internal data class VisibleConversationTimelineWindow(
@@ -846,6 +856,9 @@ internal const val ConversationWelcomeStateTag = "conversation_welcome_state"
 internal const val ConversationWelcomeLoadingTag = "conversation_welcome_loading"
 internal const val GitBranchPickerDialogTag = "git_branch_picker_dialog"
 internal const val GitBranchPickerSearchFieldTag = "git_branch_picker_search_field"
+internal const val ComposerAttachmentPreviewCardTag = "composer_attachment_preview_card"
+internal const val ConversationAttachmentPreviewCardTag = "conversation_attachment_preview_card"
+internal const val AttachmentImagePreviewDialogTag = "attachment_image_preview_dialog"
 private const val FileChangeDetailSheetAutoExpandMaxLines = 160
 
 private data class ComposerAccessoryChipColors(
@@ -5794,6 +5807,7 @@ private fun ComposerAccessoryStrip(
 ) {
     val composer = uiState.composer
     val chrome = remodexConversationChrome()
+    var attachmentPreview by remember(composer.attachments) { mutableStateOf<AttachmentImagePreviewState?>(null) }
     val neutralChipColors = remember(chrome) {
         ComposerAccessoryChipColors(
             tint = chrome.titleText,
@@ -5818,6 +5832,12 @@ private fun ComposerAccessoryStrip(
                 composer.attachments.forEach { attachment ->
                     AttachmentPreviewCard(
                         attachment = attachment,
+                        onPreviewAttachment = { previewUri ->
+                            attachmentPreview = AttachmentImagePreviewState(
+                                imageUri = previewUri,
+                                title = attachment.displayName,
+                            )
+                        },
                         onRemoveAttachment = onRemoveAttachment,
                     )
                 }
@@ -5877,6 +5897,13 @@ private fun ComposerAccessoryStrip(
                 )
             }
         }
+    }
+
+    attachmentPreview?.let { preview ->
+        AttachmentImagePreviewDialog(
+            preview = preview,
+            onDismiss = { attachmentPreview = null },
+        )
     }
 }
 
@@ -6838,16 +6865,22 @@ private fun forkDestinationIcon(destination: RemodexComposerForkDestination): Im
 @Composable
 private fun AttachmentPreviewCard(
     attachment: RemodexComposerAttachment,
+    onPreviewAttachment: (String) -> Unit,
     onRemoveAttachment: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val thumbnailUri = remember(attachment.uriString) { attachment.uriString }
+    val previewUri = remember(attachment) { composerAttachmentPreviewUri(attachment) }
     Box(
         modifier = Modifier
             .size(ComposerAttachmentThumbnailSize + 8.dp)
             .padding(top = 4.dp, end = 4.dp),
     ) {
         Surface(
-            modifier = Modifier.size(ComposerAttachmentThumbnailSize),
+            modifier = Modifier
+                .size(ComposerAttachmentThumbnailSize)
+                .testTag(ComposerAttachmentPreviewCardTag)
+                .clickable(onClick = { onPreviewAttachment(previewUri) }),
             color = chrome.nestedSurface,
             shape = RoundedCornerShape(12.dp),
             border = BorderStroke(1.dp, chrome.subtleBorder),
@@ -6868,7 +6901,7 @@ private fun AttachmentPreviewCard(
                         .size(20.dp),
                 )
                 AsyncImage(
-                    model = attachment.uriString,
+                    model = thumbnailUri,
                     contentDescription = attachment.displayName,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -12659,6 +12692,7 @@ private fun MessageAttachmentStrip(
     alignToEnd: Boolean,
 ) {
     val chrome = remodexConversationChrome()
+    var attachmentPreview by remember(attachments) { mutableStateOf<AttachmentImagePreviewState?>(null) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (alignToEnd) Arrangement.End else Arrangement.Start,
@@ -12669,8 +12703,28 @@ private fun MessageAttachmentStrip(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             attachments.forEach { attachment ->
+                val renderUri = attachment.renderUriString
+                val canRenderThumbnail = remember(renderUri) {
+                    canRenderAttachmentThumbnail(renderUri)
+                }
+                val onPreviewAttachment = remember(attachment, renderUri, canRenderThumbnail) {
+                    {
+                        if (canRenderThumbnail) {
+                            attachmentPreview = AttachmentImagePreviewState(
+                                imageUri = renderUri,
+                                title = attachment.displayName,
+                            )
+                        }
+                    }
+                }
                 Surface(
-                    modifier = Modifier.width(140.dp),
+                    modifier = Modifier
+                        .width(140.dp)
+                        .testTag(ConversationAttachmentPreviewCardTag)
+                        .clickable(
+                            enabled = canRenderThumbnail,
+                            onClick = onPreviewAttachment,
+                        ),
                     color = chrome.nestedSurface,
                     shape = RemodexConversationShapes.nestedCard,
                     border = BorderStroke(1.dp, chrome.subtleBorder),
@@ -12681,10 +12735,6 @@ private fun MessageAttachmentStrip(
                         modifier = Modifier.padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        val renderUri = attachment.renderUriString
-                        val canRenderThumbnail = remember(renderUri) {
-                            canRenderAttachmentThumbnail(renderUri)
-                        }
                         val inlinePreviewBitmap = remember(renderUri, canRenderThumbnail) {
                             if (!canRenderThumbnail) {
                                 null
@@ -12736,6 +12786,108 @@ private fun MessageAttachmentStrip(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                }
+            }
+        }
+    }
+
+    attachmentPreview?.let { preview ->
+        AttachmentImagePreviewDialog(
+            preview = preview,
+            onDismiss = { attachmentPreview = null },
+        )
+    }
+}
+
+private fun composerAttachmentPreviewUri(attachment: RemodexComposerAttachment): String {
+    return attachment.payloadDataUrl
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: attachment.uriString
+}
+
+@Composable
+private fun AttachmentImagePreviewDialog(
+    preview: AttachmentImagePreviewState,
+    onDismiss: () -> Unit,
+) {
+    val decodedBitmap = remember(preview.imageUri) {
+        decodeInlineImageDataUrlBytes(preview.imageUri)
+            ?.let { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.92f))
+                .testTag(AttachmentImagePreviewDialogTag),
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { context ->
+                    PhotoView(context).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        maximumScale = 5f
+                        mediumScale = 2.5f
+                        minimumScale = 1f
+                        adjustViewBounds = true
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        setOnTouchListener { view, _ ->
+                            view.parent?.requestDisallowInterceptTouchEvent(true)
+                            false
+                        }
+                    }
+                },
+                update = { imageView ->
+                    imageView.contentDescription = preview.title
+                    if (decodedBitmap != null) {
+                        imageView.setImageBitmap(decodedBitmap)
+                    } else {
+                        imageView.load(preview.imageUri)
+                    }
+                },
+            )
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.42f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Close,
+                            contentDescription = "Close preview",
+                            tint = Color.White,
+                        )
+                    }
+                }
+
+                if (preview.title.isNotBlank()) {
+                    Text(
+                        text = preview.title,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
