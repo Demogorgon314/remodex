@@ -1502,6 +1502,33 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project removes duplicate file change rows when finalized same text arrives after turnless recap`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "file-turnless",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "Applied pending repository changes",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "file-finalized",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.FILE_CHANGE,
+                    text = "Applied pending repository changes",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("file-finalized"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
     fun `project keeps distinct file change rows when paths differ`() {
         val projected = TurnTimelineReducer.project(
             listOf(

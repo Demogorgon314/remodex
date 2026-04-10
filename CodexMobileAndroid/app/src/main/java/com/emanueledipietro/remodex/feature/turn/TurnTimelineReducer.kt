@@ -1264,17 +1264,34 @@ object TurnTimelineReducer {
         val signatures = items.map(::fileChangeDedupSignature)
         val supersededIndices = mutableSetOf<Int>()
 
-        for (olderIndex in items.indices) {
-            val olderSignature = signatures[olderIndex] ?: continue
-            for (newerIndex in items.indices) {
-                if (newerIndex <= olderIndex) {
-                    continue
+        val indicesByKey = mutableMapOf<String, MutableList<Int>>()
+        val pathBearingIndices = mutableListOf<Int>()
+
+        for (index in items.indices) {
+            val sig = signatures[index] ?: continue
+
+            if (sig.key != null) {
+                indicesByKey[sig.key]?.forEach { prevIndex ->
+                    if (prevIndex !in supersededIndices) {
+                        val prevSig = signatures[prevIndex]!!
+                        if (fileChangeMessage(sig, prevSig)) {
+                            supersededIndices += prevIndex
+                        }
+                    }
                 }
-                val newerSignature = signatures[newerIndex] ?: continue
-                if (fileChangeMessage(newerSignature, olderSignature)) {
-                    supersededIndices += olderIndex
-                    break
+                indicesByKey.getOrPut(sig.key) { mutableListOf() }.add(index)
+            }
+
+            if (sig.paths.isNotEmpty()) {
+                for (prevIndex in pathBearingIndices) {
+                    if (prevIndex in supersededIndices) continue
+                    val prevSig = signatures[prevIndex]!!
+                    if (sig.key != null && sig.key == prevSig.key) continue
+                    if (fileChangeMessage(sig, prevSig)) {
+                        supersededIndices += prevIndex
+                    }
                 }
+                pathBearingIndices.add(index)
             }
         }
 
