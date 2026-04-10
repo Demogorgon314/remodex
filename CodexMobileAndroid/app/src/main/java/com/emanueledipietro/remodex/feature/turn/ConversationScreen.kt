@@ -176,6 +176,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
@@ -1327,7 +1328,7 @@ private fun rememberConversationScreenDerivedState(
             )
         }
     }
-    val selectedCommandExecutionItem = remember(thread.messages, commandDetailsMessageId) {
+    val selectedCommandExecutionItem = remember(messagesIdentity, commandDetailsMessageId) {
         commandDetailsMessageId?.let { messageId ->
             thread.messages.firstOrNull { item ->
                 item.id == messageId && item.kind == ConversationItemKind.COMMAND_EXECUTION
@@ -1553,8 +1554,11 @@ fun ConversationScreen(
     val selectedCommandExecutionItem = derivedState.selectedCommandExecutionItem
     val selectedCommandExecutionStatus = derivedState.selectedCommandExecutionStatus
     val backgroundTerminalSessions = derivedState.backgroundTerminalSessions
-    val markdownPrewarmRequests = remember(timelineItemsIdentity) {
-        selectConversationMarkdownPrewarmRequests(timelineItems)
+    val visibleTimelineItemsIdentity = remember(visibleTimelineItems) {
+        visibleTimelineItems.structuralIdentity()
+    }
+    val markdownPrewarmRequests = remember(visibleTimelineItemsIdentity) {
+        selectConversationMarkdownPrewarmRequests(visibleTimelineItems)
     }
     val showsEmptyTimelineState = timelineItems.isEmpty()
     val composerHasForegroundContent = remember(
@@ -2569,6 +2573,8 @@ private fun LazyListScope.conversationTimelineItems(
     onHydrateSubagentThread: (String) -> Unit,
     onLoadEarlierMessages: () -> Unit,
 ) {
+    val assistantResponseMetricsFooterText = assistantResponseMetrics
+        ?.let(::formatAssistantResponseMetricsLabel)
     if (timelineItems.isEmpty()) {
         item {
             Spacer(
@@ -2590,18 +2596,44 @@ private fun LazyListScope.conversationTimelineItems(
             key = ::conversationTimelineItemKey,
             contentType = { item -> "${item.speaker.name}:${item.kind.name}" },
         ) { message ->
+            val streamingTextState = if (message.speaker == ConversationSpeaker.ASSISTANT) {
+                streamingAssistantTextsByMessageId[message.id]
+            } else {
+                null
+            }
+            val accessoryState = blockAccessories[message.id]
+            val assistantRevertPresentation = assistantRevertStatesByMessageId[message.id]
+            val contextMenuFooterText = assistantResponseMetricsFooterText
+                ?.takeIf { message.speaker == ConversationSpeaker.ASSISTANT && assistantResponseMetrics?.messageId == message.id }
+            val commandExecutionDetails = message.itemId?.let(commandExecutionDetailsByItemId::get)
+            val relevantThreads = if (
+                message.speaker == ConversationSpeaker.SYSTEM &&
+                message.kind == ConversationItemKind.SUBAGENT_ACTION
+            ) {
+                threads
+            } else {
+                emptyList()
+            }
+            val relevantThreadMessages = if (
+                message.speaker == ConversationSpeaker.SYSTEM &&
+                message.kind == ConversationItemKind.SUBAGENT_ACTION
+            ) {
+                threadMessages
+            } else {
+                emptyList()
+            }
             if (message.id in animatedLoadEarlierMessageIds) {
                 AnimatedLoadEarlierConversationRow(itemId = message.id) {
                     ConversationTimelineMessageRow(
                         message = message,
-                        streamingAssistantTextsByMessageId = streamingAssistantTextsByMessageId,
-                        blockAccessories = blockAccessories,
-                        assistantRevertStatesByMessageId = assistantRevertStatesByMessageId,
-                        assistantResponseMetrics = assistantResponseMetrics,
-                        commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
-                        threads = threads,
+                        streamingTextState = streamingTextState,
+                        accessoryState = accessoryState,
+                        assistantRevertPresentation = assistantRevertPresentation,
+                        contextMenuFooterText = contextMenuFooterText,
+                        commandExecutionDetails = commandExecutionDetails,
+                        threads = relevantThreads,
                         threadId = threadId,
-                        threadMessages = threadMessages,
+                        threadMessages = relevantThreadMessages,
                         onStartAssistantRevertPreview = onStartAssistantRevertPreview,
                         onOpenFileChangeDetails = onOpenFileChangeDetails,
                         onSubmitStructuredUserInput = onSubmitStructuredUserInput,
@@ -2614,14 +2646,14 @@ private fun LazyListScope.conversationTimelineItems(
             } else {
                 ConversationTimelineMessageRow(
                     message = message,
-                    streamingAssistantTextsByMessageId = streamingAssistantTextsByMessageId,
-                    blockAccessories = blockAccessories,
-                    assistantRevertStatesByMessageId = assistantRevertStatesByMessageId,
-                    assistantResponseMetrics = assistantResponseMetrics,
-                    commandExecutionDetailsByItemId = commandExecutionDetailsByItemId,
-                    threads = threads,
+                    streamingTextState = streamingTextState,
+                    accessoryState = accessoryState,
+                    assistantRevertPresentation = assistantRevertPresentation,
+                    contextMenuFooterText = contextMenuFooterText,
+                    commandExecutionDetails = commandExecutionDetails,
+                    threads = relevantThreads,
                     threadId = threadId,
-                    threadMessages = threadMessages,
+                    threadMessages = relevantThreadMessages,
                     onStartAssistantRevertPreview = onStartAssistantRevertPreview,
                     onOpenFileChangeDetails = onOpenFileChangeDetails,
                     onSubmitStructuredUserInput = onSubmitStructuredUserInput,
@@ -2683,11 +2715,11 @@ private fun AnimatedLoadEarlierConversationRow(
 @Composable
 private fun ConversationTimelineMessageRow(
     message: RemodexConversationItem,
-    streamingAssistantTextsByMessageId: Map<String, StreamingAssistantTextState>,
-    blockAccessories: Map<String, ConversationBlockAccessoryState>,
-    assistantRevertStatesByMessageId: Map<String, RemodexAssistantRevertPresentation>,
-    assistantResponseMetrics: RemodexAssistantResponseMetrics?,
-    commandExecutionDetailsByItemId: Map<String, RemodexCommandExecutionDetails>,
+    streamingTextState: StreamingAssistantTextState?,
+    accessoryState: ConversationBlockAccessoryState?,
+    assistantRevertPresentation: RemodexAssistantRevertPresentation?,
+    contextMenuFooterText: String?,
+    commandExecutionDetails: RemodexCommandExecutionDetails?,
     threads: List<RemodexThreadSummary>,
     threadId: String,
     threadMessages: List<RemodexConversationItem>,
@@ -2703,35 +2735,25 @@ private fun ConversationTimelineMessageRow(
         ConversationSpeaker.USER -> UserConversationRow(item = message)
         ConversationSpeaker.ASSISTANT -> AssistantConversationRow(
             item = message,
-            streamingTextState = streamingAssistantTextsByMessageId[message.id],
-            accessoryState = blockAccessories[message.id],
-            assistantRevertPresentation = assistantRevertStatesByMessageId[message.id],
-            contextMenuFooterText = assistantResponseMetrics
-                ?.takeIf { metrics -> metrics.messageId == message.id }
-                ?.let(::formatAssistantResponseMetricsLabel),
+            streamingTextState = streamingTextState,
+            accessoryState = accessoryState,
+            assistantRevertPresentation = assistantRevertPresentation,
+            contextMenuFooterText = contextMenuFooterText,
             onTapAssistantRevert = onStartAssistantRevertPreview,
             onOpenFileChangeDetails = onOpenFileChangeDetails,
         )
 
         ConversationSpeaker.SYSTEM -> SystemConversationRow(
             item = message,
-            accessoryState = blockAccessories[message.id],
+            accessoryState = accessoryState,
             onSubmitStructuredUserInput = onSubmitStructuredUserInput,
-            commandExecutionDetails = message.itemId?.let(commandExecutionDetailsByItemId::get),
+            commandExecutionDetails = commandExecutionDetails,
             onOpenPlanDetails = onOpenPlanDetails,
             onOpenFileChangeDetails = onOpenFileChangeDetails,
             onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
             parentThreadId = threadId,
-            threads = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
-                threads
-            } else {
-                emptyList()
-            },
-            parentThreadMessages = if (message.kind == ConversationItemKind.SUBAGENT_ACTION) {
-                threadMessages
-            } else {
-                emptyList()
-            },
+            threads = threads,
+            parentThreadMessages = threadMessages,
             onOpenSubagentThread = onOpenSubagentThread,
             onHydrateSubagentThread = onHydrateSubagentThread,
         )
@@ -12759,6 +12781,13 @@ private fun MessageAttachmentStrip(
     alignToEnd: Boolean,
 ) {
     val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val thumbnailWidthPx = remember(density) {
+        with(density) { 120.dp.roundToPx() }
+    }
+    val thumbnailHeightPx = remember(density) {
+        with(density) { 76.dp.roundToPx() }
+    }
     var attachmentPreview by remember(attachments) { mutableStateOf<AttachmentImagePreviewState?>(null) }
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -12806,11 +12835,11 @@ private fun MessageAttachmentStrip(
                             if (!canRenderThumbnail) {
                                 null
                             } else {
-                                decodeInlineImageDataUrlBytes(renderUri)
-                                ?.let { previewBytes ->
-                                    BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size)
-                                }
-                                ?.asImageBitmap()
+                                decodeInlineImageThumbnailBitmap(
+                                    dataUrl = renderUri,
+                                    requestedWidthPx = thumbnailWidthPx,
+                                    requestedHeightPx = thumbnailHeightPx,
+                                )
                             }
                         }
                         if (inlinePreviewBitmap != null) {
@@ -12984,6 +13013,55 @@ internal fun canRenderAttachmentThumbnail(uriString: String): Boolean {
         normalized.startsWith("file:///sdcard/") ||
         normalized.startsWith("file:///data/user/") ||
         normalized.startsWith("file:///data/data/")
+}
+
+private fun decodeInlineImageThumbnailBitmap(
+    dataUrl: String,
+    requestedWidthPx: Int,
+    requestedHeightPx: Int,
+): ImageBitmap? {
+    val previewBytes = decodeInlineImageDataUrlBytes(dataUrl) ?: return null
+    val bounds = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+        return null
+    }
+    val decodeOptions = BitmapFactory.Options().apply {
+        inSampleSize = calculateInlineImageSampleSize(
+            sourceWidth = bounds.outWidth,
+            sourceHeight = bounds.outHeight,
+            requestedWidthPx = requestedWidthPx,
+            requestedHeightPx = requestedHeightPx,
+        )
+    }
+    return BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size, decodeOptions)
+        ?.asImageBitmap()
+}
+
+private fun calculateInlineImageSampleSize(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    requestedWidthPx: Int,
+    requestedHeightPx: Int,
+): Int {
+    if (
+        sourceWidth <= 0 ||
+        sourceHeight <= 0 ||
+        requestedWidthPx <= 0 ||
+        requestedHeightPx <= 0
+    ) {
+        return 1
+    }
+    var sampleSize = 1
+    while (
+        sourceWidth / (sampleSize * 2) >= requestedWidthPx &&
+        sourceHeight / (sampleSize * 2) >= requestedHeightPx
+    ) {
+        sampleSize *= 2
+    }
+    return sampleSize
 }
 
 @Composable
