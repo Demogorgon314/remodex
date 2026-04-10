@@ -60,6 +60,7 @@ data class ThreadSyncSnapshot(
     val runtimeConfig: RemodexRuntimeConfig,
     val timelineMutations: List<TimelineMutation>,
     val timelineItems: List<RemodexConversationItem> = emptyList(),
+    val assistantChangeSets: List<RemodexAssistantChangeSet> = emptyList(),
 )
 
 class StreamingAssistantTextHandle internal constructor(

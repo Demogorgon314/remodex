@@ -77,6 +77,7 @@ import com.emanueledipietro.remodex.model.RemodexSubagentState
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
+import com.emanueledipietro.remodex.model.RemodexUnifiedPatchAnalysis
 import com.emanueledipietro.remodex.model.RemodexUnifiedPatchParser
 import com.emanueledipietro.remodex.model.androidUserMessageText
 import com.emanueledipietro.remodex.model.fallbackConversationImageDisplayName
@@ -115,6 +116,8 @@ import java.util.UUID
 import kotlin.math.abs
 
 internal fun shouldIgnoreStreamingTextDelta(delta: String): Boolean = delta.isEmpty()
+
+internal fun normalizedIdentifier(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)
 
 internal fun assistantLifecycleStartedText(existingText: String?): String = existingText.orEmpty()
 
@@ -592,6 +595,11 @@ class BridgeThreadSyncService(
         val item: com.emanueledipietro.remodex.model.RemodexConversationItem,
     )
 
+    private data class DecodedHistorySnapshot(
+        val mutations: List<TimelineMutation>,
+        val assistantChangeSets: List<RemodexAssistantChangeSet>,
+    )
+
     private data class AssistantCompletionFingerprint(
         val text: String,
         val timestampMs: Long,
@@ -804,6 +812,7 @@ class BridgeThreadSyncService(
                     isRunning = threadHasKnownRunningState(incoming.id),
                     timelineMutations = existing?.timelineMutations ?: incoming.timelineMutations,
                     timelineItems = existing?.timelineItems ?: incoming.timelineItems,
+                    assistantChangeSets = existing?.assistantChangeSets ?: incoming.assistantChangeSets,
                     runtimeConfig = mergeRuntimeConfig(
                         existing = existing?.runtimeConfig,
                         incoming = incoming.runtimeConfig,
@@ -1035,13 +1044,17 @@ class BridgeThreadSyncService(
         val rawHistorySummary by lazy(LazyThreadSafetyMode.NONE) {
             summarizeRawThreadHistoryFileChanges(threadObject)
         }
-        val decodedHistoryItems by lazy(LazyThreadSafetyMode.NONE) {
-            TurnTimelineReducer.reduce(
-                decodeHistoryItems(
-                    threadId = threadId,
-                    threadObject = threadObject,
-                ),
+        val decodedHistorySnapshot by lazy(LazyThreadSafetyMode.NONE) {
+            decodeHistorySnapshotData(
+                threadId = threadId,
+                threadObject = threadObject,
             )
+        }
+        val decodedHistoryItems by lazy(LazyThreadSafetyMode.NONE) {
+            TurnTimelineReducer.reduce(decodedHistorySnapshot.mutations)
+        }
+        val decodedHistoryAssistantChangeSets by lazy(LazyThreadSafetyMode.NONE) {
+            decodedHistorySnapshot.assistantChangeSets
         }
         var hydrationLogContext: ThreadHistoryHydrationLogContext? = null
 
@@ -1080,6 +1093,10 @@ class BridgeThreadSyncService(
             )?.copy(
                 timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
                 timelineItems = mergedHistoryItems,
+                assistantChangeSets = mergeAssistantChangeSets(
+                    existing = baseSnapshot?.assistantChangeSets.orEmpty(),
+                    incoming = decodedHistoryAssistantChangeSets,
+                ),
                 isRunning = threadIsRunning,
             )
         }
@@ -2173,6 +2190,13 @@ class BridgeThreadSyncService(
         if (applyResult.success) {
             val now = nowEpochMs()
             updateThread(threadId) { snapshot ->
+                val nextChangeSets = assistantChangeSetLedger(snapshot).map { changeSet ->
+                    if (changeSet.forwardUnifiedPatch == normalizedPatch) {
+                        changeSet.copy(status = RemodexAssistantChangeSetStatus.REVERTED)
+                    } else {
+                        changeSet
+                    }
+                }
                 val revertMutation = TimelineMutation.Upsert(
                     timelineItem(
                         id = "assistant-revert-$now",
@@ -2181,14 +2205,17 @@ class BridgeThreadSyncService(
                         orderIndex = nextOrderIndex(snapshot),
                     ),
                 )
-                snapshot.copy(
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                    timelineMutations = snapshot.timelineMutations + revertMutation,
-                    timelineItems = TurnTimelineReducer.reduce(
-                        reducedTimelineItems(snapshot),
-                        revertMutation,
+                snapshotWithAssistantChangeSetMirror(
+                    snapshot = snapshot.copy(
+                        lastUpdatedEpochMs = now,
+                        lastUpdatedLabel = relativeUpdatedLabel(now),
+                        timelineMutations = snapshot.timelineMutations + revertMutation,
+                        timelineItems = TurnTimelineReducer.reduce(
+                            reducedTimelineItems(snapshot),
+                            revertMutation,
+                        ),
                     ),
+                    assistantChangeSets = nextChangeSets,
                 )
             }
         }
@@ -5059,6 +5086,19 @@ class BridgeThreadSyncService(
         val body = presentation.body
         val planState = presentation.planState
         val subagentAction = presentation.subagentAction
+        if (
+            isCompleted &&
+            kind == ConversationItemKind.FILE_CHANGE &&
+            resolvedTurnId != null
+        ) {
+            extractChangeSetUnifiedPatch(itemObject, itemType)?.let { patch ->
+                recordFallbackFileChangePatch(
+                    threadId = threadId,
+                    turnId = resolvedTurnId,
+                    patch = patch,
+                )
+            }
+        }
 
         val messageId = streamingMessageId(
             itemId = itemId,
@@ -5723,6 +5763,11 @@ class BridgeThreadSyncService(
             return
         }
         upsertTurnDiffFileChange(
+            threadId = threadId,
+            turnId = resolvedTurnId,
+            diff = diff,
+        )
+        recordTurnDiffChangeSet(
             threadId = threadId,
             turnId = resolvedTurnId,
             diff = diff,
@@ -6840,48 +6885,156 @@ class BridgeThreadSyncService(
         )
     }
 
+    private fun recordTurnDiffChangeSet(
+        threadId: String,
+        turnId: String,
+        diff: String,
+    ) {
+        recordChangeSetPatch(
+            threadId = threadId,
+            turnId = turnId,
+            patch = diff,
+            source = RemodexAssistantChangeSetSource.TURN_DIFF,
+        )
+    }
+
+    private fun recordFallbackFileChangePatch(
+        threadId: String,
+        turnId: String,
+        patch: String,
+    ) {
+        recordChangeSetPatch(
+            threadId = threadId,
+            turnId = turnId,
+            patch = patch,
+            source = RemodexAssistantChangeSetSource.FILE_CHANGE_FALLBACK,
+        )
+    }
+
+    private fun recordChangeSetPatch(
+        threadId: String,
+        turnId: String,
+        patch: String,
+        source: RemodexAssistantChangeSetSource,
+    ) {
+        val normalizedTurnId = normalizedIdentifier(turnId) ?: return
+        val normalizedPatch = RemodexUnifiedPatchParser.normalize(patch) ?: return
+        val snapshot = currentThreadSnapshot(threadId) ?: return
+        val existingLedger = assistantChangeSetLedger(snapshot)
+        val existingChangeSet = existingLedger.lastOrNull { changeSet ->
+            normalizedIdentifier(changeSet.turnId) == normalizedTurnId
+        }
+        if (
+            source == RemodexAssistantChangeSetSource.FILE_CHANGE_FALLBACK &&
+            existingChangeSet?.source == RemodexAssistantChangeSetSource.TURN_DIFF
+        ) {
+            return
+        }
+
+        val analysis = RemodexUnifiedPatchParser.analyze(normalizedPatch)
+        val nextChangeSet = buildChangeSetPatchUpdate(
+            threadId = threadId,
+            turnId = normalizedTurnId,
+            normalizedPatch = normalizedPatch,
+            source = source,
+            analysis = analysis,
+            existing = existingChangeSet,
+        )
+        val merged = existingLedger.toMutableList().apply {
+            if (existingChangeSet == null) {
+                add(nextChangeSet)
+            } else {
+                val existingIndex = indexOfFirst { changeSet -> changeSet.id == existingChangeSet.id }
+                if (existingIndex >= 0) {
+                    this[existingIndex] = nextChangeSet
+                } else {
+                    add(nextChangeSet)
+                }
+            }
+        }
+
+        updateThread(threadId) { current ->
+            val currentById = assistantChangeSetLedger(current).associateBy(RemodexAssistantChangeSet::id)
+            val resolved = merged.map { candidate ->
+                currentById[candidate.id]?.let { existing ->
+                    preserveAssistantChangeSetTerminalState(existing = existing, incoming = candidate)
+                } ?: candidate
+            }
+            snapshotWithAssistantChangeSetMirror(
+                snapshot = current,
+                assistantChangeSets = resolved.sortedWith(
+                    compareBy<RemodexAssistantChangeSet>({ it.turnId }, { it.id }),
+                ),
+            )
+        }
+        finalizeAssistantChangeSetsForTurn(threadId = threadId, turnId = normalizedTurnId)
+    }
+
+    private fun noteAssistantMessage(
+        threadId: String,
+        turnId: String?,
+        assistantMessageId: String,
+    ) {
+        val normalizedTurnId = normalizedIdentifier(turnId) ?: return
+        val normalizedAssistantMessageId = normalizedIdentifier(assistantMessageId) ?: return
+        val snapshot = currentThreadSnapshot(threadId) ?: return
+        val existingLedger = assistantChangeSetLedger(snapshot)
+        val changeSetIndex = existingLedger.indexOfLast { changeSet ->
+            normalizedIdentifier(changeSet.turnId) == normalizedTurnId
+        }
+        if (changeSetIndex < 0) {
+            return
+        }
+
+        val updatedChangeSet = existingLedger[changeSetIndex].copy(
+            assistantMessageId = normalizedAssistantMessageId,
+            repoRoot = existingLedger[changeSetIndex].repoRoot.ifNullOrBlank(snapshot.projectPath),
+        )
+        if (updatedChangeSet == existingLedger[changeSetIndex]) {
+            finalizeAssistantChangeSetsForTurn(threadId = threadId, turnId = normalizedTurnId)
+            return
+        }
+
+        updateThread(threadId) { current ->
+            val nextChangeSets = assistantChangeSetLedger(current).toMutableList()
+            val currentIndex = nextChangeSets.indexOfFirst { changeSet -> changeSet.id == updatedChangeSet.id }
+            if (currentIndex >= 0) {
+                nextChangeSets[currentIndex] = updatedChangeSet
+            }
+            snapshotWithAssistantChangeSetMirror(
+                snapshot = current,
+                assistantChangeSets = nextChangeSets,
+            )
+        }
+        finalizeAssistantChangeSetsForTurn(threadId = threadId, turnId = normalizedTurnId)
+    }
+
     private fun finalizeAssistantChangeSetsForTurn(
         threadId: String,
         turnId: String?,
     ) {
-        val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
-        val assistantItems = reducedTimelineItems(snapshot)
-            .filter { item ->
-                item.speaker == ConversationSpeaker.ASSISTANT &&
-                    item.kind == ConversationItemKind.CHAT &&
-                    item.assistantChangeSet?.status == RemodexAssistantChangeSetStatus.COLLECTING &&
-                    (
-                        turnId == null ||
-                            item.turnId == turnId ||
-                            item.turnId.isNullOrBlank()
-                        )
+        val normalizedTurnId = normalizedIdentifier(turnId)
+        updateThread(threadId) { snapshot ->
+            val nextChangeSets = assistantChangeSetLedger(snapshot).map { changeSet ->
+                if (
+                    normalizedTurnId != null &&
+                    normalizedIdentifier(changeSet.turnId) != normalizedTurnId
+                ) {
+                    changeSet
+                } else {
+                    finalizeAssistantChangeSet(
+                        changeSet = changeSet.copy(
+                            repoRoot = changeSet.repoRoot.ifNullOrBlank(snapshot.projectPath),
+                            assistantMessageId = changeSet.assistantMessageId
+                                ?: latestAssistantMessageIdForTurn(threadId = threadId, turnId = changeSet.turnId),
+                        ),
+                    )
+                }
             }
-        val finalizedMutations = assistantItems.mapNotNull { item ->
-            val changeSet = item.assistantChangeSet ?: return@mapNotNull null
-            val finalizedChangeSet = finalizeAssistantChangeSet(changeSet)
-            if (finalizedChangeSet == changeSet) {
-                null
-            } else {
-                TimelineMutation.Upsert(
-                    item.copy(assistantChangeSet = finalizedChangeSet),
-                )
-            }
-        }
-        if (finalizedMutations.isEmpty()) {
-            return
-        }
-        val now = nowEpochMs()
-        mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
-            val nextTimelineItems = applyTimelineMutations(
-                items = reducedTimelineItems(existing),
-                mutations = finalizedMutations,
+            snapshotWithAssistantChangeSetMirror(
+                snapshot = snapshot,
+                assistantChangeSets = nextChangeSets,
             )
-            existing.copy(
-                timelineMutations = existing.timelineMutations + finalizedMutations,
-                timelineItems = nextTimelineItems,
-                lastUpdatedEpochMs = now,
-                lastUpdatedLabel = relativeUpdatedLabel(now),
-            ).withResolvedLiveThreadState(threadId = threadId)
         }
     }
 
@@ -6905,6 +7058,180 @@ class BridgeThreadSyncService(
         }
         return changeSet.copy(status = finalizedStatus)
     }
+
+    private fun buildChangeSetPatchUpdate(
+        threadId: String,
+        turnId: String,
+        normalizedPatch: String,
+        source: RemodexAssistantChangeSetSource,
+        analysis: RemodexUnifiedPatchAnalysis,
+        existing: RemodexAssistantChangeSet?,
+    ): RemodexAssistantChangeSet {
+        val fallbackPatchCount = when {
+            source != RemodexAssistantChangeSetSource.FILE_CHANGE_FALLBACK -> existing?.fallbackPatchCount ?: 0
+            existing == null -> 1
+            existing.forwardUnifiedPatch == normalizedPatch -> maxOf(existing.fallbackPatchCount, 1)
+            existing.forwardUnifiedPatch.isBlank() -> existing.fallbackPatchCount + 1
+            else -> existing.fallbackPatchCount + 1
+        }
+        val unsupportedReasons = when {
+            source == RemodexAssistantChangeSetSource.FILE_CHANGE_FALLBACK && fallbackPatchCount > 1 -> {
+                listOf("This response emitted multiple file-change patches, so v1 cannot safely auto-revert it.")
+            }
+
+            analysis.fileChanges.isEmpty() && analysis.unsupportedReasons.isEmpty() -> {
+                listOf("This response cannot be auto-reverted because no exact patch was captured.")
+            }
+
+            else -> analysis.unsupportedReasons
+        }
+
+        return RemodexAssistantChangeSet(
+            id = existing?.id ?: UUID.randomUUID().toString(),
+            repoRoot = existing?.repoRoot.ifNullOrBlank(currentThreadSnapshot(threadId)?.projectPath),
+            threadId = threadId,
+            turnId = turnId,
+            assistantMessageId = existing?.assistantMessageId ?: latestAssistantMessageIdForTurn(threadId, turnId),
+            status = RemodexAssistantChangeSetStatus.COLLECTING,
+            source = source,
+            forwardUnifiedPatch = if (
+                source == RemodexAssistantChangeSetSource.FILE_CHANGE_FALLBACK &&
+                existing != null &&
+                existing.forwardUnifiedPatch.isNotBlank() &&
+                existing.forwardUnifiedPatch != normalizedPatch
+            ) {
+                existing.forwardUnifiedPatch
+            } else {
+                normalizedPatch
+            },
+            fileChanges = analysis.fileChanges,
+            unsupportedReasons = unsupportedReasons,
+            fallbackPatchCount = fallbackPatchCount,
+        )
+    }
+
+    private fun preserveAssistantChangeSetTerminalState(
+        existing: RemodexAssistantChangeSet,
+        incoming: RemodexAssistantChangeSet,
+    ): RemodexAssistantChangeSet {
+        if (existing.status == RemodexAssistantChangeSetStatus.REVERTED) {
+            return incoming.copy(status = RemodexAssistantChangeSetStatus.REVERTED)
+        }
+        return incoming
+    }
+
+    private fun latestAssistantMessageIdForTurn(
+        threadId: String,
+        turnId: String,
+    ): String? {
+        val snapshot = currentThreadSnapshot(threadId) ?: return null
+        val normalizedTurnId = normalizedIdentifier(turnId) ?: return null
+        return reducedTimelineItems(snapshot).lastOrNull { item ->
+            item.speaker == ConversationSpeaker.ASSISTANT &&
+                normalizedIdentifier(item.turnId) == normalizedTurnId
+        }?.id
+    }
+
+    private fun assistantChangeSetLedger(
+        snapshot: ThreadSyncSnapshot,
+    ): List<RemodexAssistantChangeSet> {
+        val timelineChangeSets = reducedTimelineItems(snapshot).mapNotNull { item -> item.assistantChangeSet }
+        return mergeAssistantChangeSets(
+            existing = snapshot.assistantChangeSets,
+            incoming = timelineChangeSets,
+        )
+    }
+
+    private fun snapshotWithAssistantChangeSetMirror(
+        snapshot: ThreadSyncSnapshot,
+        assistantChangeSets: List<RemodexAssistantChangeSet>,
+    ): ThreadSyncSnapshot {
+        val normalizedByMessageId = assistantChangeSets.mapNotNull { changeSet ->
+            normalizedIdentifier(changeSet.assistantMessageId)?.let { assistantMessageId ->
+                assistantMessageId to changeSet
+            }
+        }.toMap()
+        val normalizedByTurnId = assistantChangeSets.mapNotNull { changeSet ->
+            normalizedIdentifier(changeSet.turnId)?.let { turnId ->
+                turnId to changeSet
+            }
+        }.toMap()
+        val mirroredTimelineItems = reducedTimelineItems(snapshot).map { item ->
+            if (
+                item.speaker != ConversationSpeaker.ASSISTANT ||
+                item.kind != ConversationItemKind.CHAT
+            ) {
+                item
+            } else {
+                val mirroredChangeSet = normalizedByMessageId[normalizedIdentifier(item.id)]
+                    ?: normalizedByTurnId[normalizedIdentifier(item.turnId)]
+                if (mirroredChangeSet == item.assistantChangeSet) {
+                    item
+                } else {
+                    item.copy(assistantChangeSet = mirroredChangeSet)
+                }
+            }
+        }
+        return snapshot.copy(
+            assistantChangeSets = assistantChangeSets.sortedWith(
+                compareBy<RemodexAssistantChangeSet>({ it.turnId }, { it.id }),
+            ),
+            timelineMutations = mirroredTimelineItems.map(TimelineMutation::Upsert),
+            timelineItems = mirroredTimelineItems,
+        )
+    }
+
+    private fun mergeAssistantChangeSets(
+        existing: List<RemodexAssistantChangeSet>,
+        incoming: List<RemodexAssistantChangeSet>,
+    ): List<RemodexAssistantChangeSet> {
+        if (existing.isEmpty()) {
+            return incoming
+        }
+        if (incoming.isEmpty()) {
+            return existing
+        }
+
+        val existingById = existing.associateBy(RemodexAssistantChangeSet::id)
+        val merged = incoming.map { incomingChangeSet ->
+            val existingChangeSet = existingById[incomingChangeSet.id] ?: return@map incomingChangeSet
+            val resolvedStatus = when {
+                existingChangeSet.status == RemodexAssistantChangeSetStatus.REVERTED ||
+                    incomingChangeSet.status == RemodexAssistantChangeSetStatus.REVERTED -> {
+                    RemodexAssistantChangeSetStatus.REVERTED
+                }
+
+                existingChangeSet.status == RemodexAssistantChangeSetStatus.READY &&
+                    incomingChangeSet.status == RemodexAssistantChangeSetStatus.COLLECTING -> {
+                    RemodexAssistantChangeSetStatus.READY
+                }
+
+                else -> incomingChangeSet.status
+            }
+            incomingChangeSet.copy(
+                repoRoot = incomingChangeSet.repoRoot.ifNullOrBlank(existingChangeSet.repoRoot),
+                assistantMessageId = incomingChangeSet.assistantMessageId ?: existingChangeSet.assistantMessageId,
+                status = resolvedStatus,
+                fallbackPatchCount = maxOf(incomingChangeSet.fallbackPatchCount, existingChangeSet.fallbackPatchCount),
+            )
+        }.toMutableList()
+        val mergedIds = merged.map(RemodexAssistantChangeSet::id).toSet()
+        existing.filterNot { changeSet -> changeSet.id in mergedIds }.forEach(merged::add)
+        return merged.sortedWith(compareBy<RemodexAssistantChangeSet>({ it.turnId }, { it.id }))
+    }
+
+    private fun String?.ifNullOrBlank(fallback: String?): String? {
+        return this?.trim()?.takeIf(String::isNotEmpty)
+            ?: fallback?.trim()?.takeIf(String::isNotEmpty)
+    }
+
+    private fun decodeHistoryItems(
+        threadId: String,
+        threadObject: JsonObject,
+    ): List<TimelineMutation> = decodeHistorySnapshotData(
+        threadId = threadId,
+        threadObject = threadObject,
+    ).mutations
 
     private fun shouldFinalizeAssistantStreamBeforeStructuredItem(
         itemType: String,
@@ -6951,6 +7278,11 @@ class BridgeThreadSyncService(
             turnId = turnId,
             itemId = resolvedItemId,
             messageId = resolvedMessageId,
+        )
+        noteAssistantMessage(
+            threadId = threadId,
+            turnId = turnId,
+            assistantMessageId = resolvedMessageId,
         )
         upsertAssistantTimelineItem(
             threadId = threadId,
@@ -8943,11 +9275,14 @@ class BridgeThreadSyncService(
             "current_working_directory",
             "working_directory",
         )?.trim()?.takeIf(String::isNotEmpty)
+        val existingProjectPath = existing?.projectPath?.trim()?.takeIf(String::isNotEmpty)
         val rememberedProjectPath = rememberedProjectPathByThreadId[id]?.trim()?.takeIf(String::isNotEmpty)
         val projectPath = when {
-            observedProjectPath == null -> existing?.projectPath?.trim()?.takeIf(String::isNotEmpty)
+            observedProjectPath == null -> existingProjectPath
                 ?: rememberedProjectPath
                 ?: ""
+            existingProjectPath?.isManagedWorktreePath() == true && !observedProjectPath.isManagedWorktreePath() ->
+                existingProjectPath
             rememberedProjectPath?.isManagedWorktreePath() == true && !observedProjectPath.isManagedWorktreePath() ->
                 rememberedProjectPath
             else -> observedProjectPath
@@ -8993,13 +9328,14 @@ class BridgeThreadSyncService(
             runtimeConfig = runtimeConfig,
             timelineMutations = existing?.timelineMutations.orEmpty(),
             timelineItems = existing?.timelineItems.orEmpty(),
+            assistantChangeSets = existing?.assistantChangeSets.orEmpty(),
         )
     }
 
-    private fun decodeHistoryItems(
+    private fun decodeHistorySnapshotData(
         threadId: String,
         threadObject: JsonObject,
-    ): List<TimelineMutation> {
+    ): DecodedHistorySnapshot {
         val turns = threadObject.firstArray("turns").orEmpty()
         val repoRoot = threadObject.firstString(
             "cwd",
@@ -9007,6 +9343,7 @@ class BridgeThreadSyncService(
             "working_directory",
         )
         val decodedItems = mutableListOf<DecodedHistoryItem>()
+        val decodedAssistantChangeSets = mutableListOf<RemodexAssistantChangeSet>()
         val baseTimestampMs = decodeHistoryBaseTimestampMillis(threadObject) ?: 0L
         var syntheticOffsetMs = 0L
 
@@ -9039,6 +9376,7 @@ class BridgeThreadSyncService(
                     assistantMessageId = messageId,
                 )
             }
+            assistantChangeSet?.let(decodedAssistantChangeSets::add)
             items.forEach { itemValue ->
                 val itemObject = itemValue.jsonObjectOrNull ?: return@forEach
                 val itemType = normalizeItemType(itemObject.firstString("type").orEmpty())
@@ -9193,13 +9531,17 @@ class BridgeThreadSyncService(
             }
         }
 
-        return decodedItems
+        val mutations = decodedItems
             .sortedWith(compareBy<DecodedHistoryItem>({ it.timestampMs }, { it.sequence }))
             .mapIndexed { index, decoded ->
                 TimelineMutation.Upsert(
                     decoded.item.copy(orderIndex = index.toLong()),
                 )
             }
+        return DecodedHistorySnapshot(
+            mutations = mutations,
+            assistantChangeSets = decodedAssistantChangeSets.sortedBy(RemodexAssistantChangeSet::id),
+        )
     }
 
     private fun decodeHistoryBaseTimestampMillis(threadObject: JsonObject): Long? {
@@ -10104,6 +10446,11 @@ class BridgeThreadSyncService(
         itemId: String?,
         messageId: String,
     ) {
+        noteAssistantMessage(
+            threadId = threadId,
+            turnId = turnId,
+            assistantMessageId = messageId,
+        )
         val now = nowEpochMs()
         val previous = assistantResponseTraceByThread[threadId]
         val nextTrace = if (previous != null && (turnId == null || previous.turnId == null || previous.turnId == turnId)) {

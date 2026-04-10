@@ -20,6 +20,7 @@ import com.emanueledipietro.remodex.data.connection.SecureStoreKeys
 import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.ConversationSystemTurnOrderingHint
+import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
@@ -80,6 +81,18 @@ data class CachedTimelineItemEntity(
     val orderIndex: Long,
 )
 
+@Entity(
+    tableName = "cached_assistant_change_sets",
+    indices = [Index("threadId"), Index(value = ["threadId", "turnId"]), Index(value = ["threadId", "assistantMessageId"])],
+)
+data class CachedAssistantChangeSetEntity(
+    @PrimaryKey val id: String,
+    val threadId: String,
+    val turnId: String,
+    val assistantMessageId: String?,
+    val payloadJson: String,
+)
+
 data class CachedThreadWithTimeline(
     @Embedded val thread: CachedThreadEntity,
     @Relation(
@@ -87,6 +100,11 @@ data class CachedThreadWithTimeline(
         entityColumn = "threadId",
     )
     val timelineItems: List<CachedTimelineItemEntity>,
+    @Relation(
+        parentColumn = "id",
+        entityColumn = "threadId",
+    )
+    val assistantChangeSets: List<CachedAssistantChangeSetEntity>,
 )
 
 @Dao
@@ -101,16 +119,22 @@ interface ThreadCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTimelineItems(items: List<CachedTimelineItemEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAssistantChangeSets(items: List<CachedAssistantChangeSetEntity>)
+
     @Query("DELETE FROM cached_timeline_items")
     suspend fun clearTimelineItems()
+
+    @Query("DELETE FROM cached_assistant_change_sets")
+    suspend fun clearAssistantChangeSets()
 
     @Query("DELETE FROM cached_threads")
     suspend fun clearThreads()
 }
 
 @Database(
-    entities = [CachedThreadEntity::class, CachedTimelineItemEntity::class],
-    version = 8,
+    entities = [CachedThreadEntity::class, CachedTimelineItemEntity::class, CachedAssistantChangeSetEntity::class],
+    version = 9,
     exportSchema = false,
 )
 abstract class RemodexThreadCacheDatabase : RoomDatabase() {
@@ -154,6 +178,11 @@ class RoomThreadCacheStore(
                     timelineItems = record.timelineItems
                         .sortedBy(CachedTimelineItemEntity::orderIndex)
                         .map(CachedTimelineItemEntity::toModel),
+                    assistantChangeSets = record.assistantChangeSets
+                        .map(CachedAssistantChangeSetEntity::toModel)
+                        .sortedWith(
+                            compareBy<RemodexAssistantChangeSet>({ it.turnId }, { it.id }),
+                        ),
                 )
             }
         }
@@ -165,11 +194,18 @@ class RoomThreadCacheStore(
                 item.toEntity(thread.id)
             }
         }
+        val assistantChangeSetEntities = threads.flatMap { thread ->
+            thread.assistantChangeSets.map { changeSet ->
+                changeSet.toEntity(thread.id)
+            }
+        }
         database.withTransaction {
             database.threadCacheDao().clearTimelineItems()
+            database.threadCacheDao().clearAssistantChangeSets()
             database.threadCacheDao().clearThreads()
             database.threadCacheDao().upsertThreads(threadEntities)
             database.threadCacheDao().upsertTimelineItems(timelineEntities)
+            database.threadCacheDao().upsertAssistantChangeSets(assistantChangeSetEntities)
         }
     }
 
@@ -323,6 +359,16 @@ private fun CachedThreadRecord.toEntity(): CachedThreadEntity {
     )
 }
 
+private fun RemodexAssistantChangeSet.toEntity(threadId: String): CachedAssistantChangeSetEntity {
+    return CachedAssistantChangeSetEntity(
+        id = id,
+        threadId = threadId,
+        turnId = turnId,
+        assistantMessageId = assistantMessageId,
+        payloadJson = threadCacheJson.encodeToString(this),
+    )
+}
+
 private fun RemodexConversationItem.toEntity(threadId: String): CachedTimelineItemEntity {
     return CachedTimelineItemEntity(
         id = id,
@@ -368,4 +414,8 @@ private fun CachedTimelineItemEntity.toModel(): RemodexConversationItem {
         assistantChangeSet = assistantChangeSetJson?.let(threadCacheJson::decodeFromString),
         systemTurnOrderingHint = ConversationSystemTurnOrderingHint.valueOf(systemTurnOrderingHint),
     )
+}
+
+private fun CachedAssistantChangeSetEntity.toModel(): RemodexAssistantChangeSet {
+    return threadCacheJson.decodeFromString(payloadJson)
 }

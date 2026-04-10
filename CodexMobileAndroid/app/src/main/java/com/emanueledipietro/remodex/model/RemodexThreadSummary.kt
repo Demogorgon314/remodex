@@ -27,6 +27,7 @@ data class RemodexThreadSummary(
     val runtimeLabel: String,
     val runtimeConfig: RemodexRuntimeConfig = RemodexRuntimeConfig(),
     val messages: List<RemodexConversationItem>,
+    val assistantChangeSets: List<RemodexAssistantChangeSet> = emptyList(),
 ) {
     companion object {
         const val defaultDisplayTitle: String = "New Thread"

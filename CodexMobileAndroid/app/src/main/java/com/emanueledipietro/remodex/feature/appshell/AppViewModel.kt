@@ -2647,7 +2647,7 @@ class AppViewModel(
     fun startAssistantRevertPreview(messageId: String) {
         val thread = uiState.value.selectedThread ?: return
         val message = thread.messages.firstOrNull { item -> item.id == messageId } ?: return
-        val changeSet = message.assistantChangeSet ?: return
+        val changeSet = assistantChangeSetForMessage(thread, message) ?: return
         val presentation = uiState.value.assistantRevertStatesByMessageId[messageId] ?: return
         if (!presentation.isEnabled) {
             return
@@ -4474,25 +4474,43 @@ class AppViewModel(
             return emptyMap()
         }
 
+        val selectedRepoRoot = selectedThread.assistantChangeSets.asSequence()
+            .mapNotNull { changeSet -> normalizeRepoRoot(changeSet.repoRoot ?: selectedThread.projectPath) }
+            .firstOrNull()
+            ?: normalizeRepoRoot(selectedThread.projectPath)
         val activeRepoRoots = threads.asSequence()
             .filter(RemodexThreadSummary::isRunning)
-            .mapNotNull { thread -> normalizeRepoRoot(thread.projectPath) }
+            .mapNotNull { thread ->
+                thread.assistantChangeSets.asSequence()
+                    .mapNotNull { changeSet -> normalizeRepoRoot(changeSet.repoRoot ?: thread.projectPath) }
+                    .firstOrNull()
+                    ?: normalizeRepoRoot(thread.projectPath)
+            }
             .toSet()
         val sameRepoReadyChangeSets = threads.asSequence()
             .filter { thread ->
-                normalizeRepoRoot(thread.projectPath) == normalizeRepoRoot(selectedThread.projectPath)
+                thread.assistantChangeSets.asSequence()
+                    .mapNotNull { changeSet -> normalizeRepoRoot(changeSet.repoRoot ?: thread.projectPath) }
+                    .firstOrNull()
+                    ?.let { repoRoot -> repoRoot == selectedRepoRoot }
+                    ?: (normalizeRepoRoot(thread.projectPath) == selectedRepoRoot)
             }
             .flatMap { thread ->
-                thread.messages.asSequence().mapNotNull { item ->
-                    item.assistantChangeSet?.takeIf { changeSet ->
-                        changeSet.status == RemodexAssistantChangeSetStatus.READY ||
-                            changeSet.status == RemodexAssistantChangeSetStatus.COLLECTING
-                    }
-                }
-            }.toList()
+                val threadChangeSets = thread.assistantChangeSets.takeIf(List<RemodexAssistantChangeSet>::isNotEmpty)
+                    ?: thread.messages.asSequence().mapNotNull { item -> item.assistantChangeSet }.toList()
+                threadChangeSets.asSequence()
+            }
+            .filter { changeSet ->
+                changeSet.status == RemodexAssistantChangeSetStatus.READY ||
+                    changeSet.status == RemodexAssistantChangeSetStatus.COLLECTING
+            }
+            .toList()
 
         return selectedThread.messages.mapNotNull { message ->
-            val changeSet = message.assistantChangeSet ?: return@mapNotNull null
+            if (message.speaker != ConversationSpeaker.ASSISTANT) {
+                return@mapNotNull null
+            }
+            val changeSet = assistantChangeSetForMessage(selectedThread, message) ?: return@mapNotNull null
             message.id to assistantRevertPresentation(
                 changeSet = if (message.id in revertedMessageIds) {
                     changeSet.copy(status = RemodexAssistantChangeSetStatus.REVERTED)
@@ -4500,7 +4518,7 @@ class AppViewModel(
                     changeSet
                 },
                 workingDirectory = selectedThread.projectPath,
-                repoBusy = normalizeRepoRoot(selectedThread.projectPath) in activeRepoRoots,
+                repoBusy = selectedRepoRoot in activeRepoRoots,
                 isConnected = secureConnection.secureState == SecureConnectionState.ENCRYPTED,
                 siblingChangeSets = sameRepoReadyChangeSets,
             )
@@ -4512,13 +4530,45 @@ class AppViewModel(
     ): List<RemodexThreadSummary> {
         return snapshot.threadListSummaries.ifEmpty {
             snapshot.threads.map { thread ->
-                if (thread.messages.isEmpty()) {
+                if (thread.messages.isEmpty() && thread.assistantChangeSets.isEmpty()) {
                     thread
                 } else {
-                    thread.copy(messages = emptyList())
+                    thread.copy(
+                        messages = emptyList(),
+                        assistantChangeSets = emptyList(),
+                    )
                 }
             }
         }
+    }
+
+    private fun assistantChangeSetForMessage(
+        thread: RemodexThreadSummary,
+        message: com.emanueledipietro.remodex.model.RemodexConversationItem,
+    ): RemodexAssistantChangeSet? {
+        if (message.speaker != ConversationSpeaker.ASSISTANT) {
+            return null
+        }
+        val normalizedMessageId = normalizedAssistantMessageKey(message.id)
+        if (normalizedMessageId != null) {
+            thread.assistantChangeSets.lastOrNull { changeSet ->
+                normalizedAssistantMessageKey(changeSet.assistantMessageId) == normalizedMessageId
+            }?.let { return it }
+            message.assistantChangeSet?.let { return it }
+        }
+
+        val normalizedTurnId = normalizedAssistantMessageKey(message.turnId)
+        if (normalizedTurnId != null) {
+            return thread.assistantChangeSets.lastOrNull { changeSet ->
+                normalizedAssistantMessageKey(changeSet.turnId) == normalizedTurnId
+            } ?: message.assistantChangeSet
+        }
+
+        return message.assistantChangeSet
+    }
+
+    private fun normalizedAssistantMessageKey(value: String?): String? {
+        return value?.trim()?.takeIf(String::isNotEmpty)
     }
 
     private fun buildRepoRefreshSignal(

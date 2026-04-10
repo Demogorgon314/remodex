@@ -3472,6 +3472,7 @@ private fun RemodexThreadSummary.toCachedThreadRecord(): CachedThreadRecord {
         stoppedTurnIds = stoppedTurnIds,
         runtimeConfig = runtimeConfig,
         timelineItems = messages,
+        assistantChangeSets = assistantChangeSets,
     )
 }
 
@@ -3497,6 +3498,7 @@ private fun ThreadSyncSnapshot.toCachedThreadRecord(
         stoppedTurnIds = stoppedTurnIds,
         runtimeConfig = runtimeConfig,
         timelineItems = timelineItems,
+        assistantChangeSets = assistantChangeSets,
     )
 }
 
@@ -3581,10 +3583,13 @@ private fun projectThreadListSummaries(
 }
 
 private fun RemodexThreadSummary.toThreadListSummary(): RemodexThreadSummary {
-    return if (messages.isEmpty()) {
+    return if (messages.isEmpty() && assistantChangeSets.isEmpty()) {
         this
     } else {
-        copy(messages = emptyList())
+        copy(
+            messages = emptyList(),
+            assistantChangeSets = emptyList(),
+        )
     }
 }
 
@@ -3611,7 +3616,8 @@ private fun RemodexThreadSummary.matchesThreadListSummary(
         queuedDraftItems == source.queuedDraftItems &&
         runtimeLabel == source.runtimeLabel &&
         runtimeConfig == source.runtimeConfig &&
-        messages.isEmpty()
+        messages.isEmpty() &&
+        assistantChangeSets.isEmpty()
 }
 
 private fun RemodexThreadSummary.applyAssociatedManagedWorktreePreference(
@@ -3670,6 +3676,7 @@ internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
         runtimeLabel = runtimeConfig.runtimeLabel,
         runtimeConfig = runtimeConfig,
         messages = timelineItems,
+        assistantChangeSets = assistantChangeSets,
     )
 }
 

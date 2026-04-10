@@ -8,6 +8,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationItem
 
 object TurnTimelineReducer {
     private const val ManualPushResetMarkerItemId = "git.push.reset.marker"
+    private const val AssistantDuplicateWindowMs = 12_000L
 
     internal enum class SystemTurnOrderingPolicy(
         val leadingPriority: Int,
@@ -1061,7 +1062,7 @@ object TurnTimelineReducer {
                 }
                 if (
                     previous != null &&
-                    kotlin.math.abs(item.orderIndex - previous.orderIndex) <= 2L &&
+                    assistantDuplicateWindowMs(item, previous.item) <= AssistantDuplicateWindowMs &&
                     (!previous.hasStableIdentity || !hasStableIdentity)
                 ) {
                     return@forEach
@@ -1077,11 +1078,15 @@ object TurnTimelineReducer {
                 return@forEach
             }
 
-            val previousOrderIndex = seenNoTurnByText[normalizedText]
-            if (previousOrderIndex != null && kotlin.math.abs(item.orderIndex - previousOrderIndex) <= 2L) {
+            val previousCreatedAtEpochMs = seenNoTurnByText[normalizedText]
+            val createdAtEpochMs = item.createdAtEpochMs ?: item.orderIndex
+            if (
+                previousCreatedAtEpochMs != null &&
+                kotlin.math.abs(createdAtEpochMs - previousCreatedAtEpochMs) <= AssistantDuplicateWindowMs
+            ) {
                 return@forEach
             }
-            seenNoTurnByText[normalizedText] = item.orderIndex
+            seenNoTurnByText[normalizedText] = createdAtEpochMs
             result += item
         }
 
@@ -1490,6 +1495,15 @@ object TurnTimelineReducer {
     private fun normalizedIdentifier(value: String?): String? {
         val trimmed = value?.trim().orEmpty()
         return trimmed.ifEmpty { null }
+    }
+
+    private fun assistantDuplicateWindowMs(
+        incoming: RemodexConversationItem,
+        previous: RemodexConversationItem,
+    ): Long {
+        val incomingTimestamp = incoming.createdAtEpochMs ?: incoming.orderIndex
+        val previousTimestamp = previous.createdAtEpochMs ?: previous.orderIndex
+        return kotlin.math.abs(incomingTimestamp - previousTimestamp)
     }
 
     private data class AssistantTurnTextObservation(
