@@ -158,6 +158,8 @@ class DefaultRemodexAppRepository(
     private val isAppForegroundState = MutableStateFlow(false)
     private val timelineProjectionCacheLock = Any()
     private val timelineProjectionCacheByThread = mutableMapOf<String, ThreadTimelineProjectionCache>()
+    private val lastSyncedSnapshotsByThreadId = mutableMapOf<String, ThreadSyncSnapshot>()
+    private val lastSyncedCachedThreadRecords = mutableMapOf<String, CachedThreadRecord>()
     private var threadCacheWriteJob: Job? = null
     private var threadListPublishJob: Job? = null
     private var recoveredEncryptedAttempt: Int? = null
@@ -2556,12 +2558,24 @@ class DefaultRemodexAppRepository(
             return
         }
         val projected = withContext(Dispatchers.Default) {
+            val currentThreadIds = snapshots.mapTo(mutableSetOf(), ThreadSyncSnapshot::id)
             synchronized(timelineProjectionCacheLock) {
-                timelineProjectionCacheByThread.keys.retainAll(snapshots.map(ThreadSyncSnapshot::id).toSet())
+                timelineProjectionCacheByThread.keys.retainAll(currentThreadIds)
             }
-            val cachedThreads = snapshots
-                .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
-                .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
+            lastSyncedSnapshotsByThreadId.keys.retainAll(currentThreadIds)
+            lastSyncedCachedThreadRecords.keys.retainAll(currentThreadIds)
+
+            val cachedThreads = snapshots.map { snapshot ->
+                val previous = lastSyncedSnapshotsByThreadId[snapshot.id]
+                if (previous != null && snapshot === previous) {
+                    lastSyncedCachedThreadRecords[snapshot.id]!!
+                } else {
+                    lastSyncedSnapshotsByThreadId[snapshot.id] = snapshot
+                    val record = snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot))
+                    lastSyncedCachedThreadRecords[snapshot.id] = record
+                    record
+                }
+            }.sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
             SyncedThreadProjection(
                 cachedThreads = cachedThreads,
                 mergedBaseThreads = mergeBaseThreadsFromSync(cachedThreads.map(CachedThreadRecord::toBaseThreadSummary)),
