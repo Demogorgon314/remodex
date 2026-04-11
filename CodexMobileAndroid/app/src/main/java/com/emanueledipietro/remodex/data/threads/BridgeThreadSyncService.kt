@@ -587,6 +587,12 @@ internal fun shouldDropCompletedReasoningPlaceholderValue(
         ThinkingDisclosureParser.normalizedThinkingContent(completedBody).isEmpty()
 }
 
+internal fun shouldPruneThinkingRowAfterTurnCompletionValue(
+    text: String,
+): Boolean {
+    return ThinkingDisclosureParser.normalizedThinkingContent(text).isEmpty()
+}
+
 class BridgeThreadSyncService(
     private val secureConnectionCoordinator: SecureConnectionCoordinator,
     private val scope: CoroutineScope,
@@ -3519,7 +3525,9 @@ class BridgeThreadSyncService(
         if (threadId != null && turnId != null) {
             setActiveTurnId(threadId = threadId, turnId = turnId)
             confirmLatestPendingUserMessage(threadId = threadId, turnId = turnId)
-            beginAssistantMessage(threadId = threadId, turnId = turnId)
+            // Match iOS: do not create the assistant placeholder on turn/started.
+            // Reasoning/tool activity can arrive before the first assistant delta, and
+            // eagerly inserting the assistant row here skews the visible order.
         } else if (threadId != null) {
             markThreadAsRunningFallback(threadId)
         }
@@ -7591,14 +7599,7 @@ class BridgeThreadSyncService(
     ) {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId } ?: return
         val nextMutations = snapshot.timelineMutations.filterNot { mutation ->
-            when (mutation) {
-                is TimelineMutation.Upsert -> mutation.item.id == messageId
-                is TimelineMutation.Complete -> mutation.messageId == messageId
-                is TimelineMutation.AssistantTextDelta -> mutation.messageId == messageId
-                is TimelineMutation.ReasoningTextDelta -> mutation.messageId == messageId
-                is TimelineMutation.ActivityLine -> mutation.messageId == messageId
-                is TimelineMutation.SystemTextDelta -> mutation.messageId == messageId
-            }
+            timelineMutationTargetsMessageIds(mutation, setOf(messageId))
         }
         if (nextMutations.size == snapshot.timelineMutations.size) {
             return
@@ -7615,6 +7616,23 @@ class BridgeThreadSyncService(
                 lastUpdatedEpochMs = now,
                 lastUpdatedLabel = relativeUpdatedLabel(now),
             ).withResolvedLiveThreadState(threadId = threadId)
+        }
+    }
+
+    private fun timelineMutationTargetsMessageIds(
+        mutation: TimelineMutation,
+        messageIds: Set<String>,
+    ): Boolean {
+        if (messageIds.isEmpty()) {
+            return false
+        }
+        return when (mutation) {
+            is TimelineMutation.Upsert -> mutation.item.id in messageIds
+            is TimelineMutation.Complete -> mutation.messageId in messageIds
+            is TimelineMutation.AssistantTextDelta -> mutation.messageId in messageIds
+            is TimelineMutation.ReasoningTextDelta -> mutation.messageId in messageIds
+            is TimelineMutation.ActivityLine -> mutation.messageId in messageIds
+            is TimelineMutation.SystemTextDelta -> mutation.messageId in messageIds
         }
     }
 
@@ -7653,15 +7671,37 @@ class BridgeThreadSyncService(
         if (completionMutations.isEmpty()) {
             return
         }
+        val prunedThinkingMessageIds = completionItems
+            .filter { item ->
+                item.speaker == ConversationSpeaker.SYSTEM &&
+                    item.kind == ConversationItemKind.REASONING &&
+                    shouldPruneThinkingRowAfterTurnCompletionValue(item.text)
+            }
+            .map(com.emanueledipietro.remodex.model.RemodexConversationItem::id)
+            .toSet()
         val now = nowEpochMs()
         mutateThreadSnapshot(threadId = threadId, resortByRecency = true) { existing ->
+            val nextMutations = existing.timelineMutations + completionMutations
             val nextTimelineItems = applyTimelineMutations(
                 items = reducedTimelineItems(existing),
                 mutations = completionMutations,
             )
+            val filteredTimelineItems = if (prunedThinkingMessageIds.isEmpty()) {
+                nextTimelineItems
+            } else {
+                nextTimelineItems.filterNot { item -> item.id in prunedThinkingMessageIds }
+            }
+            val filteredMutations = if (prunedThinkingMessageIds.isEmpty()) {
+                nextMutations
+            } else {
+                nextMutations.filterNot { mutation ->
+                    timelineMutationTargetsMessageIds(mutation, prunedThinkingMessageIds)
+                }
+            }
             existing.copy(
-                timelineMutations = existing.timelineMutations + completionMutations,
-                timelineItems = nextTimelineItems,
+                timelineMutations = filteredMutations,
+                timelineItems = filteredTimelineItems,
+                preview = derivePreview(filteredTimelineItems, existing.preview),
                 lastUpdatedEpochMs = now,
                 lastUpdatedLabel = relativeUpdatedLabel(now),
             ).withResolvedLiveThreadState(threadId = threadId)

@@ -975,6 +975,124 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project preserves chronology when the only user row arrives after thinking in the same turn`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "thinking-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Inspecting the repository",
+                    turnId = "turn-1",
+                    orderIndex = 0,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Partial answer",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "user-steer",
+                    speaker = ConversationSpeaker.USER,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Please focus on Android",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("thinking-1", "assistant-1", "user-steer"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves review activity before later thinking in review mode`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "review-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "Reviewing current changes...",
+                    turnId = "turn-1",
+                    orderIndex = 0,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "thinking-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Inspecting follow-up details",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Prioritized finding",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("review-1", "thinking-1", "assistant-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `project preserves chronology for system-only command and thinking activity before assistant starts`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "user-1",
+                    speaker = ConversationSpeaker.USER,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Review current changes",
+                    turnId = "turn-1",
+                    orderIndex = 0,
+                ),
+                RemodexConversationItem(
+                    id = "command-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.COMMAND_EXECUTION,
+                    text = "Checked git status",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "thinking-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Thinking...",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf("user-1", "command-1", "thinking-1"),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
     fun `project preserves command after assistant when a new activity item starts later in the turn`() {
         val projected = TurnTimelineReducer.project(
             listOf(
@@ -1280,7 +1398,7 @@ class TurnTimelineReducerTest {
     }
 
     @Test
-    fun `project keeps completed empty thinking placeholders to match ios timeline projection`() {
+    fun `project drops completed empty thinking placeholders to match ios timeline projection`() {
         val projected = TurnTimelineReducer.project(
             listOf(
                 RemodexConversationItem(
@@ -1304,10 +1422,7 @@ class TurnTimelineReducerTest {
             ),
         )
 
-        assertEquals(
-            listOf("thinking-placeholder", "assistant-1"),
-            projected.map(RemodexConversationItem::id),
-        )
+        assertEquals(listOf("assistant-1"), projected.map(RemodexConversationItem::id))
     }
 
     @Test

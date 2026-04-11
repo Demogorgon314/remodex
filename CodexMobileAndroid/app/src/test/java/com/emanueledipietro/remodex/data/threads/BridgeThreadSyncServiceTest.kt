@@ -1217,6 +1217,13 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `completed empty thinking rows should be pruned after turn completion`() {
+        assertTrue(shouldPruneThinkingRowAfterTurnCompletionValue("Thinking..."))
+        assertTrue(shouldPruneThinkingRowAfterTurnCompletionValue(""))
+        assertFalse(shouldPruneThinkingRowAfterTurnCompletionValue("Inspecting git diff"))
+    }
+
+    @Test
     fun `thread read history merge skips running threads when local timeline already exists unless explicitly allowed`() {
         assertFalse(
             shouldMergeThreadReadHistory(
@@ -1635,7 +1642,7 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
-    fun `turn started with turn id confirms pending user and seeds assistant placeholder`() = runTest {
+    fun `turn started with turn id confirms pending user without seeding assistant placeholder`() = runTest {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
                 store = InMemorySecureStore(),
@@ -1686,14 +1693,80 @@ class BridgeThreadSyncServiceTest {
         val thread = service.threads.value.first { it.id == "thread-turn-start-with-id" }
         val items = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
         val userItem = items.single { it.speaker == ConversationSpeaker.USER }
-        val assistantItem = items.single { it.speaker == ConversationSpeaker.ASSISTANT }
 
         assertTrue(thread.isRunning)
         assertEquals("turn-turn-start-with-id", thread.activeTurnId)
         assertEquals(RemodexMessageDeliveryState.CONFIRMED, userItem.deliveryState)
         assertEquals("turn-turn-start-with-id", userItem.turnId)
-        assertTrue(assistantItem.isStreaming)
-        assertEquals("turn-turn-start-with-id", assistantItem.turnId)
+        assertTrue(items.none { it.speaker == ConversationSpeaker.ASSISTANT })
+    }
+
+    @Test
+    fun `turn started keeps reasoning before assistant when assistant output has not started`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-turn-start-reasoning-order",
+                    title = "Turn start reasoning order",
+                    preview = "Hello",
+                    projectPath = "/tmp/project-turn-start-reasoning-order",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    latestTurnTerminalState = null,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            timelineItem(
+                                id = "user-local-turn-order",
+                                speaker = ConversationSpeaker.USER,
+                                text = "Hello",
+                                deliveryState = RemodexMessageDeliveryState.PENDING,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleTurnStartedNotification",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turn-start-reasoning-order"))
+                put("turnId", JsonPrimitive("turn-turn-start-reasoning-order"))
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "appendReasoningDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-turn-start-reasoning-order"))
+                put("turnId", JsonPrimitive("turn-turn-start-reasoning-order"))
+                put("delta", JsonPrimitive("Inspecting the repository"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-turn-start-reasoning-order" }
+        val items = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(
+            listOf(ConversationSpeaker.USER, ConversationSpeaker.SYSTEM),
+            items.map(RemodexConversationItem::speaker),
+        )
+        assertEquals(ConversationItemKind.REASONING, items.last().kind)
     }
 
     @Test
@@ -2521,6 +2594,85 @@ class BridgeThreadSyncServiceTest {
         assertTrue(reasoning.isStreaming)
         assertEquals(1, thread.timelineMutations.size)
         assertTrue(thread.timelineMutations.single() is TimelineMutation.Upsert)
+    }
+
+    @Test
+    fun `complete streaming items prunes empty thinking placeholders after completion`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-prune-thinking-complete",
+                    title = "Prune thinking complete",
+                    preview = "Thinking...",
+                    projectPath = "/tmp/project-prune-thinking-complete",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = listOf(
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "thinking-1",
+                                speaker = ConversationSpeaker.SYSTEM,
+                                kind = ConversationItemKind.REASONING,
+                                text = "Thinking...",
+                                turnId = "turn-prune-thinking-complete",
+                                itemId = "thinking-item-1",
+                                isStreaming = true,
+                                orderIndex = 0L,
+                            ),
+                        ),
+                        TimelineMutation.Upsert(
+                            RemodexConversationItem(
+                                id = "assistant-1",
+                                speaker = ConversationSpeaker.ASSISTANT,
+                                kind = ConversationItemKind.CHAT,
+                                text = "Final answer",
+                                turnId = "turn-prune-thinking-complete",
+                                itemId = "assistant-item-1",
+                                isStreaming = false,
+                                orderIndex = 1L,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "completeStreamingItemsForThread",
+            "thread-prune-thinking-complete",
+            "turn-prune-thinking-complete",
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-prune-thinking-complete" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(listOf("assistant-1"), projected.map(RemodexConversationItem::id))
+        assertFalse(
+            thread.timelineMutations.any { mutation ->
+                when (mutation) {
+                    is TimelineMutation.Upsert -> mutation.item.id == "thinking-1"
+                    is TimelineMutation.Complete -> mutation.messageId == "thinking-1"
+                    is TimelineMutation.AssistantTextDelta -> mutation.messageId == "thinking-1"
+                    is TimelineMutation.ReasoningTextDelta -> mutation.messageId == "thinking-1"
+                    is TimelineMutation.ActivityLine -> mutation.messageId == "thinking-1"
+                    is TimelineMutation.SystemTextDelta -> mutation.messageId == "thinking-1"
+                }
+            },
+        )
     }
 
     @Test
@@ -9168,6 +9320,86 @@ class BridgeThreadSyncServiceTest {
                 assistantItems[0].id,
                 reviewModeItem.id,
                 assistantItems[1].id,
+            ),
+            projected.map(RemodexConversationItem::id),
+        )
+    }
+
+    @Test
+    fun `review mode keeps review activity before subsequent thinking rows`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-review-thinking-order",
+                    title = "Review thinking order",
+                    preview = "",
+                    projectPath = "/tmp/project-review-thinking-order",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "handleItemLifecycle",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-thinking-order"))
+                put("turnId", JsonPrimitive("turn-review-thinking-order"))
+                put(
+                    "item",
+                    buildJsonObject {
+                        put("id", JsonPrimitive("review-mode-item"))
+                        put("type", JsonPrimitive("enteredReviewMode"))
+                        put("review", JsonPrimitive("current changes"))
+                    },
+                )
+            },
+            false,
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendReasoningDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-thinking-order"))
+                put("turnId", JsonPrimitive("turn-review-thinking-order"))
+                put("delta", JsonPrimitive("Inspecting changed files"))
+            },
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-review-thinking-order"))
+                put("turnId", JsonPrimitive("turn-review-thinking-order"))
+                put("delta", JsonPrimitive("Prioritized finding"))
+            },
+        )
+
+        val thread = service.threads.value.first { it.id == "thread-review-thinking-order" }
+        val projected = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+
+        assertEquals(
+            listOf(
+                "review-mode-item",
+                "reasoning-turn-review-thinking-order",
+                "assistant-turn-review-thinking-order",
             ),
             projected.map(RemodexConversationItem::id),
         )

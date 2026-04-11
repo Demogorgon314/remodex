@@ -9115,6 +9115,9 @@ private fun ThinkingConversationRow(
         sections = emptyList(),
         fallbackText = "",
     )
+    if (!item.isStreaming && thinkingText.isEmpty()) {
+        return
+    }
     ConversationMessageActionContainer(
         text = item.text,
         messageRole = ConversationSpeaker.SYSTEM,

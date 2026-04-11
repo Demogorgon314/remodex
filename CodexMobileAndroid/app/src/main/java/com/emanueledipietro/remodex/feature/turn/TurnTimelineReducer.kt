@@ -210,13 +210,25 @@ object TurnTimelineReducer {
         val visibleItems = removeHiddenSystemMarkers(items)
         val reordered = enforceIntraTurnOrder(visibleItems)
         val collapsedThinking = collapseThinkingMessages(reordered)
-        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(collapsedThinking)
+        val withoutCompletedEmptyThinking = removeCompletedEmptyThinkingPlaceholders(collapsedThinking)
+        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(withoutCompletedEmptyThinking)
         val withoutStaleSyntheticThinking = removeStaleSyntheticThinkingPlaceholders(
             withoutCommandThinkingEchoes,
         )
         val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutStaleSyntheticThinking)
         val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
         return removeDuplicateAssistantMessages(dedupedSubagentActions)
+    }
+
+    private fun removeCompletedEmptyThinkingPlaceholders(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        return items.filterNot { item ->
+            item.speaker == ConversationSpeaker.SYSTEM &&
+                item.kind == ConversationItemKind.REASONING &&
+                !item.isStreaming &&
+                normalizedThinkingContent(item.text).isEmpty()
+        }
     }
 
     private fun removeHiddenSystemMarkers(
@@ -674,7 +686,11 @@ object TurnTimelineReducer {
             }
 
             val turnItems = indices.map(result::get)
-            val sorted = if (hasChronologicalFollowUpUserMessage(turnItems)) {
+            val sorted = if (hasSystemOnlyInterleavedActivityFlow(turnItems)) {
+                turnItems.sortedBy(RemodexConversationItem::orderIndex)
+            } else if (hasReviewModeChronologyFlow(turnItems)) {
+                turnItems.sortedBy(RemodexConversationItem::orderIndex)
+            } else if (hasInterleavedUserFlow(turnItems)) {
                 turnItems.sortedBy(RemodexConversationItem::orderIndex)
             } else if (hasInterleavedAssistantActivityFlow(turnItems)) {
                 turnItems.sortedWith(
@@ -696,15 +712,54 @@ object TurnTimelineReducer {
         return result
     }
 
-    private fun hasChronologicalFollowUpUserMessage(
+    private fun hasSystemOnlyInterleavedActivityFlow(
         turnItems: List<RemodexConversationItem>,
     ): Boolean {
-        val distinctUserMessageIds = turnItems
-            .asSequence()
-            .filter { item -> item.speaker == ConversationSpeaker.USER }
-            .map(RemodexConversationItem::id)
-            .toSet()
-        return distinctUserMessageIds.size > 1
+        if (turnItems.any { item -> item.speaker == ConversationSpeaker.ASSISTANT }) {
+            return false
+        }
+        return turnItems.count(::isInterleavableSystemActivity) > 1
+    }
+
+    private fun hasReviewModeChronologyFlow(
+        turnItems: List<RemodexConversationItem>,
+    ): Boolean {
+        var sawReviewActivity = false
+        turnItems.sortedBy(RemodexConversationItem::orderIndex).forEach { item ->
+            if (isReviewModeActivity(item)) {
+                sawReviewActivity = true
+                return@forEach
+            }
+            if (sawReviewActivity && item.kind == ConversationItemKind.REASONING) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun isReviewModeActivity(
+        item: RemodexConversationItem,
+    ): Boolean {
+        return item.speaker == ConversationSpeaker.SYSTEM &&
+            item.kind == ConversationItemKind.COMMAND_EXECUTION &&
+            item.text.trim().startsWith("Reviewing ", ignoreCase = true)
+    }
+
+    private fun hasInterleavedUserFlow(
+        turnItems: List<RemodexConversationItem>,
+    ): Boolean {
+        val ordered = turnItems.sortedBy(RemodexConversationItem::orderIndex)
+        var seenNonUser = false
+        ordered.forEach { item ->
+            if (item.speaker == ConversationSpeaker.USER) {
+                if (seenNonUser) {
+                    return true
+                }
+            } else {
+                seenNonUser = true
+            }
+        }
+        return false
     }
 
     private fun hasInterleavedAssistantActivityFlow(
