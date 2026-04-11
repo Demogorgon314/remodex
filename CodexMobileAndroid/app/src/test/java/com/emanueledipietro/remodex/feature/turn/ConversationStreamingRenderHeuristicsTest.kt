@@ -136,6 +136,28 @@ class ConversationStreamingRenderHeuristicsTest {
     }
 
     @Test
+    fun `assistant conversation stays visible while only live streaming handle has text`() {
+        assertTrue(
+            assistantConversationHasVisibleText(
+                itemText = "",
+                liveStreamingTextLength = 24,
+                lastNonBlankText = "",
+            ),
+        )
+    }
+
+    @Test
+    fun `assistant conversation hides when settled and live text are both empty`() {
+        assertFalse(
+            assistantConversationHasVisibleText(
+                itemText = "",
+                liveStreamingTextLength = 0,
+                lastNonBlankText = "",
+            ),
+        )
+    }
+
+    @Test
     fun `streaming plain text line height extra matches markdown spacing math`() {
         val lineHeightExtra = computeConversationTextLineHeightExtraPx(
             lineHeightPx = 22f,

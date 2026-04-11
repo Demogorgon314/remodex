@@ -1021,10 +1021,15 @@ class BridgeThreadSyncService(
         }
 
         val nextSnapshot = transform(currentThreads[index]).withResolvedLiveThreadState(threadId = threadId)
-        val nextThreads = if (resortByRecency && index > 0) {
-            val previous = currentThreads[index - 1]
-            if (threadRecencyComparator.compare(nextSnapshot, previous) >= 0) {
-                // Recency order unchanged — splice in place without full list copy
+        val nextThreads = if (resortByRecency) {
+            val previous = currentThreads.getOrNull(index - 1)
+            val next = currentThreads.getOrNull(index + 1)
+            val staysAfterPrevious = previous == null ||
+                threadRecencyComparator.compare(nextSnapshot, previous) >= 0
+            val staysBeforeNext = next == null ||
+                threadRecencyComparator.compare(nextSnapshot, next) <= 0
+            if (staysAfterPrevious && staysBeforeNext) {
+                // Recency order unchanged — splice in place without full list copy.
                 currentThreads.toMutableList().also { it[index] = nextSnapshot }
             } else {
                 currentThreads.toMutableList().also { list ->
@@ -1034,14 +1039,6 @@ class BridgeThreadSyncService(
                     }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: list.size
                     list.add(insertAt, nextSnapshot)
                 }
-            }
-        } else if (resortByRecency) {
-            currentThreads.toMutableList().also { list ->
-                list.removeAt(index)
-                val insertAt = list.indexOfFirst { candidate ->
-                    threadRecencyComparator.compare(nextSnapshot, candidate) < 0
-                }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: list.size
-                list.add(insertAt, nextSnapshot)
             }
         } else {
             currentThreads.toMutableList().also { it[index] = nextSnapshot }
@@ -6144,16 +6141,14 @@ class BridgeThreadSyncService(
         mutations: List<TimelineMutation>,
         item: com.emanueledipietro.remodex.model.RemodexConversationItem,
     ): List<TimelineMutation> {
-        val upsert = TimelineMutation.Upsert(item)
-        val existingIndex = mutations.indexOfFirst { mutation ->
-            matchesStreamingMessageMutation(mutation = mutation, item = item)
+        val nextMutations = ArrayList<TimelineMutation>(mutations.size + 1)
+        mutations.forEach { mutation ->
+            if (!matchesStreamingMessageMutation(mutation = mutation, item = item)) {
+                nextMutations += mutation
+            }
         }
-        if (existingIndex == -1) {
-            return mutations + upsert
-        }
-        return mutations.toMutableList().apply {
-            this[existingIndex] = upsert
-        }
+        nextMutations += TimelineMutation.Upsert(item)
+        return nextMutations
     }
 
     private fun matchesStreamingMessageMutation(

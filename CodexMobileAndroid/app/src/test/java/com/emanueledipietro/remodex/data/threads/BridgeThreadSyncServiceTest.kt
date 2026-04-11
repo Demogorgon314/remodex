@@ -303,6 +303,42 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `touch thread reorders threads downward when wall clock time moves backward`() {
+        var now = 0L
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+            nowEpochMs = { now },
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                threadSnapshot(id = "thread-newest").copy(lastUpdatedEpochMs = 3L),
+                threadSnapshot(id = "thread-middle").copy(lastUpdatedEpochMs = 2L),
+                threadSnapshot(id = "thread-oldest").copy(lastUpdatedEpochMs = 1L),
+            ),
+        )
+
+        invokePrivateMethod(
+            service,
+            "touchThread",
+            "thread-middle",
+            null,
+        )
+
+        assertEquals(
+            listOf("thread-newest", "thread-oldest", "thread-middle"),
+            service.threads.value.map(ThreadSyncSnapshot::id),
+        )
+    }
+
+    @Test
     fun `history file change summary separates metadata only rows from displayable rows`() {
         val displayableFileChange = RemodexConversationItem(
             id = "file-change-displayable",
@@ -1810,6 +1846,97 @@ class BridgeThreadSyncServiceTest {
         assertEquals(RemodexTurnTerminalState.COMPLETED, thread.latestTurnTerminalState)
         assertEquals(listOf("Finished response\nLate tail"), assistantMessages.map(RemodexConversationItem::text))
         assertFalse(assistantMessages.single().isStreaming)
+    }
+
+    @Test
+    fun `late assistant delta keeps replayed timeline text in sync with the visible completed message`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                ThreadSyncSnapshot(
+                    id = "thread-late-delta-replay",
+                    title = "Late delta replay thread",
+                    preview = "",
+                    projectPath = "/tmp/project-late-delta-replay",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 0L,
+                    isRunning = true,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineMutations = emptyList(),
+                ),
+            ),
+        )
+        invokePrivateMethod(
+            service,
+            "setActiveTurnId",
+            "thread-late-delta-replay",
+            "turn-late-delta-replay",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-late-delta-replay"))
+                put("turnId", JsonPrimitive("turn-late-delta-replay"))
+                put("delta", JsonPrimitive("Hello"))
+            },
+        )
+        invokePrivateMethod(
+            service,
+            "completeAssistantStreamingItemsForTurn",
+            "thread-late-delta-replay",
+            "turn-late-delta-replay",
+        )
+        invokePrivateMethod(
+            service,
+            "setLatestTurnTerminalState",
+            "thread-late-delta-replay",
+            RemodexTurnTerminalState.COMPLETED,
+            "turn-late-delta-replay",
+        )
+        invokePrivateMethod(
+            service,
+            "clearThreadRunningState",
+            "thread-late-delta-replay",
+        )
+
+        invokePrivateMethod(
+            service,
+            "appendAssistantDelta",
+            buildJsonObject {
+                put("threadId", JsonPrimitive("thread-late-delta-replay"))
+                put("turnId", JsonPrimitive("turn-late-delta-replay"))
+                put("delta", JsonPrimitive(" world"))
+            },
+        )
+
+        val liveSnapshot = service.threads.value.first { it.id == "thread-late-delta-replay" }
+        val liveAssistant = liveSnapshot.timelineItems
+            .single { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        val replayedSnapshot = invokePrivateMethod(
+            service,
+            "withResolvedLiveThreadState",
+            liveSnapshot.copy(timelineItems = emptyList()),
+            "thread-late-delta-replay",
+            null,
+        ) as ThreadSyncSnapshot
+        val replayedAssistant = replayedSnapshot.timelineItems
+            .single { item -> item.speaker == ConversationSpeaker.ASSISTANT }
+
+        assertEquals("Hello world", liveAssistant.text)
+        assertEquals("Hello world", replayedAssistant.text)
     }
 
     @Test

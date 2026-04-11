@@ -8401,29 +8401,34 @@ private fun AssistantConversationRow(
 ) {
     val chrome = remodexConversationChrome()
     val hasLiveStreamingText = item.isStreaming && streamingTextState != null
-    val liveStreamingText = remember(streamingTextState, hasLiveStreamingText) {
-        if (hasLiveStreamingText) {
-            streamingTextState?.handle?.snapshot().orEmpty()
-        } else {
-            ""
-        }
-    }
     var lastNonBlankAssistantText by remember(item.id) { mutableStateOf("") }
-    val resolvedAssistantText = remember(item.text, liveStreamingText, hasLiveStreamingText, lastNonBlankAssistantText) {
+    val settledAssistantText = remember(item.text, lastNonBlankAssistantText) {
         resolveAssistantDisplayedText(
             itemText = item.text,
-            liveStreamingText = liveStreamingText.takeIf { hasLiveStreamingText },
+            liveStreamingText = null,
             lastNonBlankText = lastNonBlankAssistantText,
         )
     }
-    LaunchedEffect(item.id, resolvedAssistantText) {
-        if (resolvedAssistantText.isNotBlank()) {
-            lastNonBlankAssistantText = resolvedAssistantText
+    val hasVisibleAssistantText = remember(
+        item.text,
+        streamingTextState?.textLength,
+        hasLiveStreamingText,
+        lastNonBlankAssistantText,
+    ) {
+        assistantConversationHasVisibleText(
+            itemText = item.text,
+            liveStreamingTextLength = streamingTextState?.textLength?.takeIf { hasLiveStreamingText },
+            lastNonBlankText = lastNonBlankAssistantText,
+        )
+    }
+    LaunchedEffect(item.id, settledAssistantText, hasLiveStreamingText) {
+        if (!hasLiveStreamingText && settledAssistantText.isNotBlank()) {
+            lastNonBlankAssistantText = settledAssistantText
         }
     }
     val textRenderMode = rememberAssistantTextRenderMode(
         itemId = item.id,
-        text = if (hasLiveStreamingText) "streaming" else resolvedAssistantText,
+        text = if (hasLiveStreamingText) "streaming" else settledAssistantText,
         isStreaming = item.isStreaming,
     )
     val rowRenderModel = remember(
@@ -8441,10 +8446,14 @@ private fun AssistantConversationRow(
     val blockDiffPresentation = rowRenderModel.assistantBlockDiffPresentation
     val revertPresentation = accessoryState?.blockRevertPresentation ?: assistantRevertPresentation
     ConversationMessageActionContainer(
-        text = resolvedAssistantText,
-        hasActionableTextOverride = resolvedAssistantText.isNotEmpty(),
+        text = settledAssistantText,
+        hasActionableTextOverride = hasVisibleAssistantText,
         resolveTextForActions = {
-            resolvedAssistantText
+            if (hasLiveStreamingText && (streamingTextState?.textLength ?: 0) > 0) {
+                streamingTextState?.handle?.snapshot().orEmpty()
+            } else {
+                settledAssistantText
+            }
         },
         messageRole = ConversationSpeaker.ASSISTANT,
         usesMarkdownSelection = true,
@@ -8455,11 +8464,11 @@ private fun AssistantConversationRow(
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (resolvedAssistantText.isNotBlank()) {
+            if (hasVisibleAssistantText) {
                 when (textRenderMode) {
                     AssistantTextRenderMode.LIGHTWEIGHT_PLAIN -> {
                         LightweightStreamingAssistantMarkdownText(
-                            text = resolvedAssistantText,
+                            text = settledAssistantText,
                             streamingTextState = streamingTextState.takeIf { hasLiveStreamingText },
                             chrome = chrome,
                         )
@@ -8467,7 +8476,7 @@ private fun AssistantConversationRow(
 
                     AssistantTextRenderMode.RICH_MARKDOWN -> {
                         AssistantCompletedMarkdownText(
-                            text = resolvedAssistantText,
+                            text = settledAssistantText,
                             fallbackText = lastNonBlankAssistantText,
                             style = MaterialTheme.typography.bodyMedium,
                             color = chrome.bodyText,
@@ -8517,6 +8526,16 @@ internal fun resolveAssistantDisplayedText(
         return itemText
     }
     return lastNonBlankText
+}
+
+internal fun assistantConversationHasVisibleText(
+    itemText: String,
+    liveStreamingTextLength: Int?,
+    lastNonBlankText: String,
+): Boolean {
+    return (liveStreamingTextLength ?: 0) > 0 ||
+        itemText.isNotBlank() ||
+        lastNonBlankText.isNotBlank()
 }
 
 @Composable
