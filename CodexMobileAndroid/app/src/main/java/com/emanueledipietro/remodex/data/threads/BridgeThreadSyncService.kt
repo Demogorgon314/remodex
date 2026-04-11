@@ -89,6 +89,9 @@ import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.FileChangeRenderParser
 import com.emanueledipietro.remodex.feature.turn.ThinkingDisclosureParser
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
+import kotlinx.collections.immutable.PersistentMap
+import kotlinx.collections.immutable.persistentMapOf
+import kotlinx.collections.immutable.toPersistentMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -98,6 +101,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -663,7 +667,7 @@ class BridgeThreadSyncService(
     private val backingAssistantResponseMetricsByThreadId =
         MutableStateFlow<Map<String, RemodexAssistantResponseMetrics>>(emptyMap())
     private val backingStreamingAssistantTextsByMessageId =
-        MutableStateFlow<Map<String, StreamingAssistantTextState>>(emptyMap())
+        MutableStateFlow<Map<String, StreamingAssistantTextState>>(persistentMapOf())
     private val backingContextWindowUsageByThreadId =
         MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
     private val backingPendingApprovalRequest = MutableStateFlow<RemodexApprovalRequest?>(null)
@@ -798,7 +802,7 @@ class BridgeThreadSyncService(
                     assistantCompletionFingerprintByThread.clear()
                     assistantStreamingTextBuffers.clear()
                     locallyCompletedAssistantStreamingMessageKeys.clear()
-                    backingStreamingAssistantTextsByMessageId.value = emptyMap()
+                    backingStreamingAssistantTextsByMessageId.value = persistentMapOf()
                     timelineCacheByThread.clear()
                     latestTurnTerminalStateByThread.clear()
                     latestTerminalTurnIdByThread.clear()
@@ -1017,15 +1021,30 @@ class BridgeThreadSyncService(
         }
 
         val nextSnapshot = transform(currentThreads[index]).withResolvedLiveThreadState(threadId = threadId)
-        val nextThreads = currentThreads.toMutableList()
-        if (resortByRecency) {
-            nextThreads.removeAt(index)
-            val insertAt = nextThreads.indexOfFirst { candidate ->
-                threadRecencyComparator.compare(nextSnapshot, candidate) < 0
-            }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: nextThreads.size
-            nextThreads.add(insertAt, nextSnapshot)
+        val nextThreads = if (resortByRecency && index > 0) {
+            val previous = currentThreads[index - 1]
+            if (threadRecencyComparator.compare(nextSnapshot, previous) >= 0) {
+                // Recency order unchanged — splice in place without full list copy
+                currentThreads.toMutableList().also { it[index] = nextSnapshot }
+            } else {
+                currentThreads.toMutableList().also { list ->
+                    list.removeAt(index)
+                    val insertAt = list.indexOfFirst { candidate ->
+                        threadRecencyComparator.compare(nextSnapshot, candidate) < 0
+                    }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: list.size
+                    list.add(insertAt, nextSnapshot)
+                }
+            }
+        } else if (resortByRecency) {
+            currentThreads.toMutableList().also { list ->
+                list.removeAt(index)
+                val insertAt = list.indexOfFirst { candidate ->
+                    threadRecencyComparator.compare(nextSnapshot, candidate) < 0
+                }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: list.size
+                list.add(insertAt, nextSnapshot)
+            }
         } else {
-            nextThreads[index] = nextSnapshot
+            currentThreads.toMutableList().also { it[index] = nextSnapshot }
         }
         backingThreads.value = nextThreads
         rememberProjectPath(nextSnapshot.id, nextSnapshot.projectPath)
@@ -6023,13 +6042,14 @@ class BridgeThreadSyncService(
                 mutations = snapshot.timelineMutations,
                 item = item,
             )
+            val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, upsertMutation)
             opportunisticallyPrimeAssistantTimelineCache(
                 threadId = threadId,
                 snapshot = snapshot,
                 baseTimelineItems = baseTimelineItems,
+                nextTimelineItems = nextTimelineItems,
                 item = item,
             )
-            val nextTimelineItems = TurnTimelineReducer.reduce(baseTimelineItems, upsertMutation)
             snapshot.copy(
                 timelineMutations = nextMutations,
                 timelineItems = nextTimelineItems,
@@ -6064,6 +6084,7 @@ class BridgeThreadSyncService(
         threadId: String,
         snapshot: ThreadSyncSnapshot,
         baseTimelineItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
+        nextTimelineItems: List<com.emanueledipietro.remodex.model.RemodexConversationItem>,
         item: com.emanueledipietro.remodex.model.RemodexConversationItem,
     ) {
         if (
@@ -6076,10 +6097,6 @@ class BridgeThreadSyncService(
             ?.takeIf { cache -> cache.timelineItems == baseTimelineItems }
             ?: return
         val upsertMutation = TimelineMutation.Upsert(item)
-        val nextTimelineItems = TurnTimelineReducer.reduce(
-            items = cached.timelineItems,
-            mutation = upsertMutation,
-        )
         val projectedItems = TurnTimelineReducer.applyProjectedFastPath(
             items = cached.projectedItems,
             mutation = upsertMutation,
@@ -6127,14 +6144,16 @@ class BridgeThreadSyncService(
         mutations: List<TimelineMutation>,
         item: com.emanueledipietro.remodex.model.RemodexConversationItem,
     ): List<TimelineMutation> {
-        val nextMutations = ArrayList<TimelineMutation>(mutations.size + 1)
-        mutations.forEach { mutation ->
-            if (!matchesStreamingMessageMutation(mutation = mutation, item = item)) {
-                nextMutations += mutation
-            }
+        val upsert = TimelineMutation.Upsert(item)
+        val existingIndex = mutations.indexOfFirst { mutation ->
+            matchesStreamingMessageMutation(mutation = mutation, item = item)
         }
-        nextMutations += TimelineMutation.Upsert(item)
-        return nextMutations
+        if (existingIndex == -1) {
+            return mutations + upsert
+        }
+        return mutations.toMutableList().apply {
+            this[existingIndex] = upsert
+        }
     }
 
     private fun matchesStreamingMessageMutation(
@@ -6291,8 +6310,11 @@ class BridgeThreadSyncService(
         messageId: String,
         state: StreamingAssistantTextState,
     ) {
-        backingStreamingAssistantTextsByMessageId.value =
-            backingStreamingAssistantTextsByMessageId.value + (messageId to state)
+        backingStreamingAssistantTextsByMessageId.update { current ->
+            val persistentCurrent = current.toPersistentStreamingAssistantTextMap()
+            val next = persistentCurrent.put(messageId, state)
+            if (next == persistentCurrent) current else next
+        }
     }
 
     private fun clearAssistantStreamingTextBuffer(
@@ -6309,8 +6331,7 @@ class BridgeThreadSyncService(
                 messageId = messageId,
             ),
         )
-        backingStreamingAssistantTextsByMessageId.value =
-            backingStreamingAssistantTextsByMessageId.value - messageId
+        clearStreamingAssistantTextStates(listOf(messageId))
     }
 
     private fun clearAssistantStreamingTextBuffers(
@@ -6321,11 +6342,18 @@ class BridgeThreadSyncService(
             return
         }
         messageIds.forEach { messageId ->
-            clearAssistantStreamingTextBuffer(
+            clearLocallyCompletedAssistantStreamingMessage(
                 threadId = threadId,
                 messageId = messageId,
             )
+            assistantStreamingTextBuffers.remove(
+                AssistantStreamingTextBufferKey(
+                    threadId = threadId,
+                    messageId = messageId,
+                ),
+            )
         }
+        clearStreamingAssistantTextStates(messageIds)
     }
 
     private fun derivePreview(
@@ -10917,18 +10945,82 @@ class BridgeThreadSyncService(
         return if (abs(raw) > 10_000_000_000) raw.toLong() else (raw * 1000).toLong()
     }
 
+    private data class RelativeUpdatedLabelBucket(
+        val kind: RelativeUpdatedLabelBucketKind,
+        val value: Long,
+    )
+
+    private enum class RelativeUpdatedLabelBucketKind {
+        JUST_NOW,
+        MINUTES,
+        HOURS,
+        YESTERDAY,
+        DATE,
+    }
+
+    private var lastRelativeLabelBucket: Pair<RelativeUpdatedLabelBucket, String>? = null
+
     private fun relativeUpdatedLabel(epochMs: Long): String {
         val deltaSeconds = ((nowEpochMs() - epochMs) / 1000).coerceAtLeast(0)
-        return when {
-            deltaSeconds < 60 -> "Updated just now"
-            deltaSeconds < 3600 -> "Updated ${deltaSeconds / 60}m ago"
-            deltaSeconds < 86_400 -> "Updated ${deltaSeconds / 3600}h ago"
-            deltaSeconds < 172_800 -> "Updated yesterday"
-            else -> {
+        val bucket = when {
+            deltaSeconds < 60 -> RelativeUpdatedLabelBucket(
+                kind = RelativeUpdatedLabelBucketKind.JUST_NOW,
+                value = 0L,
+            )
+            deltaSeconds < 3600 -> RelativeUpdatedLabelBucket(
+                kind = RelativeUpdatedLabelBucketKind.MINUTES,
+                value = deltaSeconds / 60,
+            )
+            deltaSeconds < 86_400 -> RelativeUpdatedLabelBucket(
+                kind = RelativeUpdatedLabelBucketKind.HOURS,
+                value = deltaSeconds / 3600,
+            )
+            deltaSeconds < 172_800 -> RelativeUpdatedLabelBucket(
+                kind = RelativeUpdatedLabelBucketKind.YESTERDAY,
+                value = 0L,
+            )
+            else -> RelativeUpdatedLabelBucket(
+                kind = RelativeUpdatedLabelBucketKind.DATE,
+                value = epochMs / 86_400_000L,
+            )
+        }
+        val cached = lastRelativeLabelBucket
+        if (cached != null && cached.first == bucket) {
+            return cached.second
+        }
+        val label = when (bucket.kind) {
+            RelativeUpdatedLabelBucketKind.JUST_NOW -> "Updated just now"
+            RelativeUpdatedLabelBucketKind.MINUTES -> "Updated ${bucket.value}m ago"
+            RelativeUpdatedLabelBucketKind.HOURS -> "Updated ${bucket.value}h ago"
+            RelativeUpdatedLabelBucketKind.YESTERDAY -> "Updated yesterday"
+            RelativeUpdatedLabelBucketKind.DATE -> {
                 val instant = Instant.ofEpochMilli(epochMs)
                 "Updated ${instant.toString().take(10)}"
             }
         }
+        lastRelativeLabelBucket = bucket to label
+        return label
+    }
+
+    private fun clearStreamingAssistantTextStates(messageIds: Collection<String>) {
+        if (messageIds.isEmpty()) {
+            return
+        }
+        backingStreamingAssistantTextsByMessageId.update { current ->
+            var next = current.toPersistentStreamingAssistantTextMap()
+            var changed = false
+            messageIds.forEach { messageId ->
+                if (messageId in next) {
+                    next = next.remove(messageId)
+                    changed = true
+                }
+            }
+            if (changed) next else current
+        }
+    }
+
+    private fun Map<String, StreamingAssistantTextState>.toPersistentStreamingAssistantTextMap(): PersistentMap<String, StreamingAssistantTextState> {
+        return this as? PersistentMap<String, StreamingAssistantTextState> ?: toPersistentMap()
     }
 
     private fun currentSyncState(threadId: String): RemodexThreadSyncState {

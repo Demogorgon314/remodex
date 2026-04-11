@@ -49,11 +49,16 @@ import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -193,6 +198,40 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `streaming assistant text state emits fresh snapshots to collectors`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+        val emittedSnapshot = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(1_000L) {
+                service.streamingAssistantTextsByMessageId.drop(1).first()
+            }
+        }
+        invokePrivateMethod(
+            service,
+            "publishAssistantStreamingTextState",
+            "assistant-stream-emission",
+            StreamingAssistantTextState(
+                handle = StreamingAssistantTextHandle("Hello"),
+                version = 1L,
+                textLength = 5,
+            ),
+        )
+        advanceUntilIdle()
+        val emitted = emittedSnapshot.await()
+        assertEquals(
+            "Hello",
+            emitted["assistant-stream-emission"]?.handle?.snapshot(),
+        )
+    }
+
+    @Test
     fun `assistant streaming text buffer preserves newer local text when external reconciliation is shorter`() {
         val service = BridgeThreadSyncService(
             secureConnectionCoordinator = SecureConnectionCoordinator(
@@ -233,6 +272,34 @@ class BridgeThreadSyncServiceTest {
             "Recovered partial prefix plus newer local tail and final suffix",
             reconciled,
         )
+    }
+
+    @Test
+    fun `relative updated label cache keeps minute and hour buckets distinct`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+            nowEpochMs = { 3_600_000L },
+        )
+
+        val minuteLabel = invokePrivateMethod(
+            service,
+            "relativeUpdatedLabel",
+            3_540_000L,
+        ) as String
+        val hourLabel = invokePrivateMethod(
+            service,
+            "relativeUpdatedLabel",
+            0L,
+        ) as String
+
+        assertEquals("Updated 1m ago", minuteLabel)
+        assertEquals("Updated 1h ago", hourLabel)
     }
 
     @Test
