@@ -210,14 +210,49 @@ object TurnTimelineReducer {
         val visibleItems = removeHiddenSystemMarkers(items)
         val reordered = enforceIntraTurnOrder(visibleItems)
         val collapsedThinking = collapseThinkingMessages(reordered)
-        val withoutCompletedEmptyThinking = removeCompletedEmptyThinkingPlaceholders(collapsedThinking)
-        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(withoutCompletedEmptyThinking)
+        val withoutShadowedStreamingThinking = removeShadowedStreamingThinkingPlaceholders(
+            collapsedThinking,
+        )
+        val withoutCompletedEmptyThinking = removeCompletedEmptyThinkingPlaceholders(
+            withoutShadowedStreamingThinking,
+        )
+        val withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(
+            withoutCompletedEmptyThinking,
+        )
         val withoutStaleSyntheticThinking = removeStaleSyntheticThinkingPlaceholders(
             withoutCommandThinkingEchoes,
         )
-        val dedupedFileChanges = removeDuplicateFileChangeMessages(withoutStaleSyntheticThinking)
+        val withoutVisuallyEmptySystemItems = removeVisuallyEmptyCompletedSystemItems(
+            withoutStaleSyntheticThinking,
+        )
+        val dedupedFileChanges = removeDuplicateFileChangeMessages(
+            withoutVisuallyEmptySystemItems,
+        )
         val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
         return removeDuplicateAssistantMessages(dedupedSubagentActions)
+    }
+
+    private fun removeShadowedStreamingThinkingPlaceholders(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        return items.filterIndexed { index, item ->
+            if (
+                item.speaker != ConversationSpeaker.SYSTEM ||
+                item.kind != ConversationItemKind.REASONING ||
+                !item.isStreaming ||
+                normalizedThinkingContent(item.text).isNotEmpty()
+            ) {
+                return@filterIndexed true
+            }
+
+            val turnId = normalizedIdentifier(item.turnId)
+                ?: return@filterIndexed true
+            !hasRenderableSystemActivityAroundPlaceholder(
+                items = items,
+                placeholderIndex = index,
+                turnId = turnId,
+            )
+        }
     }
 
     private fun removeCompletedEmptyThinkingPlaceholders(
@@ -229,6 +264,12 @@ object TurnTimelineReducer {
                 !item.isStreaming &&
                 normalizedThinkingContent(item.text).isEmpty()
         }
+    }
+
+    private fun removeVisuallyEmptyCompletedSystemItems(
+        items: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        return items.filterNot(::isVisuallyEmptyCompletedSystemItem)
     }
 
     private fun removeHiddenSystemMarkers(
@@ -1091,6 +1132,76 @@ object TurnTimelineReducer {
             return false
         }
         return normalizedThinkingContent(item.text).isEmpty()
+    }
+
+    private fun isVisuallyEmptyCompletedSystemItem(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (item.speaker != ConversationSpeaker.SYSTEM || item.isStreaming) {
+            return false
+        }
+        if (item.kind == ConversationItemKind.REASONING) {
+            return normalizedThinkingContent(item.text).isEmpty()
+        }
+        return !hasRenderableSystemContent(item)
+    }
+
+    private fun hasRenderableSystemActivityAroundPlaceholder(
+        items: List<RemodexConversationItem>,
+        placeholderIndex: Int,
+        turnId: String,
+    ): Boolean {
+        val hasEarlierActivity = items
+            .subList(0, placeholderIndex)
+            .asReversed()
+            .any { candidate ->
+                normalizedIdentifier(candidate.turnId) == turnId &&
+                    candidate.speaker == ConversationSpeaker.SYSTEM &&
+                    candidate.kind != ConversationItemKind.REASONING &&
+                    hasRenderableSystemContent(candidate)
+            }
+        if (!hasEarlierActivity) {
+            return false
+        }
+
+        return items
+            .subList(placeholderIndex + 1, items.size)
+            .any { candidate ->
+                normalizedIdentifier(candidate.turnId) == turnId &&
+                    candidate.speaker == ConversationSpeaker.SYSTEM &&
+                    candidate.kind != ConversationItemKind.REASONING &&
+                    hasRenderableSystemContent(candidate)
+            }
+    }
+
+    private fun hasRenderableSystemContent(
+        item: RemodexConversationItem,
+    ): Boolean {
+        if (item.speaker != ConversationSpeaker.SYSTEM) {
+            return true
+        }
+        if (item.text.isNotBlank() || item.supportingText?.isNotBlank() == true) {
+            return true
+        }
+        if (item.attachments.isNotEmpty()) {
+            return true
+        }
+        if (
+            item.planState?.steps?.isNotEmpty() == true ||
+            item.planState?.explanation?.isNotBlank() == true
+        ) {
+            return true
+        }
+        if (item.subagentAction != null) {
+            return true
+        }
+        if (
+            item.structuredUserInputRequest != null ||
+            item.structuredUserInputResponse != null
+        ) {
+            return true
+        }
+        return false
     }
 
     private fun commandActivityKey(text: String): String? {

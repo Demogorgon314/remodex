@@ -808,6 +808,46 @@ class ThreadHistoryReconcilerTest {
     }
 
     @Test
+    fun `merge history items matches command execution by exact message id before appending duplicate rows`() {
+        val existing = listOf(
+            RemodexConversationItem(
+                id = "call-123",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "",
+                turnId = null,
+                itemId = null,
+                isStreaming = true,
+                orderIndex = 7L,
+            ),
+        )
+        val history = listOf(
+            RemodexConversationItem(
+                id = "call-123",
+                speaker = ConversationSpeaker.SYSTEM,
+                kind = ConversationItemKind.COMMAND_EXECUTION,
+                text = "Completed git diff -- app/src/main",
+                turnId = "turn-1",
+                itemId = "call-123",
+                isStreaming = false,
+                orderIndex = 40L,
+            ),
+        )
+
+        val merged = ThreadHistoryReconciler.mergeHistoryItems(
+            existing = existing,
+            history = history,
+            threadIsActive = false,
+            threadIsRunning = false,
+        )
+
+        assertEquals(1, merged.size)
+        assertEquals("call-123", merged.single().id)
+        assertEquals("call-123", merged.single().itemId)
+        assertEquals("Completed git diff -- app/src/main", merged.single().text)
+    }
+
+    @Test
     fun `merge history items rebinds repeated tool activity history to the provisional row instead of an older stable row`() {
         val existing = listOf(
             RemodexConversationItem(

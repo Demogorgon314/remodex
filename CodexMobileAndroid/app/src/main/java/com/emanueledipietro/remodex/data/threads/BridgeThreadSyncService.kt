@@ -666,6 +666,7 @@ class BridgeThreadSyncService(
     private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
     private val ambiguousTerminalThreadReadCatchupDelayMs = 350L
     private val initializeSessionRetryDelaysMs = listOf(80L, 160L, 320L, 640L)
+    private val threadSnapshotStateLock = Any()
     private val backingAvailableModels = MutableStateFlow<List<RemodexModelOption>>(emptyList())
     private val backingThreads = MutableStateFlow<List<ThreadSyncSnapshot>>(emptyList())
     private val backingCommandExecutionDetails =
@@ -817,7 +818,9 @@ class BridgeThreadSyncService(
                     pendingAmbiguousTerminalThreadReadJobs.values.forEach(Job::cancel)
                     pendingAmbiguousTerminalThreadReadJobs.clear()
                     resumedThreadIds.clear()
-                    backingThreads.value = emptyList()
+                    synchronized(threadSnapshotStateLock) {
+                        backingThreads.value = emptyList()
+                    }
                     backingCommandExecutionDetails.value = emptyMap()
                     backingAssistantResponseMetricsByThreadId.value = emptyMap()
                     backingContextWindowUsageByThreadId.value = emptyMap()
@@ -843,43 +846,45 @@ class BridgeThreadSyncService(
         val serverThreads = runBackgroundSyncOperation("refreshThreads") {
             listThreads(archived = false) + listThreads(archived = true)
         } ?: return
-        val existingById = backingThreads.value.associateBy(ThreadSyncSnapshot::id)
-        val serverThreadIds = serverThreads.map(ThreadSyncSnapshot::id).toSet()
-        val merged = serverThreads
-            .map { incoming ->
-                val existing = existingById[incoming.id]
-                incoming.copy(
-                    isRunning = threadHasKnownRunningState(incoming.id),
-                    timelineMutations = existing?.timelineMutations ?: incoming.timelineMutations,
-                    timelineItems = existing?.timelineItems ?: incoming.timelineItems,
-                    assistantChangeSets = existing?.assistantChangeSets ?: incoming.assistantChangeSets,
-                    runtimeConfig = mergeRuntimeConfig(
-                        existing = existing?.runtimeConfig,
-                        incoming = incoming.runtimeConfig,
-                    ),
-                ).withResolvedLiveThreadState(
-                    threadId = incoming.id,
-                    isRunning = threadHasKnownRunningState(incoming.id),
+        synchronized(threadSnapshotStateLock) {
+            val existingById = backingThreads.value.associateBy(ThreadSyncSnapshot::id)
+            val serverThreadIds = serverThreads.map(ThreadSyncSnapshot::id).toSet()
+            val merged = serverThreads
+                .map { incoming ->
+                    val existing = existingById[incoming.id]
+                    incoming.copy(
+                        isRunning = threadHasKnownRunningState(incoming.id),
+                        timelineMutations = existing?.timelineMutations ?: incoming.timelineMutations,
+                        timelineItems = existing?.timelineItems ?: incoming.timelineItems,
+                        assistantChangeSets = existing?.assistantChangeSets ?: incoming.assistantChangeSets,
+                        runtimeConfig = mergeRuntimeConfig(
+                            existing = existing?.runtimeConfig,
+                            incoming = incoming.runtimeConfig,
+                        ),
+                    ).withResolvedLiveThreadState(
+                        threadId = incoming.id,
+                        isRunning = threadHasKnownRunningState(incoming.id),
+                    )
+                }
+                .plus(
+                    existingById.values.mapNotNull { existing ->
+                        if (
+                            existing.id in serverThreadIds ||
+                            (!threadHasKnownRunningState(existing.id) && existing.id !in resumedThreadIds)
+                        ) {
+                            null
+                        } else {
+                            existing.withResolvedLiveThreadState(
+                                threadId = existing.id,
+                                isRunning = threadHasKnownRunningState(existing.id),
+                            )
+                        }
+                    },
                 )
-            }
-            .plus(
-                existingById.values.mapNotNull { existing ->
-                    if (
-                        existing.id in serverThreadIds ||
-                        (!threadHasKnownRunningState(existing.id) && existing.id !in resumedThreadIds)
-                    ) {
-                        null
-                    } else {
-                        existing.withResolvedLiveThreadState(
-                            threadId = existing.id,
-                            isRunning = threadHasKnownRunningState(existing.id),
-                        )
-                    }
-                },
-            )
-            .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
-        rememberProjectPaths(merged)
-        backingThreads.value = merged
+                .sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+            rememberProjectPaths(merged)
+            backingThreads.value = merged
+        }
     }
 
     override suspend fun hydrateThread(threadId: String) {
@@ -1020,38 +1025,40 @@ class BridgeThreadSyncService(
         resortByRecency: Boolean = false,
         transform: (ThreadSyncSnapshot) -> ThreadSyncSnapshot,
     ): ThreadSyncSnapshot? {
-        val currentThreads = backingThreads.value
-        val index = currentThreads.indexOfFirst { snapshot -> snapshot.id == threadId }
-        if (index < 0) {
-            return null
-        }
-
-        val nextSnapshot = transform(currentThreads[index]).withResolvedLiveThreadState(threadId = threadId)
-        val nextThreads = if (resortByRecency) {
-            val previous = currentThreads.getOrNull(index - 1)
-            val next = currentThreads.getOrNull(index + 1)
-            val staysAfterPrevious = previous == null ||
-                threadRecencyComparator.compare(nextSnapshot, previous) >= 0
-            val staysBeforeNext = next == null ||
-                threadRecencyComparator.compare(nextSnapshot, next) <= 0
-            if (staysAfterPrevious && staysBeforeNext) {
-                // Recency order unchanged — splice in place without full list copy.
-                currentThreads.toMutableList().also { it[index] = nextSnapshot }
-            } else {
-                currentThreads.toMutableList().also { list ->
-                    list.removeAt(index)
-                    val insertAt = list.indexOfFirst { candidate ->
-                        threadRecencyComparator.compare(nextSnapshot, candidate) < 0
-                    }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: list.size
-                    list.add(insertAt, nextSnapshot)
-                }
+        return synchronized(threadSnapshotStateLock) {
+            val currentThreads = backingThreads.value
+            val index = currentThreads.indexOfFirst { snapshot -> snapshot.id == threadId }
+            if (index < 0) {
+                return@synchronized null
             }
-        } else {
-            currentThreads.toMutableList().also { it[index] = nextSnapshot }
+
+            val nextSnapshot = transform(currentThreads[index]).withResolvedLiveThreadState(threadId = threadId)
+            val nextThreads = if (resortByRecency) {
+                val previous = currentThreads.getOrNull(index - 1)
+                val next = currentThreads.getOrNull(index + 1)
+                val staysAfterPrevious = previous == null ||
+                    threadRecencyComparator.compare(nextSnapshot, previous) >= 0
+                val staysBeforeNext = next == null ||
+                    threadRecencyComparator.compare(nextSnapshot, next) <= 0
+                if (staysAfterPrevious && staysBeforeNext) {
+                    // Recency order unchanged — splice in place without full list copy.
+                    currentThreads.toMutableList().also { it[index] = nextSnapshot }
+                } else {
+                    currentThreads.toMutableList().also { list ->
+                        list.removeAt(index)
+                        val insertAt = list.indexOfFirst { candidate ->
+                            threadRecencyComparator.compare(nextSnapshot, candidate) < 0
+                        }.takeIf { insertionIndex -> insertionIndex >= 0 } ?: list.size
+                        list.add(insertAt, nextSnapshot)
+                    }
+                }
+            } else {
+                currentThreads.toMutableList().also { it[index] = nextSnapshot }
+            }
+            backingThreads.value = nextThreads
+            rememberProjectPath(nextSnapshot.id, nextSnapshot.projectPath)
+            nextSnapshot
         }
-        backingThreads.value = nextThreads
-        rememberProjectPath(nextSnapshot.id, nextSnapshot.projectPath)
-        return nextSnapshot
     }
 
     private fun upsertThreadSnapshot(refreshedSnapshot: ThreadSyncSnapshot) {
@@ -1059,20 +1066,22 @@ class BridgeThreadSyncService(
             threadId = refreshedSnapshot.id,
             isRunning = refreshedSnapshot.isRunning,
         )
-        rememberProjectPath(normalizedSnapshot.id, normalizedSnapshot.projectPath)
-        val currentThreads = backingThreads.value
-        val updatedThreads = if (currentThreads.any { snapshot -> snapshot.id == normalizedSnapshot.id }) {
-            currentThreads.map { snapshot ->
-                if (snapshot.id == normalizedSnapshot.id) {
-                    normalizedSnapshot
-                } else {
-                    snapshot
+        synchronized(threadSnapshotStateLock) {
+            rememberProjectPath(normalizedSnapshot.id, normalizedSnapshot.projectPath)
+            val currentThreads = backingThreads.value
+            val updatedThreads = if (currentThreads.any { snapshot -> snapshot.id == normalizedSnapshot.id }) {
+                currentThreads.map { snapshot ->
+                    if (snapshot.id == normalizedSnapshot.id) {
+                        normalizedSnapshot
+                    } else {
+                        snapshot
+                    }
                 }
+            } else {
+                currentThreads + normalizedSnapshot
             }
-        } else {
-            currentThreads + normalizedSnapshot
+            backingThreads.value = updatedThreads.sortedWith(threadRecencyComparator)
         }
-        backingThreads.value = updatedThreads.sortedWith(threadRecencyComparator)
     }
 
     private fun mergeThreadSnapshotResponse(
@@ -1360,7 +1369,9 @@ class BridgeThreadSyncService(
         }
         activeTurnIdByThread.remove(threadId)
         resumedThreadIds.remove(threadId)
-        backingThreads.value = backingThreads.value.filterNot { snapshot -> snapshot.id == threadId }
+        synchronized(threadSnapshotStateLock) {
+            backingThreads.value = backingThreads.value.filterNot { snapshot -> snapshot.id == threadId }
+        }
     }
 
     override suspend fun sendPrompt(
@@ -10679,17 +10690,19 @@ class BridgeThreadSyncService(
     ) {
         var previousSnapshot: ThreadSyncSnapshot? = null
         var nextSnapshot: ThreadSyncSnapshot? = null
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id == threadId) {
-                previousSnapshot = snapshot
-                snapshot.withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = isRunning,
-                ).also { updatedSnapshot ->
-                    nextSnapshot = updatedSnapshot
+        synchronized(threadSnapshotStateLock) {
+            backingThreads.value = backingThreads.value.map { snapshot ->
+                if (snapshot.id == threadId) {
+                    previousSnapshot = snapshot
+                    snapshot.withResolvedLiveThreadState(
+                        threadId = threadId,
+                        isRunning = isRunning,
+                    ).also { updatedSnapshot ->
+                        nextSnapshot = updatedSnapshot
+                    }
+                } else {
+                    snapshot
                 }
-            } else {
-                snapshot
             }
         }
         if (shouldLogLifecycleTransition(previousSnapshot, nextSnapshot)) {
@@ -10816,57 +10829,61 @@ class BridgeThreadSyncService(
         runtimeConfig: RemodexRuntimeConfig,
     ) {
         val now = nowEpochMs()
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id != threadId) {
-                snapshot
-            } else {
-                val orderIndex = nextOrderIndex(snapshot)
-                val optimisticText = androidUserMessageText(
-                    prompt = prompt,
-                    attachmentCount = attachments.size,
-                )
-                val optimisticMutation = TimelineMutation.Upsert(
-                    timelineItem(
-                        id = "user-local-$now",
-                        speaker = ConversationSpeaker.USER,
-                        text = optimisticText,
-                        deliveryState = RemodexMessageDeliveryState.PENDING,
-                        createdAtEpochMs = now,
-                        attachments = attachments.map { attachment -> attachment.toConversationAttachment() },
-                        orderIndex = orderIndex,
-                    ),
-                )
-                snapshot.copy(
-                    preview = optimisticText,
-                    lastUpdatedEpochMs = now,
-                    lastUpdatedLabel = relativeUpdatedLabel(now),
-                    isRunning = true,
-                    runtimeConfig = runtimeConfig,
-                    timelineMutations = snapshot.timelineMutations + optimisticMutation,
-                    timelineItems = TurnTimelineReducer.reduce(
-                        reducedTimelineItems(snapshot),
-                        optimisticMutation,
-                    ),
-                ).withResolvedLiveThreadState(
-                    threadId = threadId,
-                    isRunning = true,
-                )
-            }
-        }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        synchronized(threadSnapshotStateLock) {
+            backingThreads.value = backingThreads.value.map { snapshot ->
+                if (snapshot.id != threadId) {
+                    snapshot
+                } else {
+                    val orderIndex = nextOrderIndex(snapshot)
+                    val optimisticText = androidUserMessageText(
+                        prompt = prompt,
+                        attachmentCount = attachments.size,
+                    )
+                    val optimisticMutation = TimelineMutation.Upsert(
+                        timelineItem(
+                            id = "user-local-$now",
+                            speaker = ConversationSpeaker.USER,
+                            text = optimisticText,
+                            deliveryState = RemodexMessageDeliveryState.PENDING,
+                            createdAtEpochMs = now,
+                            attachments = attachments.map { attachment -> attachment.toConversationAttachment() },
+                            orderIndex = orderIndex,
+                        ),
+                    )
+                    snapshot.copy(
+                        preview = optimisticText,
+                        lastUpdatedEpochMs = now,
+                        lastUpdatedLabel = relativeUpdatedLabel(now),
+                        isRunning = true,
+                        runtimeConfig = runtimeConfig,
+                        timelineMutations = snapshot.timelineMutations + optimisticMutation,
+                        timelineItems = TurnTimelineReducer.reduce(
+                            reducedTimelineItems(snapshot),
+                            optimisticMutation,
+                        ),
+                    ).withResolvedLiveThreadState(
+                        threadId = threadId,
+                        isRunning = true,
+                    )
+                }
+            }.sortedByDescending(ThreadSyncSnapshot::lastUpdatedEpochMs)
+        }
     }
 
     private fun updateThread(
         threadId: String,
         transform: (ThreadSyncSnapshot) -> ThreadSyncSnapshot,
     ) {
-        backingThreads.value = backingThreads.value.map { snapshot ->
-            if (snapshot.id == threadId) {
-                transform(snapshot).withResolvedLiveThreadState(threadId = threadId)
-            } else {
-                snapshot
+        synchronized(threadSnapshotStateLock) {
+            backingThreads.value = backingThreads.value.map { snapshot ->
+                if (snapshot.id == threadId) {
+                    transform(snapshot).withResolvedLiveThreadState(threadId = threadId)
+                } else {
+                    snapshot
+                }
             }
+            rememberProjectPaths(backingThreads.value)
         }
-        rememberProjectPaths(backingThreads.value)
     }
 
     private fun mergeRuntimeConfig(

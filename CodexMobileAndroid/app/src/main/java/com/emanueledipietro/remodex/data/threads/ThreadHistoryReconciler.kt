@@ -139,6 +139,15 @@ internal object ThreadHistoryReconciler {
         threadIsRunning: Boolean,
         assistantHistoryCountByTurn: Map<String, Int>,
     ): Int {
+        val incomingMessageId = normalizedIdentifier(historyItem.id)
+        if (incomingMessageId != null) {
+            merged.indexOfLast { candidate ->
+                candidate.speaker == historyItem.speaker &&
+                    candidate.kind == historyItem.kind &&
+                    normalizedIdentifier(candidate.id) == incomingMessageId
+            }.takeIf { it >= 0 }?.let { return it }
+        }
+
         if (historyItem.speaker == ConversationSpeaker.ASSISTANT) {
             val turnId = normalizedIdentifier(historyItem.turnId)
             val incomingItemId = normalizedIdentifier(historyItem.itemId)

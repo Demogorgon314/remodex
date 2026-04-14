@@ -1426,6 +1426,80 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun `project hides empty streaming thinking placeholder when dedicated system activity already explains progress`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "read-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.TOOL_ACTIVITY,
+                    text = "Read Services/CodexService+History.swift",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "thinking-placeholder",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.REASONING,
+                    text = "Thinking...",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = true,
+                ),
+                RemodexConversationItem(
+                    id = "search-1",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.TOOL_ACTIVITY,
+                    text = "Searched for parentThreadId",
+                    turnId = "turn-1",
+                    orderIndex = 3,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("read-1", "search-1"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
+    fun `project drops completed visually empty system items that would otherwise leave timeline gaps`() {
+        val projected = TurnTimelineReducer.project(
+            listOf(
+                RemodexConversationItem(
+                    id = "empty-tool",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.TOOL_ACTIVITY,
+                    text = "",
+                    turnId = "turn-1",
+                    orderIndex = 1,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "empty-chat",
+                    speaker = ConversationSpeaker.SYSTEM,
+                    kind = ConversationItemKind.CHAT,
+                    text = "   ",
+                    turnId = "turn-1",
+                    orderIndex = 2,
+                    isStreaming = false,
+                ),
+                RemodexConversationItem(
+                    id = "assistant-1",
+                    speaker = ConversationSpeaker.ASSISTANT,
+                    kind = ConversationItemKind.CHAT,
+                    text = "Kept visible",
+                    turnId = "turn-1",
+                    orderIndex = 3,
+                    isStreaming = false,
+                ),
+            ),
+        )
+
+        assertEquals(listOf("assistant-1"), projected.map(RemodexConversationItem::id))
+    }
+
+    @Test
     fun `project drops completed rollout thinking placeholder when same turn already has authoritative content`() {
         val projected = TurnTimelineReducer.project(
             listOf(

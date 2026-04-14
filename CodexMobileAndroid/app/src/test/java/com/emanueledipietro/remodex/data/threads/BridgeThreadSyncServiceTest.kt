@@ -59,6 +59,9 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -1413,6 +1416,212 @@ class BridgeThreadSyncServiceTest {
             .first { item -> item.id == "assistant-1" }
             .text
         assertEquals("Hello world", storedAssistantText)
+    }
+
+    @Test
+    fun `thread read merge reconciles command execution history by exact message id to avoid duplicate timeline keys`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = this,
+            ),
+            scope = backgroundScope,
+        )
+        val localSnapshot = ThreadSyncSnapshot(
+            id = "thread-command-history-key",
+            title = "Command history key",
+            preview = "",
+            projectPath = "/tmp/project-command-history-key",
+            lastUpdatedLabel = "Updated just now",
+            lastUpdatedEpochMs = 1L,
+            isRunning = true,
+            runtimeConfig = RemodexRuntimeConfig(),
+            timelineMutations = listOf(
+                TimelineMutation.Upsert(
+                    timelineItem(
+                        id = "call-123",
+                        speaker = ConversationSpeaker.SYSTEM,
+                        kind = ConversationItemKind.COMMAND_EXECUTION,
+                        text = "",
+                        turnId = null,
+                        itemId = null,
+                        isStreaming = true,
+                        orderIndex = 5L,
+                    ),
+                ),
+            ),
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(localSnapshot),
+        )
+
+        val refreshedSnapshot = invokePrivateMethod(
+            service,
+            "mergeThreadSnapshotResponse",
+            "thread/resume",
+            "thread-command-history-key",
+            RpcMessage.response(
+                id = null,
+                result = buildJsonObject {
+                    put(
+                        "thread",
+                        buildJsonObject {
+                            put("id", JsonPrimitive("thread-command-history-key"))
+                            put("title", JsonPrimitive("Command history key"))
+                            put("cwd", JsonPrimitive("/tmp/project-command-history-key"))
+                            put(
+                                "turns",
+                                buildJsonArray {
+                                    add(
+                                        buildJsonObject {
+                                            put("id", JsonPrimitive("turn-1"))
+                                            put(
+                                                "items",
+                                                buildJsonArray {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("id", JsonPrimitive("call-123"))
+                                                            put("type", JsonPrimitive("commandExecution"))
+                                                            put("command", JsonPrimitive("git diff -- app/src/main"))
+                                                            put("status", JsonPrimitive("completed"))
+                                                        },
+                                                    )
+                                                },
+                                            )
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            ),
+            localSnapshot,
+            RemodexThreadSyncState.LIVE,
+            true,
+        ) as ThreadSyncSnapshot
+
+        val commandItems = TurnTimelineReducer.reduceProjected(refreshedSnapshot.timelineMutations)
+            .filter { item -> item.kind == ConversationItemKind.COMMAND_EXECUTION }
+        assertEquals(1, commandItems.size)
+        assertEquals(listOf("call-123"), commandItems.map(RemodexConversationItem::id))
+        assertEquals(listOf("call-123"), commandItems.map(RemodexConversationItem::itemId))
+
+        val storedCommandItems = TurnTimelineReducer.reduceProjected(
+            service.threads.value.first { it.id == "thread-command-history-key" }.timelineMutations,
+        ).filter { item -> item.kind == ConversationItemKind.COMMAND_EXECUTION }
+        assertEquals(1, storedCommandItems.size)
+        assertEquals("call-123", storedCommandItems.single().id)
+    }
+
+    @Test
+    fun `concurrent local mutation and snapshot merge retain both timeline items`() {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = TestScope(),
+            ),
+            scope = TestScope(),
+        )
+        seedThreads(
+            service = service,
+            snapshots = listOf(
+                threadSnapshot("thread-race").copy(
+                    title = "Race thread",
+                    isRunning = true,
+                ),
+            ),
+        )
+
+        val localItem = timelineItem(
+            id = "tool-1",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.TOOL_ACTIVITY,
+            text = "Read thread_list.rs",
+            turnId = "turn-race",
+            itemId = "tool-1",
+            orderIndex = 1L,
+        )
+        val mergedItem = timelineItem(
+            id = "assistant-1",
+            speaker = ConversationSpeaker.ASSISTANT,
+            text = "I found the reducer divergence.",
+            turnId = "turn-race",
+            itemId = "assistant-1",
+            orderIndex = 2L,
+        )
+        val localReady = CountDownLatch(1)
+        val mergeReady = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val backgroundFailure = AtomicReference<Throwable?>(null)
+
+        val localTransform: (ThreadSyncSnapshot) -> ThreadSyncSnapshot = { snapshot ->
+            localReady.countDown()
+            check(release.await(2, TimeUnit.SECONDS)) { "Timed out waiting to release local mutation writer." }
+            snapshot.copy(
+                timelineMutations = snapshot.timelineMutations + TimelineMutation.Upsert(localItem),
+                timelineItems = snapshot.timelineItems + localItem,
+            )
+        }
+        val mergeTransform: (ThreadSyncSnapshot) -> ThreadSyncSnapshot = { snapshot ->
+            mergeReady.countDown()
+            snapshot.copy(
+                preview = mergedItem.text,
+                timelineMutations = snapshot.timelineMutations + TimelineMutation.Upsert(mergedItem),
+                timelineItems = snapshot.timelineItems + mergedItem,
+            )
+        }
+
+        val localWriter = Thread {
+            try {
+                invokePrivateMethod(
+                    service,
+                    "mutateThreadSnapshot",
+                    "thread-race",
+                    false,
+                    localTransform,
+                )
+            } catch (t: Throwable) {
+                backgroundFailure.compareAndSet(null, t)
+            }
+        }
+        val mergeWriter = Thread {
+            try {
+                invokePrivateMethod(
+                    service,
+                    "updateThread",
+                    "thread-race",
+                    mergeTransform,
+                )
+            } catch (t: Throwable) {
+                backgroundFailure.compareAndSet(null, t)
+            }
+        }
+
+        localWriter.start()
+        assertTrue("Expected local mutation writer to capture the stale snapshot.", localReady.await(1, TimeUnit.SECONDS))
+        mergeWriter.start()
+
+        release.countDown()
+        localWriter.join(1_000L)
+        mergeWriter.join(1_000L)
+        backgroundFailure.get()?.let { throw it }
+        assertFalse("Local mutation writer did not finish.", localWriter.isAlive)
+        assertFalse("History merge writer did not finish.", mergeWriter.isAlive)
+        assertTrue("Expected history merge writer to apply after the local mutation completed.", mergeReady.await(1, TimeUnit.SECONDS))
+
+        val thread = service.threads.value.first { it.id == "thread-race" }
+        val projectedIds = TurnTimelineReducer.reduceProjected(thread.timelineMutations)
+            .map(RemodexConversationItem::id)
+            .toSet()
+
+        assertEquals(2, thread.timelineMutations.size)
+        assertEquals(setOf("tool-1", "assistant-1"), projectedIds)
     }
 
     @Test
