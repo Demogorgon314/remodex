@@ -50,9 +50,9 @@ class RemodexRateLimitStatusTest {
 
         assertEquals(listOf("default", "spark"), sections.map(RemodexRateLimitDisplaySection::id))
         assertNull(sections.first().title)
-        assertEquals(listOf("5h", "Weekly"), sections.first().rows.map(RemodexRateLimitDisplayRow::label))
-        assertEquals("GPT-5.3-Codex-Spark limit", sections.last().title)
-        assertEquals(listOf("5h", "Weekly"), sections.last().rows.map(RemodexRateLimitDisplayRow::label))
+        assertEquals(listOf("5 小时", "1 周"), sections.first().rows.map(RemodexRateLimitDisplayRow::label))
+        assertEquals("GPT-5.3-Codex-Spark 额度", sections.last().title)
+        assertEquals(listOf("5 小时", "1 周"), sections.last().rows.map(RemodexRateLimitDisplayRow::label))
     }
 
     @Test
@@ -91,7 +91,7 @@ class RemodexRateLimitStatusTest {
 
         assertEquals(1, sections.size)
         assertEquals("default", sections.single().id)
-        assertEquals(listOf("5h"), sections.single().rows.map(RemodexRateLimitDisplayRow::label))
+        assertEquals(listOf("5 小时"), sections.single().rows.map(RemodexRateLimitDisplayRow::label))
     }
 
     @Test
@@ -124,7 +124,7 @@ class RemodexRateLimitStatusTest {
 
         val defaultRows = sections.single().rows
         assertEquals(1, defaultRows.size)
-        assertEquals("5h", defaultRows.single().label)
+        assertEquals("5 小时", defaultRows.single().label)
         assertEquals(75, defaultRows.single().window.remainingPercent)
         assertTrue(defaultRows.single().window.resetsAtEpochMs == 1_741_000_000_000)
     }

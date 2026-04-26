@@ -414,7 +414,7 @@ fun SettingsScreen(
             SettingsSelectionRow(
                 title = "Access",
                 currentLabel = uiState.runtimeDefaults.accessMode.shortLabel,
-                options = RemodexAccessMode.entries.map { mode ->
+                options = RemodexAccessMode.displayEntries.map { mode ->
                     SettingsOption(mode.name, mode.shortLabel)
                 },
                 onSelected = { key -> onSelectDefaultAccessMode(RemodexAccessMode.valueOf(key)) },

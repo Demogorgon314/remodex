@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
 
 class RemodexRuntimeConfigTest {
     @Test
@@ -84,9 +85,38 @@ class RemodexRuntimeConfigTest {
     }
 
     @Test
-    fun `access mode exposes sandbox values expected by current bridge runtimes`() {
-        assertEquals("workspace-write", RemodexAccessMode.ON_REQUEST.sandboxLegacyValue)
+    fun `access modes expose wire values expected by current bridge runtimes`() {
+        assertEquals(listOf("on-request", "onRequest"), RemodexAccessMode.DEFAULT_PERMISSION.approvalPolicyCandidates)
+        assertEquals("read-only", RemodexAccessMode.DEFAULT_PERMISSION.sandboxLegacyValue)
+        assertEquals(listOf("on-request", "onRequest"), RemodexAccessMode.AUTO_REVIEW.approvalPolicyCandidates)
+        assertEquals("workspace-write", RemodexAccessMode.AUTO_REVIEW.sandboxLegacyValue)
+        assertEquals(listOf("never"), RemodexAccessMode.FULL_ACCESS.approvalPolicyCandidates)
         assertEquals("danger-full-access", RemodexAccessMode.FULL_ACCESS.sandboxLegacyValue)
+        assertNull(RemodexAccessMode.CUSTOM_CONFIG.approvalPolicyCandidates)
+        assertNull(RemodexAccessMode.CUSTOM_CONFIG.sandboxLegacyValue)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun `legacy on request access mode normalizes to auto review`() {
+        val config = RemodexRuntimeConfig(accessMode = RemodexAccessMode.ON_REQUEST).normalizeSelections()
+        val defaults = Json.decodeFromString<RemodexRuntimeDefaults>("""{"accessMode":"ON_REQUEST"}""")
+
+        assertEquals(RemodexAccessMode.AUTO_REVIEW, config.accessMode)
+        assertEquals(RemodexAccessMode.AUTO_REVIEW, defaults.accessMode.canonical)
+    }
+
+    @Test
+    fun `display access modes expose exactly four current choices`() {
+        assertEquals(
+            listOf(
+                RemodexAccessMode.DEFAULT_PERMISSION,
+                RemodexAccessMode.AUTO_REVIEW,
+                RemodexAccessMode.FULL_ACCESS,
+                RemodexAccessMode.CUSTOM_CONFIG,
+            ),
+            RemodexAccessMode.displayEntries,
+        )
     }
 
     private fun gpt54Model(): RemodexModelOption {

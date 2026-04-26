@@ -16,34 +16,67 @@ enum class RemodexPlanningMode {
 }
 
 @Serializable
+@Suppress("DEPRECATION")
 enum class RemodexAccessMode {
-    ON_REQUEST,
+    DEFAULT_PERMISSION,
+    AUTO_REVIEW,
     FULL_ACCESS,
+    CUSTOM_CONFIG,
+    @Deprecated(
+        message = "Legacy serialized value. Use AUTO_REVIEW.",
+        replaceWith = ReplaceWith("AUTO_REVIEW"),
+    )
+    ON_REQUEST,
     ;
+
+    val canonical: RemodexAccessMode
+        get() = when (this) {
+            ON_REQUEST -> AUTO_REVIEW
+            else -> this
+        }
 
     val label: String
         get() = when (this) {
-            ON_REQUEST -> "On-Request"
-            FULL_ACCESS -> "Full Access"
+            DEFAULT_PERMISSION -> "默认权限"
+            AUTO_REVIEW, ON_REQUEST -> "自动审查"
+            FULL_ACCESS -> "完全访问权限"
+            CUSTOM_CONFIG -> "自定义 (config.toml)"
         }
 
     val shortLabel: String
         get() = when (this) {
-            ON_REQUEST -> "Ask"
-            FULL_ACCESS -> "Full"
+            DEFAULT_PERMISSION -> "默认"
+            AUTO_REVIEW, ON_REQUEST -> "自动审查"
+            FULL_ACCESS -> "完全访问"
+            CUSTOM_CONFIG -> "自定义"
         }
 
-    val approvalPolicyCandidates: List<String>
+    val approvalPolicyCandidates: List<String>?
         get() = when (this) {
-            ON_REQUEST -> listOf("on-request", "onRequest")
+            DEFAULT_PERMISSION, AUTO_REVIEW, ON_REQUEST -> listOf("on-request", "onRequest")
             FULL_ACCESS -> listOf("never")
+            CUSTOM_CONFIG -> null
         }
 
-    val sandboxLegacyValue: String
+    val sandboxLegacyValue: String?
         get() = when (this) {
-            ON_REQUEST -> "workspace-write"
+            DEFAULT_PERMISSION -> "read-only"
+            AUTO_REVIEW, ON_REQUEST -> "workspace-write"
             FULL_ACCESS -> "danger-full-access"
+            CUSTOM_CONFIG -> null
         }
+
+    val autoApprovesRuntimeRequests: Boolean
+        get() = canonical == FULL_ACCESS
+
+    companion object {
+        val displayEntries: List<RemodexAccessMode> = listOf(
+            DEFAULT_PERMISSION,
+            AUTO_REVIEW,
+            FULL_ACCESS,
+            CUSTOM_CONFIG,
+        )
+    }
 }
 
 @Serializable
@@ -131,7 +164,7 @@ data class RemodexRuntimeOverrides(
 data class RemodexRuntimeDefaults(
     val modelId: String? = null,
     val reasoningEffort: String? = null,
-    val accessMode: RemodexAccessMode = RemodexAccessMode.ON_REQUEST,
+    val accessMode: RemodexAccessMode = RemodexAccessMode.AUTO_REVIEW,
     val serviceTier: RemodexServiceTier? = null,
     val hasServiceTierPreference: Boolean = false,
 )
@@ -141,19 +174,19 @@ data class RemodexRuntimeConfig(
     val availableModels: List<RemodexModelOption> = emptyList(),
     val availablePlanningModes: List<RemodexPlanningMode> = RemodexPlanningMode.entries,
     val availableReasoningEfforts: List<RemodexReasoningEffortOption> = emptyList(),
-    val availableAccessModes: List<RemodexAccessMode> = RemodexAccessMode.entries,
+    val availableAccessModes: List<RemodexAccessMode> = RemodexAccessMode.displayEntries,
     val availableServiceTiers: List<RemodexServiceTier> = emptyList(),
     val selectedModelId: String? = null,
     val planningMode: RemodexPlanningMode = RemodexPlanningMode.AUTO,
     val reasoningEffort: String? = null,
-    val accessMode: RemodexAccessMode = RemodexAccessMode.ON_REQUEST,
+    val accessMode: RemodexAccessMode = RemodexAccessMode.AUTO_REVIEW,
     val serviceTier: RemodexServiceTier? = null,
 ) {
     fun applyDefaults(defaults: RemodexRuntimeDefaults): RemodexRuntimeConfig {
         return copy(
             selectedModelId = defaults.modelId?.trim()?.takeIf(String::isNotEmpty) ?: selectedModelId,
             reasoningEffort = defaults.reasoningEffort?.trim()?.takeIf(String::isNotEmpty) ?: reasoningEffort,
-            accessMode = defaults.accessMode,
+            accessMode = defaults.accessMode.canonical,
             serviceTier = if (defaults.hasServiceTierPreference) {
                 defaults.serviceTier
             } else {
@@ -169,7 +202,7 @@ data class RemodexRuntimeConfig(
         return copy(
             planningMode = overrides.planningMode ?: planningMode,
             reasoningEffort = overrides.reasoningEffort?.trim()?.takeIf(String::isNotEmpty) ?: reasoningEffort,
-            accessMode = overrides.accessMode ?: accessMode,
+            accessMode = overrides.accessMode?.canonical ?: accessMode.canonical,
             serviceTier = if (overrides.hasServiceTierOverride) {
                 overrides.serviceTier
             } else {
@@ -199,6 +232,7 @@ data class RemodexRuntimeConfig(
                 availableServiceTiers = normalizedServiceTiers,
                 selectedModelId = selectedModelId?.trim()?.takeIf(String::isNotEmpty),
                 reasoningEffort = reasoningEffort?.trim()?.takeIf(String::isNotEmpty),
+                accessMode = accessMode.canonical,
                 serviceTier = normalizedServiceTier,
             )
         }
@@ -222,6 +256,7 @@ data class RemodexRuntimeConfig(
             availableServiceTiers = normalizedServiceTiers,
             selectedModelId = resolvedModel?.id,
             reasoningEffort = normalizedReasoning,
+            accessMode = accessMode.canonical,
             serviceTier = normalizedServiceTier,
         )
     }
@@ -240,8 +275,8 @@ data class RemodexRuntimeConfig(
             reasoningEffort?.takeIf(String::isNotBlank)?.let { effort ->
                 add("${RemodexRuntimeMetaMapper.reasoningTitle(effort).lowercase()} reasoning")
             }
-            if (accessMode == RemodexAccessMode.FULL_ACCESS) {
-                add(accessMode.label)
+            if (accessMode.canonical == RemodexAccessMode.FULL_ACCESS) {
+                add(accessMode.canonical.label)
             }
             serviceTier?.let { add(it.label) }
         }.joinToString(", ")

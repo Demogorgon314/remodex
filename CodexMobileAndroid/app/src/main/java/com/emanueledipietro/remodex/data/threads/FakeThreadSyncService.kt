@@ -1060,7 +1060,7 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                 selectedModelId = "gpt-5.4",
                 planningMode = com.emanueledipietro.remodex.model.RemodexPlanningMode.PLAN,
                 reasoningEffort = "medium",
-                accessMode = RemodexAccessMode.ON_REQUEST,
+                accessMode = RemodexAccessMode.AUTO_REVIEW,
             ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(
@@ -1114,7 +1114,7 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                 availableModels = availableModels,
                 selectedModelId = "gpt-5.4",
                 reasoningEffort = "low",
-                accessMode = RemodexAccessMode.ON_REQUEST,
+                accessMode = RemodexAccessMode.AUTO_REVIEW,
             ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(

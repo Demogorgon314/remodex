@@ -144,7 +144,7 @@ data class RemodexRateLimitBucket(
                 if (sparkModelAvailable) {
                     DisplaySectionMetadata(
                         id = "spark",
-                        title = "GPT-5.3-Codex-Spark limit",
+                        title = "GPT-5.3-Codex-Spark 额度",
                     )
                 } else {
                     null
@@ -170,10 +170,10 @@ data class RemodexRateLimitBucket(
             val weekMinutes = 7 * 24 * 60
             val dayMinutes = 24 * 60
             return when {
-                value % weekMinutes == 0 -> if (value == weekMinutes) "Weekly" else "${value / weekMinutes}w"
-                value % dayMinutes == 0 -> "${value / dayMinutes}d"
-                value % 60 == 0 -> "${value / 60}h"
-                else -> "${value}m"
+                value % weekMinutes == 0 -> "${value / weekMinutes} 周"
+                value % dayMinutes == 0 -> "${value / dayMinutes} 天"
+                value % 60 == 0 -> "${value / 60} 小时"
+                else -> "${value} 分钟"
             }
         }
 
