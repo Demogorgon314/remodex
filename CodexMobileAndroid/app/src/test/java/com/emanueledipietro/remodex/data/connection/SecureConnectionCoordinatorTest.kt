@@ -58,7 +58,7 @@ class SecureConnectionCoordinatorTest {
             trustedSessionResolver = ThrowingTrustedSessionResolver(
                 TrustedSessionResolveException(
                     code = "session_unavailable",
-                    message = "Your trusted Mac is offline right now.",
+                    message = "Your trusted computer is offline right now.",
                 ),
             ),
             relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
@@ -69,7 +69,7 @@ class SecureConnectionCoordinatorTest {
         awaitSecureState(coordinator, SecureConnectionState.LIVE_SESSION_UNRESOLVED)
 
         assertEquals(SecureConnectionState.LIVE_SESSION_UNRESOLVED, coordinator.state.value.secureState)
-        assertEquals("Your trusted Mac is offline right now.", coordinator.state.value.phaseMessage)
+        assertEquals("Your trusted computer is offline right now.", coordinator.state.value.phaseMessage)
     }
 
     @Test
@@ -86,7 +86,7 @@ class SecureConnectionCoordinatorTest {
             trustedSessionResolver = ThrowingTrustedSessionResolver(
                 TrustedSessionResolveException(
                     code = "phone_not_trusted",
-                    message = "This Android device is no longer trusted by the Mac. Scan a new QR code to reconnect.",
+                    message = "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect.",
                 ),
             ),
             relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
@@ -98,7 +98,7 @@ class SecureConnectionCoordinatorTest {
 
         assertEquals(SecureConnectionState.REPAIR_REQUIRED, coordinator.state.value.secureState)
         assertEquals(
-            "This Android device is no longer trusted by the Mac. Scan a new QR code to reconnect.",
+            "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect.",
             coordinator.state.value.phaseMessage,
         )
     }
@@ -133,7 +133,7 @@ class SecureConnectionCoordinatorTest {
         assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
         assertTrue(coordinator.state.value.autoReconnectAllowed)
         assertEquals(
-            "The trusted Mac session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your Mac, scan the new QR code.",
+            "已信任电脑的 session 暂时不可用. Remodex 会继续重试. 如果你重启了电脑上的 bridge, 请扫描新的 QR code.",
             coordinator.state.value.phaseMessage,
         )
     }
@@ -168,7 +168,7 @@ class SecureConnectionCoordinatorTest {
         assertEquals(SecureConnectionState.LIVE_SESSION_UNRESOLVED, coordinator.state.value.secureState)
         assertFalse(coordinator.state.value.autoReconnectAllowed)
         assertEquals(
-            "This relay session was replaced by another Mac connection. Scan a new QR code to reconnect.",
+            "This relay session was replaced by another computer connection. Scan a new QR code to reconnect.",
             coordinator.state.value.phaseMessage,
         )
     }

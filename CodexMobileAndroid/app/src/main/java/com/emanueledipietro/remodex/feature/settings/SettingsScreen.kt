@@ -63,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
@@ -79,6 +80,8 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.remodexGptHintText
+import com.emanueledipietro.remodex.model.remodexLocalizedText
+import com.emanueledipietro.remodex.model.usesSimplifiedChineseUi
 import com.emanueledipietro.remodex.platform.notifications.RemodexNotificationPermissionUiState
 import java.text.DateFormat
 import java.text.NumberFormat
@@ -95,6 +98,7 @@ fun SettingsScreen(
     uiState: AppUiState,
     notificationPermissionUiState: RemodexNotificationPermissionUiState,
     onNotificationAction: () -> Unit,
+    onSelectAppLanguage: (RemodexAppLanguage) -> Unit,
     onSelectAppFontStyle: (RemodexAppFontStyle) -> Unit,
     onSelectDefaultModelId: (String?) -> Unit,
     onSelectDefaultReasoningEffort: (String?) -> Unit,
@@ -152,6 +156,7 @@ fun SettingsScreen(
     }
     val trustedMac = uiState.trustedMac
     val bridgeProfiles = uiState.bridgeProfiles
+    val usesChineseUi = uiState.appLanguage.usesSimplifiedChineseUi()
     val pendingBridgeDeleteProfile = remember(pendingBridgeDeleteProfileId, bridgeProfiles) {
         pendingBridgeDeleteProfileId?.let { profileId ->
             bridgeProfiles.firstOrNull { profile -> profile.profileId == profileId }
@@ -183,9 +188,12 @@ fun SettingsScreen(
 
     if (isShowingForgetPairConfirm && trustedMac != null) {
         SettingsConnectionConfirmDialog(
-            title = "Forget Pair?",
-            message = "You'll need to scan a QR code again to reconnect.",
-            confirmLabel = "Forget Pair",
+            title = remodexLocalizedText("忘记配对?", "Forget Pair?"),
+            message = remodexLocalizedText(
+                "重新连接时需要再次扫描 QR code.",
+                "You'll need to scan a QR code again to reconnect.",
+            ),
+            confirmLabel = remodexLocalizedText("忘记配对", "Forget Pair"),
             onDismiss = { isShowingForgetPairConfirm = false },
             onConfirm = {
                 isShowingForgetPairConfirm = false
@@ -214,16 +222,26 @@ fun SettingsScreen(
     pendingBridgeDeleteProfile?.let { pendingProfile ->
         SettingsConnectionConfirmDialog(
             title = if (pendingProfile.isActive) {
-                "Delete current bridge?"
+                remodexLocalizedText("删除当前电脑?", "Delete current computer?")
             } else {
-                "Delete \"${pendingProfile.name}\"?"
+                remodexLocalizedText(
+                    "删除 \"${pendingProfile.name}\"?",
+                    "Delete \"${pendingProfile.name}\"?",
+                )
             },
             message = if (pendingProfile.isActive) {
-                "This also forgets the current pairing."
+                remodexLocalizedText("这也会忘记当前配对.", "This also forgets the current pairing.")
             } else {
-                "This removes the saved bridge from this phone."
+                remodexLocalizedText(
+                    "这会从手机中移除这台已保存电脑.",
+                    "This removes the saved computer from this phone.",
+                )
             },
-            confirmLabel = if (pendingProfile.isActive) "Delete Current" else "Delete",
+            confirmLabel = if (pendingProfile.isActive) {
+                remodexLocalizedText("删除当前", "Delete Current")
+            } else {
+                remodexLocalizedText("删除", "Delete")
+            },
             onDismiss = { pendingBridgeDeleteProfileId = null },
             onConfirm = {
                 pendingBridgeDeleteProfileId = null
@@ -250,21 +268,34 @@ fun SettingsScreen(
                             onActivateBridgeProfile(pendingProfile.profileId)
                         },
                     ) {
-                        Text("Switch")
+                        Text(remodexLocalizedText("切换", "Switch"))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { pendingBridgeSwitchProfileId = null }) {
-                        Text("Cancel")
+                        Text(remodexLocalizedText("取消", "Cancel"))
                     }
                 },
-                title = { Text("Switch to ${pendingProfile.name}?") },
+                title = {
+                    Text(
+                        remodexLocalizedText(
+                            "切换到 ${pendingProfile.name}?",
+                            "Switch to ${pendingProfile.name}?",
+                        ),
+                    )
+                },
                 text = {
                     Text(
                         if (hasRunningTurn) {
-                            "This switches your phone to ${pendingProfile.name} and disconnects the current bridge. Any live run will stop syncing here until you switch back."
+                            remodexLocalizedText(
+                                "手机会切换到 ${pendingProfile.name} 并断开当前电脑. 正在运行的任务会停止同步, 直到你切回当前电脑.",
+                                "This switches your phone to ${pendingProfile.name} and disconnects the current computer. Any live run will stop syncing here until you switch back.",
+                            )
                         } else {
-                            "This switches your phone to ${pendingProfile.name} and disconnects the current bridge."
+                            remodexLocalizedText(
+                                "手机会切换到 ${pendingProfile.name} 并断开当前电脑.",
+                                "This switches your phone to ${pendingProfile.name} and disconnects the current computer.",
+                            )
                         },
                     )
                 },
@@ -279,7 +310,7 @@ fun SettingsScreen(
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        SettingsCard(title = "Archived Chats") {
+        SettingsCard(title = remodexLocalizedText("已归档对话", "Archived Chats")) {
             SettingsNavigationRow(
                 leading = {
                     Icon(
@@ -288,15 +319,28 @@ fun SettingsScreen(
                         tint = MaterialTheme.colorScheme.onSurface,
                     )
                 },
-                title = "Archived Chats",
+                title = remodexLocalizedText("已归档对话", "Archived Chats"),
                 trailingText = archivedThreads.size.takeIf { it > 0 }?.toString(),
                 onClick = onOpenArchivedChats,
             )
         }
 
-        SettingsCard(title = "Appearance") {
+        SettingsCard(title = remodexLocalizedText("外观", "Appearance")) {
             SettingsSelectionRow(
-                title = "Font",
+                title = remodexLocalizedText(usesChineseUi, "语言", "Language"),
+                currentLabel = uiState.appLanguage.title,
+                options = RemodexAppLanguage.entries.map { language ->
+                    SettingsOption(language.name, language.title)
+                },
+                onSelected = { key -> onSelectAppLanguage(RemodexAppLanguage.valueOf(key)) },
+            )
+            Text(
+                text = uiState.appLanguage.subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SettingsSelectionRow(
+                title = remodexLocalizedText(usesChineseUi, "字体", "Font"),
                 currentLabel = uiState.appFontStyle.title,
                 options = RemodexAppFontStyle.entries.map { style ->
                     SettingsOption(style.name, style.title)
@@ -310,14 +354,17 @@ fun SettingsScreen(
             )
         }
 
-        SettingsCard(title = "Notifications") {
+        SettingsCard(title = remodexLocalizedText("通知", "Notifications")) {
             SettingsStatusRow(
                 icon = Icons.Outlined.Notifications,
-                title = "Status",
+                title = remodexLocalizedText("状态", "Status"),
                 statusLabel = notificationStatusLabel(notificationPermissionUiState),
             )
             Text(
-                text = "Used for local alerts when a run finishes while the app is in background.",
+                text = remodexLocalizedText(
+                    "用于 app 在后台时提示任务已完成.",
+                    "Used for local alerts when a run finishes while the app is in background.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -338,14 +385,14 @@ fun SettingsScreen(
             onRequestLogout = { isShowingGptLogoutConfirm = true },
         )
 
-        SettingsCard(title = "Bridge Version") {
+        SettingsCard(title = remodexLocalizedText("Bridge 版本", "Bridge Version")) {
             SettingsStatusRow(
-                title = "Status",
+                title = remodexLocalizedText("状态", "Status"),
                 statusLabel = uiState.bridgeVersionStatus.statusLabel,
             )
             SettingsKeyValueRow(
-                title = "Installed on Mac",
-                value = uiState.bridgeVersionStatus.installedVersion ?: "Unknown",
+                title = remodexLocalizedText("电脑已安装", "Installed on computer"),
+                value = uiState.bridgeVersionStatus.installedVersion ?: remodexLocalizedText("未知", "Unknown"),
                 valueColor = if (uiState.bridgeVersionStatus.shouldHighlightInstalledVersion) {
                     MaterialTheme.colorScheme.tertiary
                 } else {
@@ -354,8 +401,8 @@ fun SettingsScreen(
                 monospace = true,
             )
             SettingsKeyValueRow(
-                title = "Latest available",
-                value = uiState.bridgeVersionStatus.latestVersion ?: "Unknown",
+                title = remodexLocalizedText("最新可用", "Latest available"),
+                value = uiState.bridgeVersionStatus.latestVersion ?: remodexLocalizedText("未知", "Unknown"),
                 monospace = true,
             )
             Text(
@@ -369,14 +416,14 @@ fun SettingsScreen(
             )
         }
 
-        SettingsCard(title = "Runtime defaults") {
+        SettingsCard(title = remodexLocalizedText("运行默认值", "Runtime defaults")) {
             SettingsSelectionRow(
-                title = "Model",
+                title = remodexLocalizedText("模型", "Model"),
                 currentLabel = resolvedModel?.let(RemodexRuntimeMetaMapper::modelTitle)
                     ?: uiState.runtimeDefaults.modelId
-                    ?: "Auto",
+                    ?: remodexLocalizedText("自动", "Auto"),
                 options = buildList {
-                    add(SettingsOption("__AUTO__", "Auto"))
+                    add(SettingsOption("__AUTO__", remodexLocalizedText("自动", "Auto")))
                     addAll(availableModels.map { model ->
                         SettingsOption(model.id, RemodexRuntimeMetaMapper.modelTitle(model))
                     })
@@ -384,12 +431,12 @@ fun SettingsScreen(
                 onSelected = { key -> onSelectDefaultModelId(key.takeUnless { it == "__AUTO__" }) },
             )
             SettingsSelectionRow(
-                title = "Reasoning",
+                title = remodexLocalizedText("思考程度", "Reasoning"),
                 currentLabel = effectiveRuntimeDefaults.reasoningEffort
                     ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
-                    ?: "Auto",
+                    ?: remodexLocalizedText("自动", "Auto"),
                 options = buildList {
-                    add(SettingsOption("__AUTO__", "Auto"))
+                    add(SettingsOption("__AUTO__", remodexLocalizedText("自动", "Auto")))
                     addAll(reasoningOptions.map { effort ->
                         SettingsOption(effort.reasoningEffort, effort.label)
                     })
@@ -399,10 +446,10 @@ fun SettingsScreen(
                 },
             )
             SettingsSelectionRow(
-                title = "Speed",
-                currentLabel = uiState.runtimeDefaults.serviceTier?.label ?: "Normal",
+                title = remodexLocalizedText("速度", "Speed"),
+                currentLabel = uiState.runtimeDefaults.serviceTier?.label ?: remodexLocalizedText("普通", "Normal"),
                 options = buildList {
-                    add(SettingsOption("__NORMAL__", "Normal"))
+                    add(SettingsOption("__NORMAL__", remodexLocalizedText("普通", "Normal")))
                     addAll(serviceTierOptions.map { tier -> SettingsOption(tier.name, tier.label) })
                 },
                 onSelected = { key ->
@@ -412,18 +459,21 @@ fun SettingsScreen(
                 },
             )
             SettingsSelectionRow(
-                title = "Access",
+                title = remodexLocalizedText("权限", "Access"),
                 currentLabel = uiState.runtimeDefaults.accessMode.shortLabel,
-                options = RemodexAccessMode.entries.map { mode ->
+                options = RemodexAccessMode.displayEntries.map { mode ->
                     SettingsOption(mode.name, mode.shortLabel)
                 },
                 onSelected = { key -> onSelectDefaultAccessMode(RemodexAccessMode.valueOf(key)) },
             )
         }
 
-        SettingsCard(title = "About") {
+        SettingsCard(title = remodexLocalizedText("关于", "About")) {
             Text(
-                text = "Chats are End-to-end encrypted between your Android phone and Mac. The relay only sees ciphertext and connection metadata after the secure handshake completes.",
+                text = remodexLocalizedText(
+                    "Android 手机和电脑之间的对话端到端加密. 安全握手完成后, relay 只能看到密文和连接元数据.",
+                    "Chats are End-to-end encrypted between your Android phone and computer. The relay only sees ciphertext and connection metadata after the secure handshake completes.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -435,7 +485,7 @@ fun SettingsScreen(
                         tint = MaterialTheme.colorScheme.onSurface,
                     )
                 },
-                title = "How Remodex Works",
+                title = remodexLocalizedText("Remodex 如何工作", "How Remodex Works"),
                 onClick = onOpenAboutRemodex,
             )
             SettingsNavigationRow(
@@ -447,7 +497,7 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 },
-                title = "Chat & Support",
+                title = remodexLocalizedText("交流与支持", "Chat & Support"),
                 onClick = { uriHandler.openUri(ChatSupportUrl) },
             )
             SettingsNavigationRow(
@@ -458,7 +508,7 @@ fun SettingsScreen(
                         tint = MaterialTheme.colorScheme.onSurface,
                     )
                 },
-                title = "Privacy Policy",
+                title = remodexLocalizedText("隐私政策", "Privacy Policy"),
                 onClick = { uriHandler.openUri(PrivacyPolicyUrl) },
             )
             SettingsNavigationRow(
@@ -469,14 +519,14 @@ fun SettingsScreen(
                         tint = MaterialTheme.colorScheme.onSurface,
                     )
                 },
-                title = "Terms of Use",
+                title = remodexLocalizedText("使用条款", "Terms of Use"),
                 onClick = { uriHandler.openUri(TermsOfUseUrl) },
             )
         }
 
-        SettingsCard(title = "Usage") {
+        SettingsCard(title = remodexLocalizedText("用量", "Usage")) {
             SettingsRefreshHeader(
-                title = "Refresh",
+                title = remodexLocalizedText("刷新", "Refresh"),
                 isRefreshing = uiState.isRefreshingUsage,
                 onClick = onRefreshUsageStatus,
             )
@@ -489,15 +539,18 @@ fun SettingsScreen(
             )
         }
 
-        SettingsCard(title = "Connection") {
+        SettingsCard(title = remodexLocalizedText("连接", "Connection")) {
             if (trustedMac == null) {
                 Text(
-                    text = "No paired Mac",
+                    text = remodexLocalizedText("暂无配对电脑", "No paired computers yet"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Pair this Android device with your local Remodex bridge to enable trusted reconnect.",
+                    text = remodexLocalizedText(
+                        "将这台 Android 设备与本地 Remodex bridge 配对, 即可启用可信重连.",
+                        "Pair this Android device with your local Remodex bridge to enable trusted reconnect.",
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -534,11 +587,11 @@ fun SettingsScreen(
             when {
                 uiState.isConnected -> {
                     SettingsButton(
-                        title = "Add Bridge",
+                        title = remodexLocalizedText("添加电脑", "Add Computer"),
                         onClick = onOpenScanner,
                     )
                     SettingsButton(
-                        title = "Disconnect",
+                        title = remodexLocalizedText("断开连接", "Disconnect"),
                         role = SettingsButtonRole.DESTRUCTIVE,
                         onClick = onDisconnect,
                     )
@@ -546,15 +599,15 @@ fun SettingsScreen(
 
                 trustedMac != null -> {
                     SettingsButton(
-                        title = "Reconnect",
+                        title = remodexLocalizedText("重新连接", "Reconnect"),
                         onClick = onRetryConnection,
                     )
                     SettingsButton(
-                        title = "Add Bridge",
+                        title = remodexLocalizedText("添加电脑", "Add Computer"),
                         onClick = onOpenScanner,
                     )
                     SettingsButton(
-                        title = "Forget Pair",
+                        title = remodexLocalizedText("忘记配对", "Forget Pair"),
                         role = SettingsButtonRole.DESTRUCTIVE,
                         onClick = { isShowingForgetPairConfirm = true },
                     )
@@ -562,7 +615,7 @@ fun SettingsScreen(
 
                 else -> {
                     SettingsButton(
-                        title = "Scan QR Code",
+                        title = remodexLocalizedText("扫描 QR code", "Scan QR Code"),
                         onClick = onOpenScanner,
                     )
                 }
@@ -701,7 +754,7 @@ private fun SettingsChatGptCard(
 
         if (snapshot.canLogout) {
             SettingsButton(
-                title = "Log out on Mac",
+                title = "Log out on computer",
                 role = SettingsButtonRole.DESTRUCTIVE,
                 onClick = onRequestLogout,
             )
@@ -1094,7 +1147,7 @@ private fun SettingsRefreshHeader(
                 modifier = Modifier.size(14.dp),
             )
             Text(
-                text = if (isRefreshing) "Refreshing..." else title,
+                text = if (isRefreshing) remodexLocalizedText("刷新中...", "Refreshing...") else title,
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(start = 6.dp),
             )
@@ -1118,7 +1171,7 @@ private fun UsageSummaryCardContent(
     }
 
     Text(
-        text = "Rate limits",
+        text = remodexLocalizedText("剩余额度", "Rate limits"),
         style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.onSurface,
@@ -1153,7 +1206,7 @@ private fun UsageSummaryCardContent(
 
         isRefreshing -> {
             Text(
-                text = "Loading current limits...",
+                text = remodexLocalizedText("正在加载当前额度...", "Loading current limits..."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1161,7 +1214,10 @@ private fun UsageSummaryCardContent(
 
         else -> {
             Text(
-                text = "Rate limits are unavailable for this account.",
+                text = remodexLocalizedText(
+                    "当前账号暂无可用额度信息.",
+                    "Rate limits are unavailable for this account.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1171,7 +1227,7 @@ private fun UsageSummaryCardContent(
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
     Text(
-        text = "Context window",
+        text = remodexLocalizedText("上下文窗口", "Context window"),
         style = MaterialTheme.typography.bodyLarge,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.onSurface,
@@ -1179,16 +1235,22 @@ private fun UsageSummaryCardContent(
 
     if (contextWindowUsage != null) {
         MetricRow(
-            label = "Context",
-            value = "${contextWindowUsage.percentRemaining}% left",
-            detail = "(${compactTokenCount(contextWindowUsage.tokensUsed)} used / ${compactTokenCount(contextWindowUsage.tokenLimit)})",
+            label = remodexLocalizedText("上下文", "Context"),
+            value = remodexLocalizedText(
+                "剩余 ${contextWindowUsage.percentRemaining}%",
+                "${contextWindowUsage.percentRemaining}% left",
+            ),
+            detail = remodexLocalizedText(
+                "(${compactTokenCount(contextWindowUsage.tokensUsed)} 已用 / ${compactTokenCount(contextWindowUsage.tokenLimit)})",
+                "(${compactTokenCount(contextWindowUsage.tokensUsed)} used / ${compactTokenCount(contextWindowUsage.tokenLimit)})",
+            ),
         )
         UsageProgressBar(progress = contextWindowUsage.percentRemaining / 100f)
     } else {
         MetricRow(
-            label = "Context",
-            value = "Unavailable",
-            detail = "Waiting for token usage",
+            label = remodexLocalizedText("上下文", "Context"),
+            value = remodexLocalizedText("不可用", "Unavailable"),
+            detail = remodexLocalizedText("等待 token 用量", "Waiting for token usage"),
         )
     }
 }
@@ -1333,7 +1395,7 @@ private fun SettingsTrustedMacCard(
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
-                            text = "Mac",
+                            text = remodexLocalizedText("电脑", "Computer"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1361,7 +1423,7 @@ private fun SettingsTrustedMacCard(
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Outlined.Edit,
-                            contentDescription = "Edit Mac name",
+                            contentDescription = remodexLocalizedText("编辑电脑名称", "Edit computer name"),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp),
                         )
@@ -1375,11 +1437,11 @@ private fun SettingsTrustedMacCard(
             }
 
             presentation.systemName?.let { systemName ->
-                SettingsKeyValueRow(title = "System", value = systemName)
+                SettingsKeyValueRow(title = remodexLocalizedText("系统名称", "System"), value = systemName)
             }
             presentation.detail?.let { detail ->
                 SettingsKeyValueRow(
-                    title = "Status",
+                    title = remodexLocalizedText("状态", "Status"),
                     value = detail,
                     valueColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1398,7 +1460,7 @@ private fun SettingsSavedBridgeProfiles(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "Saved Bridges",
+            text = remodexLocalizedText("已保存电脑", "Saved Computers"),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -1452,9 +1514,9 @@ private fun SettingsSavedBridgeProfiles(
                             }
                         }
                         if (profile.isConnected) {
-                            SettingsStatusPill(label = "Connected")
+                            SettingsStatusPill(label = remodexLocalizedText("已连接", "Connected"))
                         } else if (profile.isActive) {
-                            SettingsStatusPill(label = "Active")
+                            SettingsStatusPill(label = remodexLocalizedText("当前", "Active"))
                         }
                     }
 
@@ -1469,12 +1531,16 @@ private fun SettingsSavedBridgeProfiles(
                     ) {
                         if (!profile.isActive) {
                             SettingsButton(
-                                title = "Switch",
+                                title = remodexLocalizedText("切换", "Switch"),
                                 onClick = { onActivate(profile) },
                             )
                         }
                         SettingsButton(
-                            title = if (profile.isActive) "Delete Current" else "Delete",
+                            title = if (profile.isActive) {
+                                remodexLocalizedText("删除当前", "Delete Current")
+                            } else {
+                                remodexLocalizedText("删除", "Delete")
+                            },
                             role = SettingsButtonRole.DESTRUCTIVE,
                             onClick = { onRemove(profile) },
                         )
@@ -1493,36 +1559,48 @@ private fun SettingsGptMacInfoDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close")
+                Text(remodexLocalizedText("关闭", "Close"))
             }
         },
         title = {
-            Text("Use ChatGPT on Mac")
+            Text(remodexLocalizedText("在电脑上使用 ChatGPT", "Use ChatGPT on computer"))
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text(
-                    text = "Remodex uses the ChatGPT session that is already signed in on your paired Mac.",
+                    text = remodexLocalizedText(
+                        "Remodex 会使用已在配对电脑上登录的 ChatGPT 会话.",
+                        "Remodex uses the ChatGPT session that is already signed in on your paired computer.",
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 GptSetupStep(
                     number = "1",
-                    title = "Open ChatGPT on your Mac",
-                    detail = "Use the Mac paired with this phone.",
+                    title = remodexLocalizedText("在电脑上打开 ChatGPT", "Open ChatGPT on your computer"),
+                    detail = remodexLocalizedText("使用与这台手机配对的电脑.", "Use the computer paired with this phone."),
                 )
                 GptSetupStep(
                     number = "2",
-                    title = "Sign in there",
-                    detail = "Make sure the ChatGPT account you want for voice is already active on the Mac.",
+                    title = remodexLocalizedText("在电脑上登录", "Sign in there"),
+                    detail = remodexLocalizedText(
+                        "确认要用于语音的 ChatGPT 账号已在电脑上可用.",
+                        "Make sure the ChatGPT account you want for voice is already active on the computer.",
+                    ),
                 )
                 GptSetupStep(
                     number = "3",
-                    title = "Come back to Remodex",
-                    detail = "Keep the bridge connected and reopen Settings if the status has not refreshed yet.",
+                    title = remodexLocalizedText("回到 Remodex", "Come back to Remodex"),
+                    detail = remodexLocalizedText(
+                        "保持 bridge 已连接. 如果状态未刷新, 重新打开设置.",
+                        "Keep the bridge connected and reopen Settings if the status has not refreshed yet.",
+                    ),
                 )
                 Text(
-                    text = "You do not need to start ChatGPT login from this phone.",
+                    text = remodexLocalizedText(
+                        "不需要从手机上发起 ChatGPT 登录.",
+                        "You do not need to start ChatGPT login from this phone.",
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1540,29 +1618,35 @@ private fun SettingsGptLogoutConfirmDialog(
         onDismissRequest = onDismiss,
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(remodexLocalizedText("取消", "Cancel"))
             }
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
                 Text(
-                    text = "Log out",
+                    text = remodexLocalizedText("退出登录", "Log out"),
                     color = MaterialTheme.colorScheme.error,
                 )
             }
         },
         title = {
-            Text("Log out of ChatGPT?")
+            Text(remodexLocalizedText("退出 ChatGPT?", "Log out of ChatGPT?"))
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Remodex will stop using the ChatGPT session from your paired Mac.",
+                    text = remodexLocalizedText(
+                        "Remodex 将停止使用配对电脑上的 ChatGPT 会话.",
+                        "Remodex will stop using the ChatGPT session from your paired computer.",
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "Voice transcription will not work again until you sign in on your Mac.",
+                    text = remodexLocalizedText(
+                        "重新在电脑上登录前, 语音转文字将不可用.",
+                        "Voice transcription will not work again until you sign in on your computer.",
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1583,7 +1667,7 @@ private fun SettingsConnectionConfirmDialog(
         onDismissRequest = onDismiss,
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(remodexLocalizedText("取消", "Cancel"))
             }
         },
         confirmButton = {
@@ -1653,7 +1737,7 @@ private fun SettingsMacNameDialog(
                 onClick = { onSave(draftNickname.trim().takeIf(String::isNotEmpty)) },
                 enabled = draftNickname != currentNickname,
             ) {
-                Text("Save")
+                Text(remodexLocalizedText("保存", "Save"))
             }
         },
         dismissButton = {
@@ -1661,10 +1745,10 @@ private fun SettingsMacNameDialog(
                 onClick = onReset,
                 enabled = currentNickname.isNotBlank(),
             ) {
-                Text("Use Default")
+                Text(remodexLocalizedText("使用默认值", "Use Default"))
             }
         },
-        title = { Text("Edit Mac Name") },
+        title = { Text(remodexLocalizedText("编辑电脑名称", "Edit computer name")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
@@ -1676,12 +1760,15 @@ private fun SettingsMacNameDialog(
                     value = draftNickname,
                     onValueChange = { draftNickname = it },
                     singleLine = true,
-                    label = { Text("Mac name") },
+                    label = { Text(remodexLocalizedText("电脑名称", "Computer name")) },
                     placeholder = { Text(systemName) },
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                 )
                 Text(
-                    text = "This nickname stays on this phone and appears anywhere this Mac is shown.",
+                    text = remodexLocalizedText(
+                        "这个昵称只保存在手机上, 会显示在所有电脑相关入口.",
+                        "This nickname stays on this phone and appears anywhere this computer is shown.",
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1697,10 +1784,10 @@ private fun notificationStatusLabel(
     permissionUiState: RemodexNotificationPermissionUiState,
 ): String {
     return when {
-        permissionUiState.isEnabled -> "Authorized"
-        permissionUiState.canRequestPermission -> "Not requested"
-        permissionUiState.requiresSystemSettings -> "Denied"
-        else -> "Unknown"
+        permissionUiState.isEnabled -> remodexLocalizedText("已授权", "Authorized")
+        permissionUiState.canRequestPermission -> remodexLocalizedText("未请求", "Not requested")
+        permissionUiState.requiresSystemSettings -> remodexLocalizedText("已拒绝", "Denied")
+        else -> remodexLocalizedText("未知", "Unknown")
     }
 }
 
@@ -1756,10 +1843,10 @@ private fun connectionPhaseLabel(
     phase: RemodexConnectionPhase,
 ): String {
     return when (phase) {
-        RemodexConnectionPhase.DISCONNECTED -> "Offline"
-        RemodexConnectionPhase.CONNECTING -> "Connecting"
-        RemodexConnectionPhase.RETRYING -> "Retrying"
-        RemodexConnectionPhase.CONNECTED -> "Connected"
+        RemodexConnectionPhase.DISCONNECTED -> remodexLocalizedText("离线", "Offline")
+        RemodexConnectionPhase.CONNECTING -> remodexLocalizedText("连接中", "Connecting")
+        RemodexConnectionPhase.RETRYING -> remodexLocalizedText("重试中", "Retrying")
+        RemodexConnectionPhase.CONNECTED -> remodexLocalizedText("已连接", "Connected")
     }
 }
 
@@ -1787,9 +1874,9 @@ private fun resetLabel(
     val now = Date()
     val dayFormatter = DateFormat.getTimeInstance(DateFormat.SHORT)
     return if (android.text.format.DateUtils.isToday(resetsAtEpochMs)) {
-        "resets ${dayFormatter.format(date)}"
+        remodexLocalizedText("重置 ${dayFormatter.format(date)}", "resets ${dayFormatter.format(date)}")
     } else {
         val formatter = java.text.SimpleDateFormat("d MMM HH:mm", Locale.getDefault())
-        "resets ${formatter.format(date)}"
+        remodexLocalizedText("重置 ${formatter.format(date)}", "resets ${formatter.format(date)}")
     }
 }

@@ -400,7 +400,7 @@ fun ThreadsScreen(
 
         SidebarFooter(
             trustedMacName = uiState.trustedMac?.name,
-            trustedMacTitle = if (uiState.isConnected) "Connected to Mac" else "Saved Mac",
+            trustedMacTitle = if (uiState.isConnected) "Connected to computer" else "Saved computer",
             onOpenSettings = onOpenSettings,
             onOpenMyMacs = onOpenMyMacs,
         )
@@ -1518,7 +1518,7 @@ private fun EmptyThreadsState(
             text = if (isFiltering) {
                 "Try a different project name, thread title, or preview snippet."
             } else {
-                "Your paired Mac will populate live and archived chats here."
+                "Your paired computer will populate live and archived chats here."
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

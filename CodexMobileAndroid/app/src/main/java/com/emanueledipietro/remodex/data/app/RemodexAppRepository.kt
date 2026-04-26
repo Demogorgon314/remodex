@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
@@ -184,6 +185,8 @@ interface RemodexAppRepository {
     suspend fun setDefaultServiceTier(serviceTier: RemodexServiceTier?)
 
     suspend fun setAppearanceMode(mode: RemodexAppearanceMode)
+
+    suspend fun setAppLanguage(language: RemodexAppLanguage)
 
     suspend fun setAppFontStyle(style: RemodexAppFontStyle)
 

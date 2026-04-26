@@ -35,15 +35,24 @@ fun remodexGptHintText(
     return when (remodexGptVoiceStatus(snapshot = snapshot, isConnected = isConnected)) {
         RemodexGptVoiceStatus.READY -> null
         RemodexGptVoiceStatus.REAUTH_REQUIRED ->
-            "Voice on this bridge needs a fresh ChatGPT sign-in on your Mac."
+            remodexLocalizedText(
+                "这个 bridge 的语音功能需要在电脑上重新登录 ChatGPT.",
+                "Voice on this bridge needs a fresh ChatGPT sign-in on your computer.",
+            )
         RemodexGptVoiceStatus.VOICE_SYNC_IN_PROGRESS ->
-            "Waiting for voice sync..."
+            remodexLocalizedText("正在等待语音同步...", "Waiting for voice sync...")
         RemodexGptVoiceStatus.LOGIN_PENDING ->
-            "Finish the ChatGPT sign-in flow in the browser on your Mac."
+            remodexLocalizedText(
+                "请在电脑浏览器中完成 ChatGPT 登录.",
+                "Finish the ChatGPT sign-in flow in the browser on your computer.",
+            )
         RemodexGptVoiceStatus.DISCONNECTED ->
-            "Connect to your bridge first."
+            remodexLocalizedText("请先连接 bridge.", "Connect to your bridge first.")
         RemodexGptVoiceStatus.LOGIN_REQUIRED ->
-            "ChatGPT voice uses the account already signed in on your Mac."
+            remodexLocalizedText(
+                "ChatGPT 语音会使用已在电脑上登录的账号.",
+                "ChatGPT voice uses the account already signed in on your computer.",
+            )
     }
 }
 
@@ -53,16 +62,34 @@ fun remodexGptSummaryText(
 ): String {
     return when (remodexGptVoiceStatus(snapshot = snapshot, isConnected = isConnected)) {
         RemodexGptVoiceStatus.READY ->
-            "Using the ChatGPT session from your paired Mac bridge."
+            remodexLocalizedText(
+                "正在使用配对电脑 bridge 上的 ChatGPT 会话.",
+                "Using the ChatGPT session from your paired computer bridge.",
+            )
         RemodexGptVoiceStatus.REAUTH_REQUIRED ->
-            "Refresh the ChatGPT sign-in on your paired Mac."
+            remodexLocalizedText(
+                "请在配对电脑上刷新 ChatGPT 登录.",
+                "Refresh the ChatGPT sign-in on your paired computer.",
+            )
         RemodexGptVoiceStatus.VOICE_SYNC_IN_PROGRESS ->
-            "Signed in. Waiting for voice sync from your Mac."
+            remodexLocalizedText(
+                "已登录. 正在等待电脑同步语音状态.",
+                "Signed in. Waiting for voice sync from your computer.",
+            )
         RemodexGptVoiceStatus.LOGIN_PENDING ->
-            "Finish the browser sign-in flow on your paired Mac."
+            remodexLocalizedText(
+                "请在配对电脑的浏览器中完成登录.",
+                "Finish the browser sign-in flow on your paired computer.",
+            )
         RemodexGptVoiceStatus.DISCONNECTED ->
-            "Connect to your paired Mac before checking ChatGPT voice."
+            remodexLocalizedText(
+                "检查 ChatGPT 语音前, 请先连接配对电脑.",
+                "Connect to your paired computer before checking ChatGPT voice.",
+            )
         RemodexGptVoiceStatus.LOGIN_REQUIRED ->
-            "Sign in to ChatGPT on the paired Mac, not on this phone."
+            remodexLocalizedText(
+                "请在配对电脑上登录 ChatGPT, 不需要在手机上登录.",
+                "Sign in to ChatGPT on the paired computer, not on this phone.",
+            )
     }
 }

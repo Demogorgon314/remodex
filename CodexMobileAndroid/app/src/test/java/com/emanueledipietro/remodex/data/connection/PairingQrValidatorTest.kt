@@ -16,7 +16,7 @@ class PairingQrValidatorTest {
         )
 
         val prompt = (result as PairingQrValidationResult.BridgeUpdateRequired).prompt
-        assertEquals("Update Remodex on your Mac before scanning", prompt.title)
+        assertEquals("Update Remodex on your computer before scanning", prompt.title)
         assertEquals("npm install -g @deepdream314/remodex@latest", prompt.command)
         assertTrue(prompt.message.contains("different Remodex npm version"))
     }
@@ -55,7 +55,7 @@ class PairingQrValidatorTest {
         )
 
         val message = (result as PairingQrValidationResult.ScanError).message
-        assertEquals("This pairing QR code has expired. Generate a new one from the Mac bridge.", message)
+        assertEquals("This pairing QR code has expired. Generate a new one from the computer bridge.", message)
     }
 
     @Test

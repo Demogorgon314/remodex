@@ -9,9 +9,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import com.emanueledipietro.remodex.feature.appshell.AppViewModel
 import com.emanueledipietro.remodex.feature.appshell.AppViewModelFactory
 import com.emanueledipietro.remodex.feature.appshell.RemodexApp
@@ -44,6 +47,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            LaunchedEffect(uiState.appLanguage) {
+                AppCompatDelegate.setApplicationLocales(
+                    LocaleListCompat.forLanguageTags(uiState.appLanguage.localeTag),
+                )
+            }
             RemodexTheme(
                 appearanceMode = uiState.appearanceMode,
                 appFontStyle = uiState.appFontStyle,

@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.feature.appshell.AppViewModel
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import java.util.Locale
 
 @Composable
@@ -102,9 +103,9 @@ fun MyMacsScreen(
                 }
             }
 
-            // Current Mac section (like iOS currentMacCard)
+            // Current computer section (like iOS currentMacCard)
             if (currentProfile != null) {
-                SectionTitle("Current Mac")
+                SectionTitle(remodexLocalizedText("当前电脑", "Current Computer"))
                 MyMacCard {
                     CurrentMacRow(
                         profile = currentProfile,
@@ -114,12 +115,12 @@ fun MyMacsScreen(
                 }
             }
 
-            // Paired Macs section (like iOS pairedMacsCard — shows ALL macs)
-            SectionTitle("Paired Macs")
+            // Paired computers section (like iOS pairedMacsCard — shows ALL macs)
+            SectionTitle(remodexLocalizedText("已配对电脑", "Paired Computers"))
             MyMacCard {
                 if (profiles.isEmpty()) {
                     Text(
-                        text = "No paired Macs yet.",
+                        text = remodexLocalizedText("暂无已配对电脑", "No paired computers yet."),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 4.dp),
@@ -169,19 +170,22 @@ fun MyMacsScreen(
     // Switch confirmation dialog (like iOS confirmationDialog)
     pendingSwitchDeviceId?.let { deviceId ->
         val targetProfile = profiles.firstOrNull { it.macDeviceId == deviceId }
-        val targetName = targetProfile?.name ?: "this Mac"
+        val targetName = targetProfile?.name ?: remodexLocalizedText("这台电脑", "this computer")
         AlertDialog(
             onDismissRequest = { pendingSwitchDeviceId = null },
             title = {
                 Text(
-                    "Switch Mac?",
+                    remodexLocalizedText("切换电脑?", "Switch computer?"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
             },
             text = {
                 Text(
-                    "Switching Macs will disconnect the current session, stop any in-progress runs, and may discard unfinished output.",
+                    remodexLocalizedText(
+                        "切换到 $targetName 会断开当前会话, 停止正在运行的任务, 并可能丢失未完成输出.",
+                        "Switching to $targetName disconnects the current session, stops syncing live runs, and may lose unfinished output.",
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -193,12 +197,12 @@ fun MyMacsScreen(
                         viewModel.switchToTrustedMac(deviceId)
                     },
                 ) {
-                    Text("Switch Mac", color = MaterialTheme.colorScheme.error)
+                    Text(remodexLocalizedText("切换电脑", "Switch Computer"), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingSwitchDeviceId = null }) {
-                    Text("Cancel")
+                    Text(remodexLocalizedText("取消", "Cancel"))
                 }
             },
         )
@@ -210,14 +214,17 @@ fun MyMacsScreen(
             onDismissRequest = { pendingForgetDeviceId = null },
             title = {
                 Text(
-                    "Forget this Mac?",
+                    remodexLocalizedText("忘记此电脑?", "Forget this computer?"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
             },
             text = {
                 Text(
-                    "The paired Mac will be removed from this phone.",
+                    remodexLocalizedText(
+                        "这台已配对电脑会从手机中移除.",
+                        "This paired computer will be removed from this phone.",
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -229,12 +236,12 @@ fun MyMacsScreen(
                         viewModel.forgetMac(deviceId)
                     },
                 ) {
-                    Text("Forget", color = MaterialTheme.colorScheme.error)
+                    Text(remodexLocalizedText("忘记", "Forget"), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingForgetDeviceId = null }) {
-                    Text("Cancel")
+                    Text(remodexLocalizedText("取消", "Cancel"))
                 }
             },
         )
@@ -301,7 +308,7 @@ private fun MacAvatar() {
 }
 
 // ---------------------------------------------------------------------------
-// Current Mac row (like iOS currentMacCard content)
+// Current computer row (like iOS currentMacCard content)
 // ---------------------------------------------------------------------------
 @Composable
 private fun CurrentMacRow(
@@ -370,11 +377,15 @@ internal fun resolveCurrentMacProfile(
 }
 
 internal fun currentMacConnectionLabel(profile: RemodexBridgeProfilePresentation): String {
-    return if (profile.isConnected) "Connected" else "Selected"
+    return if (profile.isConnected) {
+        remodexLocalizedText("已连接", "Connected")
+    } else {
+        remodexLocalizedText("已选择", "Selected")
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Paired Mac row (like iOS pairedMacRow)
+// Paired computer row (like iOS pairedMacRow)
 // ---------------------------------------------------------------------------
 @Composable
 private fun PairedMacRow(
@@ -421,7 +432,7 @@ private fun PairedMacRow(
                 )
                 if (isCurrent) {
                     Text(
-                        text = "Current",
+                        text = remodexLocalizedText("当前", "Current"),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -443,14 +454,14 @@ private fun PairedMacRow(
                 text = buildString {
                     append(
                         when {
-                            isSwitchingTarget -> "Switching"
-                            isCurrent && profile.isConnected -> "Connected"
-                            isCurrent -> "Selected"
-                            else -> "Saved"
+                            isSwitchingTarget -> remodexLocalizedText("切换中", "Switching")
+                            isCurrent && profile.isConnected -> remodexLocalizedText("已连接", "Connected")
+                            isCurrent -> remodexLocalizedText("已选择", "Selected")
+                            else -> remodexLocalizedText("已保存", "Saved")
                         },
                     )
                     if (isSwitchingTarget) {
-                        append(" · Reloading chats…")
+                        append(remodexLocalizedText(" · 正在重新加载对话...", " · Reloading chats..."))
                     } else {
                         profile.detail?.let { detail ->
                             append(" · ")
@@ -487,13 +498,13 @@ private fun PairedMacRow(
                 onClick = { showMenu = true },
                 enabled = !isSwitchingAny,
                 modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.MoreHoriz,
-                    contentDescription = "Options",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = remodexLocalizedText("更多选项", "More options"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
             }
             DropdownMenu(
                 expanded = showMenu,
@@ -502,7 +513,7 @@ private fun PairedMacRow(
                 DropdownMenuItem(
                     text = {
                         Text(
-                            "Forget this Mac",
+                            remodexLocalizedText("忘记此电脑", "Forget this computer"),
                             color = MaterialTheme.colorScheme.error,
                         )
                     },
@@ -552,7 +563,7 @@ private fun ScanQrButton(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Scan QR Code",
+                text = remodexLocalizedText("扫描 QR code", "Scan QR Code"),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else 0.5f),
@@ -616,7 +627,7 @@ private fun SwitchingOverlay(
                 }
 
                 Text(
-                    text = "Switching Mac",
+                    text = remodexLocalizedText("正在切换电脑", "Switching computer"),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -672,7 +683,10 @@ private fun SwitchingOverlay(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    text = profile.systemName ?: "Preparing secure reconnect",
+                                    text = profile.systemName ?: remodexLocalizedText(
+                                        "正在准备安全重连",
+                                        "Preparing secure reconnect",
+                                    ),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -690,7 +704,7 @@ private fun SwitchingOverlay(
                         .heightIn(min = 44.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) {
-                    Text("Cancel")
+                    Text(remodexLocalizedText("取消", "Cancel"))
                 }
             }
         }
