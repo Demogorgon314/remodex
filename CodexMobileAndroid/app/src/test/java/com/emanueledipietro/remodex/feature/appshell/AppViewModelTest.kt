@@ -119,14 +119,14 @@ class AppViewModelTest {
         val viewModel = AppViewModel(repository)
         repository.snapshot.value = repository.snapshot.value.copy(
             bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
-                title = "Update Remodex on your Mac to use /fork",
+                title = "Update Remodex on your computer to use /fork",
                 message = "Old bridge detected.",
             ),
         )
         advanceUntilIdle()
 
         assertEquals(
-            "Update Remodex on your Mac to use /fork",
+            "Update Remodex on your computer to use /fork",
             viewModel.uiState.value.bridgeUpdatePrompt?.title,
         )
 
@@ -142,7 +142,7 @@ class AppViewModelTest {
         val repository = TestRemodexAppRepository().apply {
             snapshot.value = snapshot.value.copy(
                 bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
-                    title = "Update Remodex on your Mac to use Speed controls",
+                    title = "Update Remodex on your computer to use Speed controls",
                     message = "Old bridge detected.",
                 ),
             )
@@ -509,13 +509,13 @@ class AppViewModelTest {
                 selectedThreadId = selectedThread.id,
                 selectedThreadSnapshot = selectedThread,
             )
-            forkThreadError = IllegalStateException("This Mac bridge does not support native conversation forks yet.")
+            forkThreadError = IllegalStateException("This bridge does not support native conversation forks yet.")
             forkThreadFailureSessionSnapshot = snapshot.value.copy(
                 threads = listOf(selectedThread),
                 selectedThreadId = selectedThread.id,
                 selectedThreadSnapshot = selectedThread,
                 bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
-                    title = "Update Remodex on your Mac to use /fork",
+                    title = "Update Remodex on your computer to use /fork",
                     message = "Old bridge detected.",
                 ),
                 supportsThreadFork = false,
@@ -532,7 +532,7 @@ class AppViewModelTest {
             repository.forkThreadRequests,
         )
         assertEquals(
-            "Update Remodex on your Mac to use /fork",
+            "Update Remodex on your computer to use /fork",
             viewModel.uiState.value.bridgeUpdatePrompt?.title,
         )
         assertFalse(viewModel.uiState.value.supportsThreadFork)
@@ -985,7 +985,7 @@ class AppViewModelTest {
             snapshot.value = snapshot.value.copy(
                 onboardingCompleted = true,
                 secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "The trusted Mac session is temporarily unavailable.",
+                    phaseMessage = "The trusted computer session is temporarily unavailable.",
                     secureState = SecureConnectionState.TRUSTED_MAC,
                 ),
                 trustedMac = com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation(
@@ -1041,7 +1041,7 @@ class AppViewModelTest {
             snapshot.value = snapshot.value.copy(
                 onboardingCompleted = true,
                 secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "The trusted Mac session is temporarily unavailable.",
+                    phaseMessage = "The trusted computer session is temporarily unavailable.",
                     secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
                     autoReconnectAllowed = true,
                 ),
@@ -1075,7 +1075,7 @@ class AppViewModelTest {
             connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.DISCONNECTED, attempt = 1),
             secureConnection = repository.snapshot.value.secureConnection.copy(
                 secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
-                phaseMessage = "The trusted Mac is offline right now.",
+                phaseMessage = "The trusted computer is offline right now.",
                 autoReconnectAllowed = true,
             ),
         )
@@ -1096,7 +1096,7 @@ class AppViewModelTest {
             snapshot.value = snapshot.value.copy(
                 onboardingCompleted = true,
                 secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "The trusted Mac is offline right now.",
+                    phaseMessage = "The trusted computer is offline right now.",
                     secureState = SecureConnectionState.LIVE_SESSION_UNRESOLVED,
                     autoReconnectAllowed = true,
                 ),
@@ -1139,7 +1139,7 @@ class AppViewModelTest {
                 onboardingCompleted = true,
                 connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.RETRYING, attempt = 2),
                 secureConnection = SecureConnectionSnapshot(
-                    phaseMessage = "The trusted Mac is offline right now.",
+                    phaseMessage = "The trusted computer is offline right now.",
                     secureState = SecureConnectionState.RECONNECTING,
                     attempt = 2,
                     autoReconnectAllowed = true,
@@ -2135,8 +2135,8 @@ class AppViewModelTest {
                 ),
                 supportsManagedWorktreeCreation = false,
                 bridgeUpdatePrompt = RemodexBridgeUpdatePrompt(
-                    title = "Update Remodex on your Mac to use worktree chats",
-                    message = "This Mac bridge does not support managed worktree chat creation yet.",
+                    title = "Update Remodex on your computer to use worktree chats",
+                    message = "This bridge does not support managed worktree chat creation yet.",
                 ),
             )
         }
@@ -2148,7 +2148,7 @@ class AppViewModelTest {
 
         assertTrue(repository.createWorktreeThreadRequests.isEmpty())
         assertEquals(
-            "This Mac bridge does not support managed worktree chat creation yet.",
+            "This bridge does not support managed worktree chat creation yet.",
             viewModel.uiState.value.transientBanner,
         )
     }

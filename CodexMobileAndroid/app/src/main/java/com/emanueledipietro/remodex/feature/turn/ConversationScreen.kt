@@ -265,6 +265,7 @@ import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.StructuredSecretAnswerPlaceholder
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.platform.media.isSupportedComposerImageUri
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
@@ -4606,7 +4607,11 @@ private fun ComposerSecondaryBar(
         isCodexManagedWorktreeProject(thread.projectPath)
     }
     val showsThreadRunningUi = thread.isRunning
-    val runtimeLabel = if (isWorktreeProject) "工作树" else "在本地处理"
+    val runtimeLabel = if (isWorktreeProject) {
+        remodexLocalizedText("工作树", "Worktree")
+    } else {
+        remodexLocalizedText("在本地处理", "Local")
+    }
     val branchLabel = remember(gitState) { composerSecondaryBarBranchLabel(gitState) }
     val showsGitBranchSelector = remember(isConnected, gitState) {
         remodexShowsGitControls(
@@ -4873,7 +4878,7 @@ private fun ComposerSecondaryBar(
                             modifier = Modifier.requiredSize(16.dp),
                         )
                         Text(
-                            text = "剩余额度",
+                            text = remodexLocalizedText("剩余额度", "Usage"),
                             style = MaterialTheme.typography.labelMedium,
                             color = chrome.secondaryText,
                             maxLines = 1,
@@ -5132,7 +5137,11 @@ private fun ComposerUsageStatusSummaryContent(
                     )
                 }
                 Text(
-                    text = if (isRefreshing) "刷新中..." else "刷新",
+                    text = if (isRefreshing) {
+                        remodexLocalizedText("刷新中...", "Refreshing...")
+                    } else {
+                        remodexLocalizedText("刷新", "Refresh")
+                    },
                     modifier = Modifier.padding(start = 6.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = chrome.secondaryText,
@@ -5142,7 +5151,7 @@ private fun ComposerUsageStatusSummaryContent(
     }
 
     Text(
-        text = "剩余额度",
+        text = remodexLocalizedText("剩余额度", "Rate limits"),
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
         color = chrome.titleText,
@@ -5177,7 +5186,7 @@ private fun ComposerUsageStatusSummaryContent(
 
         isRefreshing -> {
             Text(
-                text = "正在加载当前额度...",
+                text = remodexLocalizedText("正在加载当前额度...", "Loading current limits..."),
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
@@ -5185,7 +5194,10 @@ private fun ComposerUsageStatusSummaryContent(
 
         else -> {
             Text(
-                text = "当前账号暂无可用额度信息。",
+                text = remodexLocalizedText(
+                    "当前账号暂无可用额度信息.",
+                    "Rate limits are unavailable for this account.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
@@ -5195,7 +5207,7 @@ private fun ComposerUsageStatusSummaryContent(
     HorizontalDivider(color = chrome.subtleBorder.copy(alpha = 0.7f))
 
     Text(
-        text = "上下文窗口",
+        text = remodexLocalizedText("上下文窗口", "Context window"),
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
         color = chrome.titleText,
@@ -5204,15 +5216,21 @@ private fun ComposerUsageStatusSummaryContent(
     if (contextWindowUsage != null) {
         ComposerUsageMetricRow(
             label = "Context",
-            value = "剩余 ${contextWindowUsage.percentRemaining}%",
-            detail = "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} 已用 / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+            value = remodexLocalizedText(
+                "剩余 ${contextWindowUsage.percentRemaining}%",
+                "${contextWindowUsage.percentRemaining}% left",
+            ),
+            detail = remodexLocalizedText(
+                "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} 已用 / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+                "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} used / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+            ),
         )
         ComposerUsageProgressBar(progress = contextWindowUsage.percentRemaining / 100f)
     } else {
         ComposerUsageMetricRow(
             label = "Context",
-            value = "不可用",
-            detail = "等待 token 用量",
+            value = remodexLocalizedText("不可用", "Unavailable"),
+            detail = remodexLocalizedText("等待 token 用量", "Waiting for token usage"),
         )
     }
 }
@@ -5392,9 +5410,9 @@ private fun composerResetLabel(window: com.emanueledipietro.remodex.model.Remode
     val hours = totalMinutes / 60L
     val minutes = totalMinutes % 60L
     return when {
-        hours > 0L -> "resets ${hours}h ${minutes}m"
-        totalMinutes > 0L -> "resets ${totalMinutes}m"
-        else -> "resets soon"
+        hours > 0L -> remodexLocalizedText("重置 ${hours}h ${minutes}m", "resets ${hours}h ${minutes}m")
+        totalMinutes > 0L -> remodexLocalizedText("重置 ${totalMinutes}m", "resets ${totalMinutes}m")
+        else -> remodexLocalizedText("即将重置", "resets soon")
     }
 }
 
@@ -12878,7 +12896,7 @@ private fun MessageAttachmentStrip(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    text = "Preview on Mac only",
+                                    text = "Preview on computer only",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = chrome.secondaryText,
                                 )

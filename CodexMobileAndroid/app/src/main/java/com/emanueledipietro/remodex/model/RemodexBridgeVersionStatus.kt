@@ -22,7 +22,7 @@ data class RemodexBridgeVersionStatus(
     val guidanceText: String
         get() {
             if (installedVersion == null) {
-                return "Connect to a Mac bridge to read the installed package version."
+                return "Connect to a computer bridge to read the installed package version."
             }
             if (latestVersion == null) {
                 return "Installed version detected. The latest published package is unavailable right now."
@@ -30,7 +30,7 @@ data class RemodexBridgeVersionStatus(
             return when {
                 installedVersion == latestVersion -> "The installed bridge matches the latest published package."
                 installedVersion.compareToVersion(latestVersion) < 0 -> "A newer Remodex package is available on npm."
-                else -> "This Mac is running a different build than the current npm latest."
+                else -> "This computer is running a different build than the current npm latest."
             }
         }
 

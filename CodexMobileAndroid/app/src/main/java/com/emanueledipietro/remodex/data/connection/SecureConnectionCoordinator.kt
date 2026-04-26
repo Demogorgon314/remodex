@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.connection
 
 import android.util.Log
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -164,9 +165,9 @@ class SecureConnectionCoordinator(
         val trustedMac = trustedMacRegistry.records[payload.macDeviceId]
         updateState(
             phaseMessage = if (trustedMac == null) {
-                "QR pairing saved for a new Mac. Open the local bridge to start the secure handshake."
+                "QR pairing saved for a new computer. Open the local bridge to start the secure handshake."
             } else {
-                "QR pairing refreshed for your trusted Mac. Retry reconnect to re-open the secure session."
+                "QR pairing refreshed for your trusted computer. Retry reconnect to re-open the secure session."
             },
             secureState = if (trustedMac == null) SecureConnectionState.HANDSHAKING else SecureConnectionState.TRUSTED_MAC,
             activeProfileId = pairingState?.profileId,
@@ -190,7 +191,10 @@ class SecureConnectionCoordinator(
         )
         if (pairingState == null) {
             updateState(
-                phaseMessage = "Run remodex up on your Mac, then scan a fresh pairing QR code before retrying.",
+                phaseMessage = remodexLocalizedText(
+                    "在电脑上运行 remodex up, 然后扫描新的配对 QR code 再重试.",
+                    "Run remodex up on your computer, then scan a new pairing QR code and retry.",
+                ),
                 secureState = SecureConnectionState.NOT_PAIRED,
             )
             return
@@ -305,7 +309,7 @@ class SecureConnectionCoordinator(
 
             val resolvedPairingState = if (handshakeMode == SecureHandshakeMode.TRUSTED_RECONNECT) {
                 updateState(
-                    phaseMessage = "Resolving the live session for your trusted Mac before reconnecting the Android socket.",
+                    phaseMessage = "Resolving the live session for your trusted computer before reconnecting the Android socket.",
                     secureState = SecureConnectionState.RECONNECTING,
                     relayUrl = trustedMac?.relayUrl ?: currentPairingState.relayUrl,
                     macDeviceId = currentPairingState.macDeviceId,
@@ -316,7 +320,10 @@ class SecureConnectionCoordinator(
                 resolveTrustedSession(currentPairingState, trustedMac)
             } else {
                 updateState(
-                    phaseMessage = "Opening the relay socket and starting secure QR bootstrap with your Mac.",
+                    phaseMessage = remodexLocalizedText(
+                        "正在打开 relay socket, 并与电脑开始安全 QR bootstrap.",
+                        "Opening relay socket and starting secure QR bootstrap with the computer.",
+                    ),
                     secureState = SecureConnectionState.HANDSHAKING,
                     relayUrl = currentPairingState.relayUrl,
                     macDeviceId = currentPairingState.macDeviceId,
@@ -406,7 +413,7 @@ class SecureConnectionCoordinator(
         val expectedMacIdentityPublicKey = when (handshakeMode) {
             SecureHandshakeMode.TRUSTED_RECONNECT -> {
                 trustedMacRegistry.records[currentPairingState.macDeviceId]?.macIdentityPublicKey
-                    ?: throw SecureTransportException("The trusted Mac record is missing. Scan a fresh QR code to reconnect.")
+                    ?: throw SecureTransportException("The trusted computer record is missing. Scan a fresh QR code to reconnect.")
             }
 
             SecureHandshakeMode.QR_BOOTSTRAP -> currentPairingState.macIdentityPublicKey
@@ -441,7 +448,10 @@ class SecureConnectionCoordinator(
 
         if (serverHello.protocolVersion != remodexSecureProtocolVersion) {
             throw SecureTransportException(
-                "This bridge is using a different secure transport version. Update Remodex on your Mac and try again.",
+                remodexLocalizedText(
+                    "此 bridge 使用了不同的 secure transport version. 请更新电脑上的 Remodex 后重试.",
+                    "This bridge uses a different secure transport version. Update Remodex on your computer and try again.",
+                ),
             )
         }
 
@@ -467,7 +477,7 @@ class SecureConnectionCoordinator(
             signatureBase64 = serverHello.macSignature,
         )
         if (!signatureValid) {
-            throw SecureTransportException("The secure Mac signature could not be verified.")
+            throw SecureTransportException("The secure bridge signature could not be verified.")
         }
 
         pendingHandshake = SecurePendingHandshake(
@@ -600,7 +610,7 @@ class SecureConnectionCoordinator(
                 continue
             }
             if (hello.macIdentityPublicKey != expectedMacIdentityPublicKey) {
-                throw SecureTransportException("The secure Mac identity key did not match the paired device.")
+                throw SecureTransportException("The secure bridge identity key did not match the paired device.")
             }
             if (hello.clientNonce != null && hello.clientNonce != expectedClientNonce) {
                 continue
@@ -885,7 +895,7 @@ class SecureConnectionCoordinator(
 
     private fun permanentRelayDisconnectMessage(relayCloseCode: Int?): String? {
         return when (relayCloseCode) {
-            4001 -> "This relay session was replaced by another Mac connection. Scan a new QR code to reconnect."
+            4001 -> "This relay session was replaced by another computer connection. Scan a new QR code to reconnect."
             4003 -> "This device was replaced by a newer connection. Scan a new QR code to reconnect."
             4000 -> "This relay pairing is no longer valid. Scan a new QR code to reconnect."
             else -> null
@@ -896,14 +906,17 @@ class SecureConnectionCoordinator(
         if (relayCloseCode != retryableSessionUnavailableCloseCode) {
             return null
         }
-        return "The trusted Mac session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your Mac, scan the new QR code."
+        return remodexLocalizedText(
+            "已信任电脑的 session 暂时不可用. Remodex 会继续重试. 如果你重启了电脑上的 bridge, 请扫描新的 QR code.",
+            "The trusted computer session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your computer, scan a new QR code.",
+        )
     }
 
     private fun explicitRelayDropMessage(relayCloseCode: Int?): String? {
         if (relayCloseCode != explicitRelayDropCloseCode) {
             return null
         }
-        return "The Mac was temporarily unavailable and this message could not be delivered. Wait a moment, then try again."
+        return "The computer was temporarily unavailable and this message could not be delivered. Wait a moment, then try again."
     }
 
     private fun isTrustedReconnectAttempt(): Boolean {
@@ -957,10 +970,10 @@ class SecureConnectionCoordinator(
         }
         updateState(
             phaseMessage = when (error.code) {
-                "session_unavailable" -> "Your trusted Mac is offline right now."
-                "phone_not_trusted", "invalid_signature" -> "This Android device is no longer trusted by the Mac. Scan a new QR code to reconnect."
+                "session_unavailable" -> "Your trusted computer is offline right now."
+                "phone_not_trusted", "invalid_signature" -> "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect."
                 "resolve_request_expired", "resolve_request_replayed" -> "The trusted reconnect request expired. Try reconnecting again."
-                else -> error.message ?: "The trusted Mac relay could not resolve the current bridge session."
+                else -> error.message ?: "The trusted computer relay could not resolve the current bridge session."
             },
             secureState = nextState,
             relayUrl = currentPairingState.relayUrl,
@@ -1081,10 +1094,19 @@ class SecureConnectionCoordinator(
         }
         return SecureConnectionSnapshot(
             phaseMessage = when (secureState) {
-                SecureConnectionState.NOT_PAIRED -> "Run remodex up on your Mac, then scan a pairing QR to trust this Android device."
-                SecureConnectionState.TRUSTED_MAC -> "A trusted Mac pairing is saved locally. Retry reconnect to resume the secure session."
+                SecureConnectionState.NOT_PAIRED -> remodexLocalizedText(
+                    "在电脑上运行 remodex up, 然后扫描配对 QR 来信任这台 Android 设备.",
+                    "Run remodex up on your computer, then scan the pairing QR to trust this Android device.",
+                )
+                SecureConnectionState.TRUSTED_MAC -> remodexLocalizedText(
+                    "已在本机保存可信电脑配对. 重试连接即可恢复安全 session.",
+                    "A trusted computer pairing is saved on this device. Retry the connection to restore the secure session.",
+                )
                 SecureConnectionState.HANDSHAKING -> "A pairing QR is saved locally. Retry reconnect to finish the secure Android bootstrap."
-                else -> "Run remodex up on your Mac, then scan a pairing QR to trust this Android device."
+                else -> remodexLocalizedText(
+                    "在电脑上运行 remodex up, 然后扫描配对 QR 来信任这台 Android 设备.",
+                    "Run remodex up on your computer, then scan the pairing QR to trust this Android device.",
+                )
             },
             secureState = secureState,
             activeProfileId = currentPairingState?.profileId ?: relayProfileRegistry.activeProfileId,

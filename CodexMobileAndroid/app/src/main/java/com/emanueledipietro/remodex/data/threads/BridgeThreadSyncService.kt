@@ -1725,7 +1725,7 @@ class BridgeThreadSyncService(
 
     override suspend fun continueOnMac(threadId: String) {
         if (!isConnected()) {
-            throw IllegalStateException("Not connected to your Mac.")
+            throw IllegalStateException("Not connected to your computer.")
         }
 
         val trimmedThreadId = threadId.trim()
@@ -2225,7 +2225,7 @@ class BridgeThreadSyncService(
     ): RemodexRevertPreviewResult {
         val projectPath = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
         require(projectPath.isNotEmpty()) {
-            "The selected local folder is not available on this Mac."
+            "The selected local folder is not available on this computer."
         }
         val normalizedPatch = RemodexUnifiedPatchParser.normalize(forwardPatch)
             ?: throw IllegalStateException("This response cannot be auto-reverted because no exact patch was captured.")
@@ -2245,7 +2245,7 @@ class BridgeThreadSyncService(
     ): RemodexRevertApplyResult {
         val projectPath = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
         require(projectPath.isNotEmpty()) {
-            "The selected local folder is not available on this Mac."
+            "The selected local folder is not available on this computer."
         }
         val normalizedPatch = RemodexUnifiedPatchParser.normalize(forwardPatch)
             ?: throw IllegalStateException("This response cannot be auto-reverted because no exact patch was captured.")
@@ -2790,7 +2790,7 @@ class BridgeThreadSyncService(
         params: JsonObject = buildJsonObject {},
     ): RpcMessage {
         val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty)
-            ?: throw IllegalStateException("The selected local folder is not available on this Mac.")
+            ?: throw IllegalStateException("The selected local folder is not available on this computer.")
         return try {
             secureConnectionCoordinator.sendRequest(
                 method = method,
@@ -2868,7 +2868,7 @@ class BridgeThreadSyncService(
             "branch_in_other_worktree" -> fallback.ifBlank { "This branch is already open in another worktree." }
             "confirmation_required" -> "Confirmation is required for this action."
             "stash_pop_conflict" -> "Stash pop failed due to conflicts."
-            "missing_working_directory" -> fallback.ifBlank { "The selected local folder is not available on this Mac." }
+            "missing_working_directory" -> fallback.ifBlank { "The selected local folder is not available on this computer." }
             "cannot_remove_local_checkout" -> fallback.ifBlank { "Cannot remove the main local checkout." }
             "unmanaged_worktree" -> fallback.ifBlank { "Only managed worktrees can be cleaned up automatically." }
             "worktree_cleanup_failed" -> fallback.ifBlank { "We could not clean up the temporary worktree automatically." }
@@ -3341,24 +3341,24 @@ class BridgeThreadSyncService(
 
     private fun serviceTierBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
-            title = "Update Remodex on your Mac to use Speed controls",
-            message = "This Mac bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
+            title = "Update Remodex on your computer to use Speed controls",
+            message = "This bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
             command = remodexBridgeUpdateCommand,
         )
     }
 
     private fun threadForkBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
-            title = "Update Remodex on your Mac to use /fork",
-            message = "This Mac bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
+            title = "Update Remodex on your computer to use /fork",
+            message = "This bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
             command = remodexBridgeUpdateCommand,
         )
     }
 
     private fun managedWorktreeBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
-            title = "Update Remodex on your Mac to use worktree chats",
-            message = "This Mac bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
+            title = "Update Remodex on your computer to use worktree chats",
+            message = "This bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
             command = remodexBridgeUpdateCommand,
         )
     }

@@ -38,28 +38,28 @@ fun AboutRemodexScreen(
         AboutSection(
             title = "How It Works",
             paragraphs = listOf(
-                "Your Mac runs a lightweight bridge that connects to a relay server over WebSocket.",
+                "Your computer runs a lightweight bridge that connects to a relay server over WebSocket.",
             ),
             bullets = listOf(
                 "You send a prompt from your phone",
-                "It travels through the relay to the bridge on your Mac",
+                "It travels through the relay to the bridge on your computer",
                 "The bridge forwards it to codex app-server via JSON-RPC",
                 "Responses stream back the same path in real time",
             ),
             callout = AboutCallout(
                 accent = Color(0xFF2AAE67),
-                text = "All execution happens locally on your Mac. Code generation, tool use, and file edits never run on the relay.",
+                text = "All execution happens locally on your computer. Code generation, tool use, and file edits never run on the relay.",
             ),
         )
         AboutArchitectureSection()
         AboutSection(
             title = "The Relay",
             paragraphs = listOf(
-                "A lightweight WebSocket server that routes messages between your Android phone and your Mac.",
+                "A lightweight WebSocket server that routes messages between your Android phone and your computer.",
                 "You can self-host the relay on your own VPS, or use the default endpoint from the npm package.",
             ),
             bullets = listOf(
-                "Handles session discovery so your phone finds the Mac's live session",
+                "Handles session discovery so your phone finds the computer's live session",
                 "Never sees decrypted message contents after the handshake",
                 "Only observes connection metadata such as session IDs and timing",
             ),
@@ -86,8 +86,8 @@ fun AboutRemodexScreen(
                 "Scan it once from this app. Later launches auto-reconnect without another QR unless trust changes or the session can’t be resolved.",
             ),
             bullets = listOf(
-                "Android saves the paired Mac as a trusted device locally",
-                "The bridge persists your phone's identity on the Mac",
+                "Android saves the paired computer as a trusted device locally",
+                "The bridge persists your phone's identity on the computer",
                 "The QR stays available as a recovery path",
             ),
         )
@@ -108,7 +108,7 @@ fun AboutRemodexScreen(
         AboutSection(
             title = "Git & Workspace",
             paragraphs = listOf(
-                "The bridge handles git commands from your phone locally on the Mac.",
+                "The bridge handles git commands from your phone locally on the computer.",
             ),
             bullets = listOf(
                 "git/status, git/commit, git/push, git/pull, git/branches",
@@ -171,7 +171,7 @@ private fun AboutHeader() {
             AboutCalloutCard(
                 callout = AboutCallout(
                     accent = Color(0xFF52A7FF),
-                    text = "The Codex runtime stays on your Mac. Your phone is a secure remote control connected through a relay.",
+                    text = "The Codex runtime stays on your computer. Your phone is a secure remote control connected through a relay.",
                 ),
             )
         }
@@ -205,10 +205,10 @@ private fun AboutArchitectureSection() {
                     ArchitectureStep(
                         from = "Remodex Android",
                         via = "WebSocket",
-                        to = "Bridge (Mac)",
+                        to = "Bridge (computer)",
                     )
                     ArchitectureStep(
-                        from = "Bridge (Mac)",
+                        from = "Bridge (computer)",
                         via = "JSON-RPC",
                         to = "codex app-server",
                     )

@@ -68,6 +68,7 @@ import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
 import com.emanueledipietro.remodex.model.remodexApprovalRequestSummary
 import com.emanueledipietro.remodex.feature.turn.remodexGitUiActionIsAvailable
@@ -140,8 +141,11 @@ data class PlanComposerSessionUiState(
 data class AppUiState(
     val onboardingCompleted: Boolean = false,
     val connectionStatus: RemodexConnectionStatus = RemodexConnectionStatus(),
-    val connectionHeadline: String = "Waiting for your Mac",
-    val connectionMessage: String = "Run remodex up on your Mac, then pair this Android device with the QR code.",
+    val connectionHeadline: String = remodexLocalizedText("等待电脑连接", "Waiting for computer"),
+    val connectionMessage: String = remodexLocalizedText(
+        "在电脑上运行 remodex up, 然后用 QR code 配对这台 Android 设备.",
+        "Run remodex up on your computer, then pair this Android device with the QR code.",
+    ),
     val recoveryState: SecureConnectionSnapshot = SecureConnectionSnapshot(),
     val collapsedProjectGroupIds: Set<String> = emptySet(),
     val threads: List<RemodexThreadSummary> = emptyList(),
@@ -987,7 +991,10 @@ class AppViewModel(
         if (!uiState.value.supportsManagedWorktreeCreation) {
             presentTransientBanner(
                 uiState.value.bridgeUpdatePrompt?.message
-                    ?: "Update Remodex on your Mac to use worktree chats.",
+                    ?: remodexLocalizedText(
+                        "更新电脑上的 Remodex 后即可使用 worktree chats.",
+                        "Update Remodex on your computer to use worktree chats.",
+                    ),
             )
             onCreated?.invoke(null)
             return
@@ -2056,7 +2063,7 @@ class AppViewModel(
             return
         }
         if (!uiState.value.isConnected) {
-            setComposerMessage(threadId, "Connect to your Mac before using voice transcription.")
+            setComposerMessage(threadId, "Connect to your computer before using voice transcription.")
             return
         }
 
@@ -3423,21 +3430,27 @@ class AppViewModel(
 
     private fun connectionCopy(secureConnection: SecureConnectionSnapshot): Pair<String, String> {
         val headline = when (secureConnection.secureState) {
-            SecureConnectionState.NOT_PAIRED -> "Waiting for your Mac"
-            SecureConnectionState.TRUSTED_MAC -> "Saved pairing ready"
-            SecureConnectionState.LIVE_SESSION_UNRESOLVED -> "Trusted Mac offline"
+            SecureConnectionState.NOT_PAIRED -> remodexLocalizedText("等待电脑连接", "Waiting for computer")
+            SecureConnectionState.TRUSTED_MAC -> remodexLocalizedText("已保存配对", "Saved pairing")
+            SecureConnectionState.LIVE_SESSION_UNRESOLVED -> remodexLocalizedText(
+                "已信任电脑离线",
+                "Trusted computer offline",
+            )
             SecureConnectionState.HANDSHAKING -> {
                 if (secureConnection.attempt > 0) {
-                    "Pairing Mac"
+                    remodexLocalizedText("正在配对电脑", "Pairing computer")
                 } else {
-                    "Pairing QR saved"
+                    remodexLocalizedText("已保存配对 QR", "Saved pairing QR")
                 }
             }
 
             SecureConnectionState.ENCRYPTED -> "Connected to Remodex"
             SecureConnectionState.RECONNECTING -> "Retrying trusted reconnect"
             SecureConnectionState.REPAIR_REQUIRED -> "Re-pair required"
-            SecureConnectionState.UPDATE_REQUIRED -> "Update bridge on your Mac"
+            SecureConnectionState.UPDATE_REQUIRED -> remodexLocalizedText(
+                "更新电脑上的 bridge",
+                "Update the bridge on your computer",
+            )
         }
         return headline to secureConnection.phaseMessage
     }
@@ -4070,7 +4083,7 @@ class AppViewModel(
         }
         return when {
             secureConnection.secureState != SecureConnectionState.ENCRYPTED && selectedThread.isRunning -> {
-                "Trying to reconnect to your Mac."
+                remodexLocalizedText("正在重新连接电脑.", "Reconnecting to computer.")
             }
             else -> null
         }
@@ -4603,7 +4616,7 @@ class AppViewModel(
                     !isConnected -> RemodexAssistantRevertPresentation(
                         title = "Cannot undo",
                         isEnabled = false,
-                        helperText = "Reconnect to your trusted Mac before undoing this response.",
+                        helperText = "Reconnect to your trusted computer before undoing this response.",
                         riskLevel = RemodexAssistantRevertRiskLevel.BLOCKED,
                     )
 
@@ -4850,7 +4863,7 @@ class AppViewModel(
 
         launchMacSwitch(
             deviceId = deviceId,
-            notice = "Connecting to ${targetProfile.name}...",
+            notice = remodexLocalizedText("正在连接 ${targetProfile.name}...", "Connecting to ${targetProfile.name}..."),
         ) {
             repository.activateBridgeProfile(targetProfileId)
         }
@@ -4859,7 +4872,7 @@ class AppViewModel(
     fun switchToScannedMac(payload: PairingQrPayload) {
         launchMacSwitch(
             deviceId = payload.macDeviceId,
-            notice = "Connecting to new Mac...",
+            notice = remodexLocalizedText("正在连接新电脑...", "Connecting to new computer..."),
         ) {
             repository.pairWithQrPayload(payload)
         }

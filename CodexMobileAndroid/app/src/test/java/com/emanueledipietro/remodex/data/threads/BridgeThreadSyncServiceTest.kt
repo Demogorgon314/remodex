@@ -6415,11 +6415,11 @@ class BridgeThreadSyncServiceTest {
             assertTrue(service.isThreadResumedLocally("thread-fast"))
             assertTrue(service.supportsThreadFork.value)
             assertEquals(
-                "Update Remodex on your Mac to use Speed controls",
+                "Update Remodex on your computer to use Speed controls",
                 service.bridgeUpdatePrompt.value?.title,
             )
             assertEquals(
-                "This Mac bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
+                "This bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
                 service.bridgeUpdatePrompt.value?.message,
             )
             assertEquals(remodexBridgeUpdateCommand, service.bridgeUpdatePrompt.value?.command)
@@ -6502,9 +6502,9 @@ class BridgeThreadSyncServiceTest {
             }
 
             assertFalse(service.supportsThreadFork.value)
-            assertEquals("Update Remodex on your Mac to use /fork", service.bridgeUpdatePrompt.value?.title)
+            assertEquals("Update Remodex on your computer to use /fork", service.bridgeUpdatePrompt.value?.title)
             assertEquals(
-                "This Mac bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
+                "This bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
                 service.bridgeUpdatePrompt.value?.message,
             )
             assertEquals(remodexBridgeUpdateCommand, service.bridgeUpdatePrompt.value?.command)
@@ -6657,11 +6657,11 @@ class BridgeThreadSyncServiceTest {
 
             assertFalse(service.supportsManagedWorktreeCreation.value)
             assertEquals(
-                "Update Remodex on your Mac to use worktree chats",
+                "Update Remodex on your computer to use worktree chats",
                 service.bridgeUpdatePrompt.value?.title,
             )
             assertEquals(
-                "This Mac bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
+                "This bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
                 service.bridgeUpdatePrompt.value?.message,
             )
             assertEquals(remodexBridgeUpdateCommand, service.bridgeUpdatePrompt.value?.command)

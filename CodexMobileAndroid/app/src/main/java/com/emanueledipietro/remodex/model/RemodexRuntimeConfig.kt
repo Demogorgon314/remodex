@@ -37,18 +37,18 @@ enum class RemodexAccessMode {
 
     val label: String
         get() = when (this) {
-            DEFAULT_PERMISSION -> "默认权限"
-            AUTO_REVIEW, ON_REQUEST -> "自动审查"
-            FULL_ACCESS -> "完全访问权限"
-            CUSTOM_CONFIG -> "自定义 (config.toml)"
+            DEFAULT_PERMISSION -> remodexLocalizedText("默认权限", "Default Permissions")
+            AUTO_REVIEW, ON_REQUEST -> remodexLocalizedText("自动审查", "Auto Review")
+            FULL_ACCESS -> remodexLocalizedText("完全访问权限", "Full Access")
+            CUSTOM_CONFIG -> remodexLocalizedText("自定义 (config.toml)", "Custom (config.toml)")
         }
 
     val shortLabel: String
         get() = when (this) {
-            DEFAULT_PERMISSION -> "默认"
-            AUTO_REVIEW, ON_REQUEST -> "自动审查"
-            FULL_ACCESS -> "完全访问"
-            CUSTOM_CONFIG -> "自定义"
+            DEFAULT_PERMISSION -> remodexLocalizedText("默认", "Default")
+            AUTO_REVIEW, ON_REQUEST -> remodexLocalizedText("自动审查", "Auto Review")
+            FULL_ACCESS -> remodexLocalizedText("完全访问", "Full Access")
+            CUSTOM_CONFIG -> remodexLocalizedText("自定义", "Custom")
         }
 
     val approvalPolicyCandidates: List<String>?

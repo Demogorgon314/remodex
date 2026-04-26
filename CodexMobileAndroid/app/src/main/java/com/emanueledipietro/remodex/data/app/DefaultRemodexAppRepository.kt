@@ -72,6 +72,7 @@ import com.emanueledipietro.remodex.model.androidUserMessageText
 import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
 import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
 import com.emanueledipietro.remodex.model.remodexInitialGptAccountSnapshot
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.model.toConversationAttachment
 import com.emanueledipietro.remodex.feature.turn.TurnTimelineReducer
 import kotlinx.coroutines.CoroutineStart
@@ -2173,7 +2174,10 @@ class DefaultRemodexAppRepository(
         if (!hasActiveSecureTransport()) {
             usageStatusState.value = usageStatusState.value.copy(
                 rateLimitBuckets = emptyList(),
-                rateLimitsErrorMessage = "Connect to a Mac bridge to load usage.",
+                rateLimitsErrorMessage = remodexLocalizedText(
+                    "连接到电脑 bridge 后加载额度.",
+                    "Connect to the computer bridge to load usage.",
+                ),
             )
             return
         }
@@ -3848,16 +3852,16 @@ private fun SecureConnectionSnapshot.toTrustedMacPresentation(
     val fingerprint = macFingerprint?.trim().takeUnless { it.isNullOrEmpty() }
     val systemName = macDisplayName?.trim().takeUnless { it.isNullOrEmpty() }
     val title = when (secureState) {
-        SecureConnectionState.ENCRYPTED -> "Connected Pair"
-        SecureConnectionState.HANDSHAKING -> "Pairing Mac"
+        SecureConnectionState.ENCRYPTED -> remodexLocalizedText("已连接配对", "Connected pairing")
+        SecureConnectionState.HANDSHAKING -> remodexLocalizedText("正在配对电脑", "Pairing computer")
         SecureConnectionState.LIVE_SESSION_UNRESOLVED,
         SecureConnectionState.RECONNECTING,
-        SecureConnectionState.TRUSTED_MAC -> "Saved Pair"
-        SecureConnectionState.REPAIR_REQUIRED -> "Previous Pair"
+        SecureConnectionState.TRUSTED_MAC -> remodexLocalizedText("已保存配对", "Saved pairing")
+        SecureConnectionState.REPAIR_REQUIRED -> remodexLocalizedText("历史配对", "Historical pairing")
         SecureConnectionState.UPDATE_REQUIRED,
-        SecureConnectionState.NOT_PAIRED -> "Trusted Pair"
+        SecureConnectionState.NOT_PAIRED -> remodexLocalizedText("可信配对", "Trusted pairing")
     }
-    val fallbackName = listOfNotNull(systemName, fingerprint?.let { "Mac $it" })
+    val fallbackName = listOfNotNull(systemName, fingerprint?.let { remodexLocalizedText("电脑 $it", "Computer $it") })
         .firstOrNull()
         ?: return null
     val nickname = macDeviceId
@@ -3883,26 +3887,29 @@ private fun BridgeProfilesSnapshot.toBridgeProfilePresentations(
     connectedProfileId: String? = null,
 ): List<RemodexBridgeProfilePresentation> {
     return profiles.map { profile ->
-        val fingerprint = profile.macFingerprint.trim().ifEmpty { "Unknown" }
+        val fingerprint = profile.macFingerprint.trim().ifEmpty { remodexLocalizedText("未知", "Unknown") }
         val fallbackName = profile.macDisplayName?.trim().takeUnless { it.isNullOrEmpty() }
-            ?: "Mac $fingerprint"
+            ?: remodexLocalizedText("电脑 $fingerprint", "Computer $fingerprint")
         val nickname = nicknamesByDeviceId[profile.macDeviceId]
             ?.trim()
             .takeUnless { it.isNullOrEmpty() }
         val title = when {
-            profile.profileId == connectedProfileId -> "Connected Pair"
-            profile.needsQrBootstrap -> "Pairing Mac"
-            profile.isActive -> "Saved Pair"
-            profile.isTrusted -> "Saved Pair"
-            else -> "Previous Pair"
+            profile.profileId == connectedProfileId -> remodexLocalizedText("已连接配对", "Connected pairing")
+            profile.needsQrBootstrap -> remodexLocalizedText("正在配对电脑", "Pairing computer")
+            profile.isActive -> remodexLocalizedText("已保存配对", "Saved pairing")
+            profile.isTrusted -> remodexLocalizedText("已保存配对", "Saved pairing")
+            else -> remodexLocalizedText("历史配对", "Historical pairing")
         }
         val detail = buildList {
             add(
                 when {
-                    profile.profileId == connectedProfileId -> "End-to-end encrypted"
-                    profile.needsQrBootstrap -> "Secure handshake pending"
-                    profile.isTrusted -> "Trusted Mac"
-                    else -> "Saved locally"
+                    profile.profileId == connectedProfileId -> remodexLocalizedText(
+                        "端到端加密",
+                        "End-to-end encrypted",
+                    )
+                    profile.needsQrBootstrap -> remodexLocalizedText("等待安全握手", "Waiting for secure handshake")
+                    profile.isTrusted -> remodexLocalizedText("已信任电脑", "Trusted computer")
+                    else -> remodexLocalizedText("已保存在本机", "Saved locally")
                 },
             )
             add(fingerprint)
