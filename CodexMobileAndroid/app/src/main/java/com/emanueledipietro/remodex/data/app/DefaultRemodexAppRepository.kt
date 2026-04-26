@@ -26,6 +26,7 @@ import com.emanueledipietro.remodex.model.ConversationItemKind
 import com.emanueledipietro.remodex.model.ConversationSpeaker
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
@@ -478,6 +479,7 @@ class DefaultRemodexAppRepository(
                         runtimeDefaults = preferences.runtimeDefaults,
                         availableModels = resolvedAvailableModels,
                         appearanceMode = preferences.appearanceMode,
+                        appLanguage = preferences.appLanguage,
                         appFontStyle = preferences.appFontStyle,
                         trustedMac = secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
                         bridgeProfiles = inputs.bridgeProfiles.toBridgeProfilePresentations(
@@ -2068,6 +2070,12 @@ class DefaultRemodexAppRepository(
         applyPreferencesLocally(updatedPreferences)
     }
 
+    override suspend fun setAppLanguage(language: RemodexAppLanguage) {
+        val updatedPreferences = preferencesState.value.copy(appLanguage = language)
+        appPreferencesRepository.setAppLanguage(language)
+        applyPreferencesLocally(updatedPreferences)
+    }
+
     override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {
         val updatedPreferences = preferencesState.value.copy(appFontStyle = style)
         appPreferencesRepository.setAppFontStyle(style)
@@ -3292,6 +3300,7 @@ class DefaultRemodexAppRepository(
                 runtimeDefaults = preferences.runtimeDefaults,
                 availableModels = availableModels,
                 appearanceMode = preferences.appearanceMode,
+                appLanguage = preferences.appLanguage,
                 appFontStyle = preferences.appFontStyle,
                 trustedMac = secureConnection.toTrustedMacPresentation(preferences.macNicknamesByDeviceId),
                 bridgeProfiles = secureConnectionCoordinator.bridgeProfiles.value.toBridgeProfilePresentations(

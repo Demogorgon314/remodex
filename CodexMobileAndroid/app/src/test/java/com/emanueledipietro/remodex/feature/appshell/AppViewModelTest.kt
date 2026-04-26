@@ -12,6 +12,7 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
@@ -4213,6 +4214,8 @@ class AppViewModelTest {
         override suspend fun setDefaultServiceTier(serviceTier: RemodexServiceTier?) = Unit
 
         override suspend fun setAppearanceMode(mode: RemodexAppearanceMode) = Unit
+
+        override suspend fun setAppLanguage(language: RemodexAppLanguage) = Unit
 
         override suspend fun setAppFontStyle(style: RemodexAppFontStyle) = Unit
 

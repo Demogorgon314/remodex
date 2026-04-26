@@ -24,6 +24,7 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
@@ -150,6 +151,7 @@ data class AppUiState(
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
     val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
+    val appLanguage: RemodexAppLanguage = RemodexAppLanguage.SYSTEM,
     val appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),
@@ -604,6 +606,7 @@ class AppViewModel(
                 runtimeDefaults = snapshot.runtimeDefaults,
                 availableModels = snapshot.availableModels,
                 appearanceMode = snapshot.appearanceMode,
+                appLanguage = snapshot.appLanguage,
                 appFontStyle = snapshot.appFontStyle,
                 trustedMac = snapshot.trustedMac,
                 bridgeProfiles = snapshot.bridgeProfiles,
@@ -2868,6 +2871,12 @@ class AppViewModel(
     fun setAppearanceMode(mode: RemodexAppearanceMode) {
         viewModelScope.launch {
             repository.setAppearanceMode(mode)
+        }
+    }
+
+    fun setAppLanguage(language: RemodexAppLanguage) {
+        viewModelScope.launch {
+            repository.setAppLanguage(language)
         }
     }
 

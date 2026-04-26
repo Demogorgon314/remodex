@@ -26,6 +26,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadCommandService
 import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
@@ -3208,6 +3209,10 @@ class DefaultRemodexAppRepositoryTest {
 
         override suspend fun setAppearanceMode(mode: RemodexAppearanceMode) {
             backingState.value = backingState.value.copy(appearanceMode = mode)
+        }
+
+        override suspend fun setAppLanguage(language: RemodexAppLanguage) {
+            backingState.value = backingState.value.copy(appLanguage = language)
         }
 
         override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {

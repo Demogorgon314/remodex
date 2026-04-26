@@ -63,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
@@ -95,6 +96,7 @@ fun SettingsScreen(
     uiState: AppUiState,
     notificationPermissionUiState: RemodexNotificationPermissionUiState,
     onNotificationAction: () -> Unit,
+    onSelectAppLanguage: (RemodexAppLanguage) -> Unit,
     onSelectAppFontStyle: (RemodexAppFontStyle) -> Unit,
     onSelectDefaultModelId: (String?) -> Unit,
     onSelectDefaultReasoningEffort: (String?) -> Unit,
@@ -296,7 +298,20 @@ fun SettingsScreen(
 
         SettingsCard(title = "Appearance") {
             SettingsSelectionRow(
-                title = "Font",
+                title = if (uiState.appLanguage == RemodexAppLanguage.SIMPLIFIED_CHINESE) "语言" else "Language",
+                currentLabel = uiState.appLanguage.title,
+                options = RemodexAppLanguage.entries.map { language ->
+                    SettingsOption(language.name, language.title)
+                },
+                onSelected = { key -> onSelectAppLanguage(RemodexAppLanguage.valueOf(key)) },
+            )
+            Text(
+                text = uiState.appLanguage.subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SettingsSelectionRow(
+                title = if (uiState.appLanguage == RemodexAppLanguage.SIMPLIFIED_CHINESE) "字体" else "Font",
                 currentLabel = uiState.appFontStyle.title,
                 options = RemodexAppFontStyle.entries.map { style ->
                     SettingsOption(style.name, style.title)

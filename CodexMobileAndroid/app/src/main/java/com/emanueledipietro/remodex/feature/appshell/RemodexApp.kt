@@ -1218,6 +1218,7 @@ private fun MainPane(
                         uiState = uiState,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onNotificationAction = onNotificationAction,
+                        onSelectAppLanguage = viewModel::setAppLanguage,
                         onSelectAppFontStyle = viewModel::setAppFontStyle,
                         onSelectDefaultModelId = viewModel::setDefaultModelId,
                         onSelectDefaultReasoningEffort = viewModel::setDefaultReasoningEffort,
