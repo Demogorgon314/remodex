@@ -33,6 +33,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
+import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexRequestedPermissions
@@ -446,6 +447,57 @@ class BridgeThreadSyncServiceTest {
 
         assertTrue(service.availableModels.value.isEmpty())
         assertTrue(service.threads.value.isEmpty())
+    }
+
+    @Test
+    fun `model parser accepts codex reasoning level metadata`() = runTest {
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = SecureConnectionCoordinator(
+                store = InMemorySecureStore(),
+                trustedSessionResolver = UnusedTrustedSessionResolver,
+                relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+                scope = backgroundScope,
+            ),
+            scope = backgroundScope,
+        )
+
+        val parsed = invokePrivateMethod(
+            service,
+            "parseModelOption",
+            buildJsonObject {
+                put("slug", JsonPrimitive("gpt-5.5"))
+                put("display_name", JsonPrimitive("GPT-5.5"))
+                put("default_reasoning_level", JsonPrimitive("medium"))
+                put(
+                    "supported_reasoning_levels",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("effort", JsonPrimitive("low"))
+                                put("description", JsonPrimitive("Fast responses with lighter reasoning"))
+                            },
+                        )
+                        add(
+                            buildJsonObject {
+                                put("effort", JsonPrimitive("medium"))
+                                put("description", JsonPrimitive("Balances speed and reasoning depth"))
+                            },
+                        )
+                        add(
+                            buildJsonObject {
+                                put("effort", JsonPrimitive("xhigh"))
+                                put("description", JsonPrimitive("Extra high reasoning depth for complex problems"))
+                            },
+                        )
+                    },
+                )
+            },
+        ) as RemodexModelOption
+
+        assertEquals("gpt-5.5", parsed.id)
+        assertEquals("GPT-5.5", parsed.displayName)
+        assertEquals("medium", parsed.defaultReasoningEffort)
+        assertEquals(listOf("low", "medium", "xhigh"), parsed.supportedReasoningEfforts.map { it.reasoningEffort })
     }
 
     @Test

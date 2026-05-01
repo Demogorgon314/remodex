@@ -187,8 +187,8 @@ data class RemodexRuntimeConfig(
             .ifEmpty { RemodexServiceTier.entries.toList() }
             .distinct()
         val normalizedServiceTier = serviceTier?.takeIf { tier -> tier in normalizedServiceTiers }
-        val normalizedModels = availableModels
-            .mapNotNull(RemodexModelOption::normalizedOrNull)
+        val normalizedModels = RemodexRuntimeMetaMapper
+            .mergedWithCodexReferenceModels(availableModels)
             .distinctBy(RemodexModelOption::id)
         if (normalizedModels.isEmpty()) {
             return copy(

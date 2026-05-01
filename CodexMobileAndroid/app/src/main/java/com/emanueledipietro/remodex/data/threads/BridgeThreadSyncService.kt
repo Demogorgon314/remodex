@@ -64,6 +64,7 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputOption
@@ -2418,7 +2419,7 @@ class BridgeThreadSyncService(
             return
         }
 
-        backingAvailableModels.value = parsedModels
+        backingAvailableModels.value = RemodexRuntimeMetaMapper.mergedWithCodexReferenceModels(parsedModels)
     }
 
     private suspend fun listThreads(archived: Boolean): List<ThreadSyncSnapshot> {
@@ -10911,8 +10912,8 @@ class BridgeThreadSyncService(
 
     private fun parseModelOption(value: JsonElement): RemodexModelOption? {
         val modelObject = value.jsonObjectOrNull ?: return null
-        val model = modelObject.firstString("model", "id")?.trim().orEmpty()
-        val id = modelObject.firstString("id")?.trim()?.takeIf { value -> value.isNotEmpty() } ?: model
+        val model = modelObject.firstString("model", "id", "slug")?.trim().orEmpty()
+        val id = modelObject.firstString("id", "slug")?.trim()?.takeIf { value -> value.isNotEmpty() } ?: model
         if (id.isEmpty() && model.isEmpty()) {
             return null
         }
@@ -10926,11 +10927,11 @@ class BridgeThreadSyncService(
             description = modelObject.firstString("description")?.trim().orEmpty(),
             isDefault = modelObject.firstBoolean("isDefault", "is_default") ?: false,
             supportedReasoningEfforts = modelObject
-                .firstArray("supportedReasoningEfforts", "supported_reasoning_efforts")
+                .firstArray("supportedReasoningEfforts", "supported_reasoning_efforts", "supported_reasoning_levels")
                 .orEmpty()
                 .mapNotNull(::parseReasoningEffortOption),
             defaultReasoningEffort = modelObject
-                .firstString("defaultReasoningEffort", "default_reasoning_effort")
+                .firstString("defaultReasoningEffort", "default_reasoning_effort", "default_reasoning_level")
                 ?.trim()
                 ?.takeIf(String::isNotEmpty),
         ).normalizedOrNull()
@@ -10947,7 +10948,13 @@ class BridgeThreadSyncService(
 
         val optionObject = value.jsonObjectOrNull ?: return null
         return RemodexReasoningEffortOption(
-            reasoningEffort = optionObject.firstString("reasoningEffort", "reasoning_effort", "id", "name").orEmpty(),
+            reasoningEffort = optionObject.firstString(
+                "reasoningEffort",
+                "reasoning_effort",
+                "effort",
+                "id",
+                "name",
+            ).orEmpty(),
             description = optionObject.firstString("description").orEmpty(),
         ).normalizedOrNull()
     }

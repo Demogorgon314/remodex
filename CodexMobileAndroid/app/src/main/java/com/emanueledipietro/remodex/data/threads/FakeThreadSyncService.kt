@@ -34,6 +34,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
@@ -1175,12 +1176,11 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
 }
 
 private fun seededModelOptions(): List<RemodexModelOption> {
-    return listOf(
+    return RemodexRuntimeMetaMapper.mergedWithCodexReferenceModels(listOf(
         RemodexModelOption(
             id = "gpt-5.4",
             model = "gpt-5.4",
             displayName = "GPT-5.4",
-            isDefault = true,
             supportedReasoningEfforts = listOf(
                 RemodexReasoningEffortOption(reasoningEffort = "low", description = "Low"),
                 RemodexReasoningEffortOption(reasoningEffort = "medium", description = "Medium"),
@@ -1200,7 +1200,7 @@ private fun seededModelOptions(): List<RemodexModelOption> {
             ),
             defaultReasoningEffort = "medium",
         ),
-    )
+    ))
 }
 
 private fun seedGitState(snapshot: ThreadSyncSnapshot): RemodexGitState {
