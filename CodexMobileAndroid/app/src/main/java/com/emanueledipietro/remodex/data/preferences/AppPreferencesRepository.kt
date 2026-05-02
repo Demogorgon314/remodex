@@ -3,6 +3,7 @@ package com.emanueledipietro.remodex.data.preferences
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
@@ -48,6 +49,8 @@ interface AppPreferencesRepository {
     suspend fun setRuntimeDefaults(defaults: RemodexRuntimeDefaults)
 
     suspend fun setAppearanceMode(mode: RemodexAppearanceMode)
+
+    suspend fun setAppLanguage(language: RemodexAppLanguage)
 
     suspend fun setAppFontStyle(style: RemodexAppFontStyle)
 

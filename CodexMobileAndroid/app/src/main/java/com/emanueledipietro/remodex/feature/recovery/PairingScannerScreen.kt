@@ -357,7 +357,7 @@ private fun PairingBridgeUpdateView(
         ) {
             if (command != null) {
                 Text(
-                    text = "Run this on your Mac",
+                    text = "Run this on your computer",
                     style = MaterialTheme.typography.labelLarge,
                     color = Color.White.copy(alpha = 0.7f),
                 )

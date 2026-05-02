@@ -35,9 +35,9 @@ class HomeEmptyStatePresentationTest {
     fun `trusted reconnect attempt becomes busy and disables the primary button`() {
         val presentation = AppUiState(
             connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.RETRYING, attempt = 2),
-            connectionMessage = "Resolving the live session for your trusted Mac before reconnecting the Android socket.",
+            connectionMessage = "Resolving the live session for your trusted computer before reconnecting the Android socket.",
             recoveryState = SecureConnectionSnapshot(
-                phaseMessage = "Resolving the live session for your trusted Mac before reconnecting the Android socket.",
+                phaseMessage = "Resolving the live session for your trusted computer before reconnecting the Android socket.",
                 secureState = SecureConnectionState.RECONNECTING,
                 attempt = 2,
             ),
@@ -75,7 +75,7 @@ class HomeEmptyStatePresentationTest {
     fun `disconnected state without a saved pairing leads with scan qr`() {
         val presentation = AppUiState(
             connectionStatus = RemodexConnectionStatus(RemodexConnectionPhase.DISCONNECTED),
-            connectionMessage = "Run remodex up on your Mac, then pair this Android device with the QR code.",
+            connectionMessage = "在电脑上运行 remodex up, 然后用 QR code 配对这台 Android 设备.",
             recoveryState = SecureConnectionSnapshot(
                 secureState = SecureConnectionState.NOT_PAIRED,
             ),

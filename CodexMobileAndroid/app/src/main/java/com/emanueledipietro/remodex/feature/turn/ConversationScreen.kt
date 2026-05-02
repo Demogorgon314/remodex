@@ -265,6 +265,7 @@ import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.StructuredSecretAnswerPlaceholder
 import com.emanueledipietro.remodex.model.RemodexRateLimitBucket
 import com.emanueledipietro.remodex.model.RemodexRateLimitDisplayRow
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.platform.media.isSupportedComposerImageUri
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import com.emanueledipietro.remodex.ui.theme.RemodexConversationChrome
@@ -4606,7 +4607,11 @@ private fun ComposerSecondaryBar(
         isCodexManagedWorktreeProject(thread.projectPath)
     }
     val showsThreadRunningUi = thread.isRunning
-    val runtimeLabel = if (isWorktreeProject) "Worktree" else "Local"
+    val runtimeLabel = if (isWorktreeProject) {
+        remodexLocalizedText("工作树", "Worktree")
+    } else {
+        remodexLocalizedText("在本地处理", "Local")
+    }
     val branchLabel = remember(gitState) { composerSecondaryBarBranchLabel(gitState) }
     val showsGitBranchSelector = remember(isConnected, gitState) {
         remodexShowsGitControls(
@@ -4641,7 +4646,6 @@ private fun ComposerSecondaryBar(
     val isEmptyThread = thread.messages.isEmpty()
     val runtimeMenuState = rememberComposerMenuState(thread.id, "runtime")
     val accessMenuState = rememberComposerMenuState(thread.id, "access")
-    val usageRingSize = 34.dp
     val branchPillMaxWidth = 168.dp
 
     LaunchedEffect(usageExpanded, thread.id) {
@@ -4791,11 +4795,19 @@ private fun ComposerSecondaryBar(
                             imageVector = Icons.Outlined.Security,
                             contentDescription = null,
                             modifier = Modifier.size(12.dp),
-                            tint = if (accessMode == RemodexAccessMode.FULL_ACCESS) {
+                            tint = if (accessMode.canonical == RemodexAccessMode.FULL_ACCESS) {
                                 Color(0xFFFF9500)
                             } else {
                                 chrome.secondaryText
                             },
+                        )
+                        Text(
+                            text = accessMode.canonical.label,
+                            modifier = Modifier.widthIn(max = 112.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = chrome.secondaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         RuntimeSelectorChevron()
                     }
@@ -4803,8 +4815,8 @@ private fun ComposerSecondaryBar(
                         expanded = accessMenuState.expanded,
                         onDismissRequest = accessMenuState::onDismissRequest,
                     ) {
-                        RemodexAccessMode.entries.forEach { mode ->
-                            val isSelected = mode == accessMode
+                        RemodexAccessMode.displayEntries.forEach { mode ->
+                            val isSelected = mode == accessMode.canonical
                             ComposerDropdownMenuItem(
                                 text = { Text(mode.label) },
                                 selected = isSelected,
@@ -4855,15 +4867,24 @@ private fun ComposerSecondaryBar(
                     }
                 }
 
-                Box(
-                    modifier = Modifier.requiredSize(usageRingSize),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    ContextWindowStatusRing(
-                        usage = usageStatus.contextWindowUsage,
-                        isRefreshing = isRefreshingUsage,
+                Box {
+                    SecondaryBarPill(
                         onClick = { onUsageExpandedChange(true) },
-                    )
+                        hapticOnClick = true,
+                    ) {
+                        ContextWindowStatusRingGlyph(
+                            usage = usageStatus.contextWindowUsage,
+                            isRefreshing = isRefreshingUsage,
+                            modifier = Modifier.requiredSize(16.dp),
+                        )
+                        Text(
+                            text = remodexLocalizedText("剩余额度", "Usage"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = chrome.secondaryText,
+                            maxLines = 1,
+                        )
+                        RuntimeSelectorChevron()
+                    }
                     ComposerStatusPopover(
                         expanded = usageExpanded,
                         onDismissRequest = { onUsageExpandedChange(false) },
@@ -4947,14 +4968,13 @@ private fun SecondaryBarPill(
 }
 
 @Composable
-private fun ContextWindowStatusRing(
+private fun ContextWindowStatusRingGlyph(
     usage: RemodexContextWindowUsage?,
     isRefreshing: Boolean,
-    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val chrome = remodexConversationChrome()
     val density = LocalDensity.current
-    val performLightHaptic = rememberLightImpactHaptic()
     val progress = usage?.fractionUsed?.coerceIn(0.0, 1.0)?.toFloat()
     val ringColor = when {
         progress == null -> chrome.secondaryText.copy(alpha = 0.55f)
@@ -4963,61 +4983,34 @@ private fun ContextWindowStatusRing(
         else -> chrome.secondaryText.copy(alpha = 0.68f)
     }
 
-    Surface(
-        color = chrome.mutedSurface,
-        shape = CircleShape,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clickable(
-                    onClick = {
-                        performLightHaptic()
-                        onClick()
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (progress == null && isRefreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 1.6.dp,
-                    color = chrome.secondaryText.copy(alpha = 0.6f),
+        if (progress == null && isRefreshing) {
+            CircularProgressIndicator(
+                modifier = Modifier.fillMaxSize(),
+                strokeWidth = 1.6.dp,
+                color = chrome.secondaryText.copy(alpha = 0.6f),
+            )
+        } else {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokeWidth = with(density) { 2.25.dp.toPx() }
+                drawCircle(
+                    color = chrome.subtleBorder.copy(alpha = 0.88f),
+                    style = Stroke(width = strokeWidth),
                 )
-            } else {
-                Box(contentAlignment = Alignment.Center) {
-                    Canvas(modifier = Modifier.size(18.dp)) {
-                        val strokeWidth = with(density) { 2.25.dp.toPx() }
-                        drawCircle(
-                            color = chrome.subtleBorder.copy(alpha = 0.88f),
-                            style = Stroke(width = strokeWidth),
-                        )
-                        if (progress != null) {
-                            drawArc(
-                                color = ringColor,
-                                startAngle = -90f,
-                                sweepAngle = 360f * progress,
-                                useCenter = false,
-                                style = Stroke(
-                                    width = strokeWidth,
-                                    cap = StrokeCap.Round,
-                                ),
-                            )
-                        }
-                    }
-                    progress?.let {
-                        Text(
-                            text = "${(it * 100).toInt()}",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 6.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            color = ringColor,
-                        )
-                    }
+                if (progress != null) {
+                    drawArc(
+                        color = ringColor,
+                        startAngle = -90f,
+                        sweepAngle = 360f * progress,
+                        useCenter = false,
+                        style = Stroke(
+                            width = strokeWidth,
+                            cap = StrokeCap.Round,
+                        ),
+                    )
                 }
             }
         }
@@ -5087,7 +5080,7 @@ private fun ComposerStatusPopover(
             ) {
                 Column(
                     modifier = Modifier
-                        .widthIn(min = 260.dp, max = 320.dp)
+                        .widthIn(min = 280.dp, max = 360.dp)
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                     content = content,
@@ -5144,7 +5137,11 @@ private fun ComposerUsageStatusSummaryContent(
                     )
                 }
                 Text(
-                    text = if (isRefreshing) "Refreshing..." else "Refresh",
+                    text = if (isRefreshing) {
+                        remodexLocalizedText("刷新中...", "Refreshing...")
+                    } else {
+                        remodexLocalizedText("刷新", "Refresh")
+                    },
                     modifier = Modifier.padding(start = 6.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = chrome.secondaryText,
@@ -5154,7 +5151,7 @@ private fun ComposerUsageStatusSummaryContent(
     }
 
     Text(
-        text = "Rate limits",
+        text = remodexLocalizedText("剩余额度", "Rate limits"),
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
         color = chrome.titleText,
@@ -5189,7 +5186,7 @@ private fun ComposerUsageStatusSummaryContent(
 
         isRefreshing -> {
             Text(
-                text = "Loading current limits...",
+                text = remodexLocalizedText("正在加载当前额度...", "Loading current limits..."),
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
@@ -5197,7 +5194,10 @@ private fun ComposerUsageStatusSummaryContent(
 
         else -> {
             Text(
-                text = "Rate limits are unavailable for this account.",
+                text = remodexLocalizedText(
+                    "当前账号暂无可用额度信息.",
+                    "Rate limits are unavailable for this account.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
@@ -5207,7 +5207,7 @@ private fun ComposerUsageStatusSummaryContent(
     HorizontalDivider(color = chrome.subtleBorder.copy(alpha = 0.7f))
 
     Text(
-        text = "Context window",
+        text = remodexLocalizedText("上下文窗口", "Context window"),
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
         color = chrome.titleText,
@@ -5216,15 +5216,21 @@ private fun ComposerUsageStatusSummaryContent(
     if (contextWindowUsage != null) {
         ComposerUsageMetricRow(
             label = "Context",
-            value = "${contextWindowUsage.percentRemaining}% left",
-            detail = "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} used / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+            value = remodexLocalizedText(
+                "剩余 ${contextWindowUsage.percentRemaining}%",
+                "${contextWindowUsage.percentRemaining}% left",
+            ),
+            detail = remodexLocalizedText(
+                "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} 已用 / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+                "(${composerCompactTokenCount(contextWindowUsage.tokensUsed)} used / ${composerCompactTokenCount(contextWindowUsage.tokenLimit)})",
+            ),
         )
         ComposerUsageProgressBar(progress = contextWindowUsage.percentRemaining / 100f)
     } else {
         ComposerUsageMetricRow(
             label = "Context",
-            value = "Unavailable",
-            detail = "Waiting for token usage",
+            value = remodexLocalizedText("不可用", "Unavailable"),
+            detail = remodexLocalizedText("等待 token 用量", "Waiting for token usage"),
         )
     }
 }
@@ -5247,7 +5253,7 @@ private fun ComposerUsageRateLimitRow(
             )
             Spacer(modifier = Modifier.weight(1f))
             Text(
-                text = "${row.window.remainingPercent}% left",
+                text = "${row.window.remainingPercent}%",
                 style = MaterialTheme.typography.bodyMedium,
                 color = chrome.titleText,
                 fontFamily = FontFamily.Monospace,
@@ -5272,28 +5278,37 @@ private fun ComposerUsageMetricRow(
     detail: String,
 ) {
     val chrome = remodexConversationChrome()
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "$label:",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+                fontFamily = FontFamily.Monospace,
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = chrome.titleText,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+            )
+        }
         Text(
-            text = "$label:",
+            text = detail,
+            modifier = Modifier.fillMaxWidth(),
             style = MaterialTheme.typography.bodySmall,
             color = chrome.secondaryText,
             fontFamily = FontFamily.Monospace,
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = chrome.titleText,
-            fontFamily = FontFamily.Monospace,
-        )
-        Text(
-            text = " $detail",
-            style = MaterialTheme.typography.bodySmall,
-            color = chrome.secondaryText,
-            fontFamily = FontFamily.Monospace,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -5395,9 +5410,9 @@ private fun composerResetLabel(window: com.emanueledipietro.remodex.model.Remode
     val hours = totalMinutes / 60L
     val minutes = totalMinutes % 60L
     return when {
-        hours > 0L -> "resets ${hours}h ${minutes}m"
-        totalMinutes > 0L -> "resets ${totalMinutes}m"
-        else -> "resets soon"
+        hours > 0L -> remodexLocalizedText("重置 ${hours}h ${minutes}m", "resets ${hours}h ${minutes}m")
+        totalMinutes > 0L -> remodexLocalizedText("重置 ${totalMinutes}m", "resets ${totalMinutes}m")
+        else -> remodexLocalizedText("即将重置", "resets soon")
     }
 }
 
@@ -12881,7 +12896,7 @@ private fun MessageAttachmentStrip(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    text = "Preview on Mac only",
+                                    text = "Preview on computer only",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = chrome.secondaryText,
                                 )

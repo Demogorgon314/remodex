@@ -1281,6 +1281,7 @@ class BridgeThreadSyncService(
                     availableModels = availableModels.value,
                     selectedModelId = runtimeDefaults.modelId,
                     reasoningEffort = runtimeDefaults.reasoningEffort,
+                    accessMode = runtimeDefaults.accessMode,
                     serviceTier = runtimeDefaults.serviceTier,
                 ),
             ),
@@ -1725,7 +1726,7 @@ class BridgeThreadSyncService(
 
     override suspend fun continueOnMac(threadId: String) {
         if (!isConnected()) {
-            throw IllegalStateException("Not connected to your Mac.")
+            throw IllegalStateException("Not connected to your computer.")
         }
 
         val trimmedThreadId = threadId.trim()
@@ -2225,7 +2226,7 @@ class BridgeThreadSyncService(
     ): RemodexRevertPreviewResult {
         val projectPath = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
         require(projectPath.isNotEmpty()) {
-            "The selected local folder is not available on this Mac."
+            "The selected local folder is not available on this computer."
         }
         val normalizedPatch = RemodexUnifiedPatchParser.normalize(forwardPatch)
             ?: throw IllegalStateException("This response cannot be auto-reverted because no exact patch was captured.")
@@ -2245,7 +2246,7 @@ class BridgeThreadSyncService(
     ): RemodexRevertApplyResult {
         val projectPath = backingThreads.value.firstOrNull { it.id == threadId }?.projectPath?.trim().orEmpty()
         require(projectPath.isNotEmpty()) {
-            "The selected local folder is not available on this Mac."
+            "The selected local folder is not available on this computer."
         }
         val normalizedPatch = RemodexUnifiedPatchParser.normalize(forwardPatch)
             ?: throw IllegalStateException("This response cannot be auto-reverted because no exact patch was captured.")
@@ -2676,7 +2677,9 @@ class BridgeThreadSyncService(
                         runtimeConfig.serviceTier?.let { put("serviceTier", JsonPrimitive(it.wireValue)) }
                     }
                     if (includeSandbox) {
-                        put("sandbox", JsonPrimitive(runtimeConfig.accessMode.sandboxLegacyValue))
+                        runtimeConfig.accessMode.sandboxLegacyValue?.let { sandbox ->
+                            put("sandbox", JsonPrimitive(sandbox))
+                        }
                     }
                 }
                 if (includePersistExtendedHistory) {
@@ -2788,7 +2791,7 @@ class BridgeThreadSyncService(
         params: JsonObject = buildJsonObject {},
     ): RpcMessage {
         val normalizedProjectPath = projectPath.trim().takeIf(String::isNotEmpty)
-            ?: throw IllegalStateException("The selected local folder is not available on this Mac.")
+            ?: throw IllegalStateException("The selected local folder is not available on this computer.")
         return try {
             secureConnectionCoordinator.sendRequest(
                 method = method,
@@ -2866,7 +2869,7 @@ class BridgeThreadSyncService(
             "branch_in_other_worktree" -> fallback.ifBlank { "This branch is already open in another worktree." }
             "confirmation_required" -> "Confirmation is required for this action."
             "stash_pop_conflict" -> "Stash pop failed due to conflicts."
-            "missing_working_directory" -> fallback.ifBlank { "The selected local folder is not available on this Mac." }
+            "missing_working_directory" -> fallback.ifBlank { "The selected local folder is not available on this computer." }
             "cannot_remove_local_checkout" -> fallback.ifBlank { "Cannot remove the main local checkout." }
             "unmanaged_worktree" -> fallback.ifBlank { "Only managed worktrees can be cleaned up automatically." }
             "worktree_cleanup_failed" -> fallback.ifBlank { "We could not clean up the temporary worktree automatically." }
@@ -2959,6 +2962,7 @@ class BridgeThreadSyncService(
     ): RpcMessage {
         var lastError: Throwable? = null
         val policies = accessMode.approvalPolicyCandidates
+            ?: return secureConnectionCoordinator.sendRequest(method = method, params = baseParams)
         for ((index, policy) in policies.withIndex()) {
             val params = JsonObject(baseParams + ("approvalPolicy" to JsonPrimitive(policy)))
             try {
@@ -2984,7 +2988,7 @@ class BridgeThreadSyncService(
         var shouldIncludeServiceTier = includeServiceTier
         while (true) {
             try {
-                return sendRequestWithApprovalPolicyFallback(
+                return sendRequestWithSandboxFallback(
                     method = method,
                     baseParams = buildBaseParams(shouldIncludeServiceTier),
                     accessMode = accessMode,
@@ -2999,6 +3003,36 @@ class BridgeThreadSyncService(
         }
     }
 
+    private suspend fun sendRequestWithSandboxFallback(
+        method: String,
+        baseParams: JsonObject,
+        accessMode: RemodexAccessMode,
+    ): RpcMessage {
+        val sandboxLegacyValue = accessMode.sandboxLegacyValue
+            ?: return sendRequestWithApprovalPolicyFallback(method = method, baseParams = baseParams, accessMode = accessMode)
+        val attempts = listOf(
+            JsonObject(baseParams + ("sandboxPolicy" to runtimeSandboxPolicyObject(accessMode))),
+            JsonObject(baseParams + ("sandbox" to JsonPrimitive(sandboxLegacyValue))),
+            baseParams,
+        )
+        var lastError: Throwable? = null
+        attempts.forEachIndexed { index, params ->
+            try {
+                return sendRequestWithApprovalPolicyFallback(
+                    method = method,
+                    baseParams = params,
+                    accessMode = accessMode,
+                )
+            } catch (error: Throwable) {
+                lastError = error
+                if (index == attempts.lastIndex || !shouldRetryWithSandboxPolicyFallback(error)) {
+                    throw error
+                }
+            }
+        }
+        throw lastError ?: IllegalStateException("$method failed without a concrete transport error.")
+    }
+
     private suspend fun sendRequestWithThreadHistoryFallback(
         method: String,
         accessMode: RemodexAccessMode,
@@ -3011,17 +3045,14 @@ class BridgeThreadSyncService(
         while (true) {
             var lastError: Throwable? = null
             var shouldRetryWholeRequest = false
-            for ((index, policy) in policies.withIndex()) {
-                val params = JsonObject(
-                    buildBaseParams(
-                        shouldIncludeServiceTier,
-                        shouldIncludePersistExtendedHistory,
-                    ) + ("approvalPolicy" to JsonPrimitive(policy)),
+            if (policies == null) {
+                val params = buildBaseParams(
+                    shouldIncludeServiceTier,
+                    shouldIncludePersistExtendedHistory,
                 )
                 try {
                     return secureConnectionCoordinator.sendRequest(method = method, params = params)
                 } catch (error: Throwable) {
-                    lastError = error
                     when {
                         consumeUnsupportedServiceTier(error, shouldIncludeServiceTier) -> {
                             shouldIncludeServiceTier = false
@@ -3033,12 +3064,51 @@ class BridgeThreadSyncService(
                             shouldRetryWholeRequest = true
                         }
 
-                        index < policies.lastIndex && shouldRetryWithApprovalPolicyFallback(error) -> {
-                            continue
-                        }
-
                         else -> throw error
                     }
+                }
+                if (!shouldRetryWholeRequest) {
+                    throw IllegalStateException("$method failed without a concrete transport error.")
+                }
+                continue
+            }
+            val baseParams = buildBaseParams(
+                shouldIncludeServiceTier,
+                shouldIncludePersistExtendedHistory,
+            )
+            val sandboxAttempts = sandboxFallbackParams(baseParams, accessMode)
+            for ((sandboxIndex, sandboxParams) in sandboxAttempts.withIndex()) {
+                for ((policyIndex, policy) in policies.withIndex()) {
+                    val params = JsonObject(sandboxParams + ("approvalPolicy" to JsonPrimitive(policy)))
+                    try {
+                        return secureConnectionCoordinator.sendRequest(method = method, params = params)
+                    } catch (error: Throwable) {
+                        lastError = error
+                        when {
+                            consumeUnsupportedServiceTier(error, shouldIncludeServiceTier) -> {
+                                shouldIncludeServiceTier = false
+                                shouldRetryWholeRequest = true
+                            }
+
+                            consumeUnsupportedPersistExtendedHistory(error, shouldIncludePersistExtendedHistory) -> {
+                                shouldIncludePersistExtendedHistory = false
+                                shouldRetryWholeRequest = true
+                            }
+
+                            policyIndex < policies.lastIndex && shouldRetryWithApprovalPolicyFallback(error) -> {
+                                continue
+                            }
+
+                            sandboxIndex < sandboxAttempts.lastIndex && shouldRetryWithSandboxPolicyFallback(error) -> {
+                                break
+                            }
+
+                            else -> throw error
+                        }
+                        break
+                    }
+                }
+                if (shouldRetryWholeRequest) {
                     break
                 }
             }
@@ -3050,6 +3120,46 @@ class BridgeThreadSyncService(
 
     private fun shouldIncludeServiceTier(serviceTier: RemodexServiceTier?): Boolean {
         return supportsServiceTier && serviceTier != null
+    }
+
+    private fun sandboxFallbackParams(
+        baseParams: JsonObject,
+        accessMode: RemodexAccessMode,
+    ): List<JsonObject> {
+        val sandboxLegacyValue = accessMode.sandboxLegacyValue ?: return listOf(baseParams)
+        return listOf(
+            JsonObject(baseParams + ("sandboxPolicy" to runtimeSandboxPolicyObject(accessMode))),
+            JsonObject(baseParams + ("sandbox" to JsonPrimitive(sandboxLegacyValue))),
+            baseParams,
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun runtimeSandboxPolicyObject(accessMode: RemodexAccessMode): JsonObject {
+        return when (accessMode.canonical) {
+            RemodexAccessMode.DEFAULT_PERMISSION -> buildJsonObject {
+                put("type", JsonPrimitive("readOnly"))
+            }
+
+            RemodexAccessMode.AUTO_REVIEW -> buildJsonObject {
+                put("type", JsonPrimitive("workspaceWrite"))
+                put("networkAccess", JsonPrimitive(true))
+            }
+
+            RemodexAccessMode.FULL_ACCESS -> buildJsonObject {
+                put("type", JsonPrimitive("dangerFullAccess"))
+            }
+
+            RemodexAccessMode.CUSTOM_CONFIG -> buildJsonObject {}
+            RemodexAccessMode.ON_REQUEST -> buildJsonObject {
+                put("type", JsonPrimitive("workspaceWrite"))
+                put("networkAccess", JsonPrimitive(true))
+            }
+        }
+    }
+
+    private fun shouldRetryWithSandboxPolicyFallback(error: Throwable): Boolean {
+        return shouldRetryWithApprovalPolicyFallbackValue(error)
     }
 
     private fun consumeUnsupportedPersistExtendedHistory(
@@ -3232,24 +3342,24 @@ class BridgeThreadSyncService(
 
     private fun serviceTierBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
-            title = "Update Remodex on your Mac to use Speed controls",
-            message = "This Mac bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
+            title = "Update Remodex on your computer to use Speed controls",
+            message = "This bridge does not support the selected speed setting yet. Update the Remodex npm package to use Fast Mode and other speed controls.",
             command = remodexBridgeUpdateCommand,
         )
     }
 
     private fun threadForkBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
-            title = "Update Remodex on your Mac to use /fork",
-            message = "This Mac bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
+            title = "Update Remodex on your computer to use /fork",
+            message = "This bridge does not support native conversation forks yet. Update the Remodex npm package to use /fork and worktree fork flows.",
             command = remodexBridgeUpdateCommand,
         )
     }
 
     private fun managedWorktreeBridgeUpdatePrompt(): RemodexBridgeUpdatePrompt {
         return RemodexBridgeUpdatePrompt(
-            title = "Update Remodex on your Mac to use worktree chats",
-            message = "This Mac bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
+            title = "Update Remodex on your computer to use worktree chats",
+            message = "This bridge does not support managed worktree chat creation yet. Update the Remodex npm package to start chats directly in detached worktrees.",
             command = remodexBridgeUpdateCommand,
         )
     }
@@ -4211,7 +4321,7 @@ class BridgeThreadSyncService(
             requestedPermissions = decodeRequestedPermissions(paramsObject),
             params = params,
         )
-        if (approvalAccessMode(threadId = request.threadId) == RemodexAccessMode.FULL_ACCESS) {
+        if (approvalAccessMode(threadId = request.threadId).autoApprovesRuntimeRequests) {
             try {
                 val result = if (request.kind == RemodexApprovalKind.PERMISSIONS) {
                     buildPermissionsApprovalResponse(
@@ -5613,13 +5723,13 @@ class BridgeThreadSyncService(
 
     private fun approvalAccessMode(threadId: String?): RemodexAccessMode {
         if (threadId == null) {
-            return RemodexAccessMode.ON_REQUEST
+            return RemodexAccessMode.AUTO_REVIEW
         }
         return backingThreads.value
             .firstOrNull { snapshot -> snapshot.id == threadId }
             ?.runtimeConfig
             ?.accessMode
-            ?: RemodexAccessMode.ON_REQUEST
+            ?: RemodexAccessMode.AUTO_REVIEW
     }
 
     private fun appendSystemTextDelta(

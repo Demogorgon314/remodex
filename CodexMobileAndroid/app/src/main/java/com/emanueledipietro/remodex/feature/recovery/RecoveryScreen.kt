@@ -39,6 +39,7 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionState
 import com.emanueledipietro.remodex.data.connection.statusLabel
 import com.emanueledipietro.remodex.data.connection.validatePairingQrCode
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 
 @Composable
@@ -100,12 +101,15 @@ fun RecoveryScreen(
                     cornerRadius = 22.dp,
                 )
                 Text(
-                    text = "QR pairing stays in the loop",
+                    text = remodexLocalizedText("QR 配对仍然可用", "QR pairing stays in the loop"),
                     style = MaterialTheme.typography.headlineSmall,
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    text = "Android keeps recovery explicit so a stale trusted session never leaves you stranded.",
+                    text = remodexLocalizedText(
+                        "Android 会保留显式恢复入口, 避免过期的可信 session 让你卡住.",
+                        "Android keeps recovery explicit so a stale trusted session never leaves you stranded.",
+                    ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth(),
@@ -158,11 +162,14 @@ fun RecoveryScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        text = "Scan pairing QR",
+                        text = remodexLocalizedText("扫描配对 QR", "Scan pairing QR"),
                         style = MaterialTheme.typography.titleLarge,
                     )
                     Text(
-                        text = "Point the camera at the QR printed by remodex up. The Android client validates the payload before it tries any secure bootstrap.",
+                        text = remodexLocalizedText(
+                            "将摄像头对准 remodex up 打印出的 QR code. Android 客户端会先校验内容, 再开始安全 bootstrap.",
+                            "Point the camera at the QR printed by remodex up. The Android client validates the payload before it tries any secure bootstrap.",
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -199,9 +206,9 @@ fun RecoveryScreen(
 
         scanError?.let { message ->
             RecoveryStatusCard(
-                title = "Pairing QR rejected",
+                title = remodexLocalizedText("配对 QR 被拒绝", "Pairing QR rejected"),
                 body = message,
-                actionLabel = "Scan a different QR",
+                actionLabel = remodexLocalizedText("扫描其他 QR", "Scan a different QR"),
                 onAction = {
                     scanError = null
                     requestScanner()
@@ -213,14 +220,14 @@ fun RecoveryScreen(
             val body = buildString {
                 append(prompt.message)
                 prompt.command?.trim()?.takeIf(String::isNotEmpty)?.let { command ->
-                    append("\n\nRun: ")
+                    append(remodexLocalizedText("\n\n运行: ", "\n\nRun: "))
                     append(command)
                 }
             }
             RecoveryStatusCard(
                 title = prompt.title,
                 body = body,
-                actionLabel = "Scan again after updating",
+                actionLabel = remodexLocalizedText("更新后重新扫描", "Scan again after updating"),
                 onAction = {
                     bridgeUpdatePrompt = null
                     requestScanner()
@@ -239,15 +246,15 @@ private fun RecoveryConnectionCard(
     val body = buildString {
         append(recoveryState.phaseMessage)
         recoveryState.macDeviceId?.let { macDeviceId ->
-            append("\n\nMac: ")
+            append(remodexLocalizedText("\n\n电脑: ", "\n\nComputer: "))
             append(macDeviceId)
         }
         recoveryState.macFingerprint?.let { fingerprint ->
-            append("\nFingerprint: ")
+            append(remodexLocalizedText("\n指纹: ", "\nFingerprint: "))
             append(fingerprint)
         }
         recoveryState.bridgeUpdateCommand?.let { command ->
-            append("\n\nUpdate command: ")
+            append(remodexLocalizedText("\n\n更新命令: ", "\n\nUpdate command: "))
             append(command)
         }
     }
@@ -255,11 +262,14 @@ private fun RecoveryConnectionCard(
         SecureConnectionState.TRUSTED_MAC,
         SecureConnectionState.LIVE_SESSION_UNRESOLVED,
         SecureConnectionState.RECONNECTING,
-        SecureConnectionState.HANDSHAKING -> "Retry trusted reconnect" to onRetryConnection
+        SecureConnectionState.HANDSHAKING -> remodexLocalizedText(
+            "重试可信重连",
+            "Retry trusted reconnect",
+        ) to onRetryConnection
 
         SecureConnectionState.NOT_PAIRED,
         SecureConnectionState.REPAIR_REQUIRED,
-        SecureConnectionState.UPDATE_REQUIRED -> "Open QR scanner" to onOpenScanner
+        SecureConnectionState.UPDATE_REQUIRED -> remodexLocalizedText("打开 QR 扫描", "Open QR scanner") to onOpenScanner
 
         SecureConnectionState.ENCRYPTED -> null
     }
@@ -301,14 +311,17 @@ private fun RecoveryChecklistCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "1. Run remodex up on your Mac.\n2. Keep the pairing QR visible.\n3. Retry trusted reconnect here or rescan when the secure session has rotated.",
+                text = remodexLocalizedText(
+                    "1. 在电脑上运行 remodex up.\n2. 保持配对 QR code 可见.\n3. 在这里重试可信重连, 如果安全 session 已轮换就重新扫描.",
+                    "1. Run remodex up on your computer.\n2. Keep the pairing QR visible.\n3. Retry trusted reconnect here or rescan when the secure session has rotated.",
+                ),
                 style = MaterialTheme.typography.bodyMedium,
             )
             Button(onClick = onRetryConnection) {
-                Text("Retry trusted reconnect")
+                Text(remodexLocalizedText("重试可信重连", "Retry trusted reconnect"))
             }
             Button(onClick = onOpenScanner) {
-                Text("Open QR scanner")
+                Text(remodexLocalizedText("打开 QR 扫描", "Open QR scanner"))
             }
         }
     }
@@ -332,19 +345,22 @@ private fun CameraPermissionCard(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                text = "Camera access is off",
+                text = remodexLocalizedText("相机权限未开启", "Camera access is off"),
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                text = "Android only asks for camera permission when you open the scanner. Grant access to scan a fresh pairing QR, or open system settings if permission was denied earlier.",
+                text = remodexLocalizedText(
+                    "Android 只会在打开扫描器时请求相机权限. 授权后即可扫描新的配对 QR code. 如果之前已拒绝, 请打开系统设置.",
+                    "Android only asks for camera permission when you open the scanner. Grant access to scan a fresh pairing QR, or open system settings if permission was denied earlier.",
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Button(onClick = onRetry) {
-                Text("Try camera permission again")
+                Text(remodexLocalizedText("重新请求相机权限", "Try camera permission again"))
             }
             Button(onClick = onOpenSettings) {
-                Text("Open app settings")
+                Text(remodexLocalizedText("打开应用设置", "Open app settings"))
             }
         }
     }

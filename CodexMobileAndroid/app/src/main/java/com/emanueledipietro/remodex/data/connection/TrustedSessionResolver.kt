@@ -29,7 +29,7 @@ class OkHttpTrustedSessionResolver(
         val resolveUrl = trustedSessionResolveUrl(relayUrl)
             ?: throw TrustedSessionResolveException(
                 code = "invalid_relay_url",
-                message = "The trusted Mac relay URL is invalid.",
+                message = "The trusted computer relay URL is invalid.",
             )
 
         val httpRequest = Request.Builder()
@@ -58,7 +58,7 @@ class OkHttpTrustedSessionResolver(
                 code = relayError?.code ?: "network_error",
                 message = relayError?.error
                     ?: relayError?.code
-                    ?: "The trusted Mac relay could not resolve the current bridge session.",
+                    ?: "The trusted computer relay could not resolve the current bridge session.",
             )
         }
     }

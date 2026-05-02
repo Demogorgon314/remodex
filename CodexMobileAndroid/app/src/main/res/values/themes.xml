@@ -7,7 +7,7 @@
         <item name="postSplashScreenTheme">@style/Theme.Remodex</item>
     </style>
 
-    <style name="Theme.Remodex" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.Remodex" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="android:windowBackground">@color/remodex_window_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

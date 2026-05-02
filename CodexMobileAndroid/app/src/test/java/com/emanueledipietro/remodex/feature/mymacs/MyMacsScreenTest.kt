@@ -29,7 +29,7 @@ class MyMacsScreenTest {
     @Test
     fun `current mac label reflects offline selected profile`() {
         assertEquals(
-            "Selected",
+            "已选择",
             currentMacConnectionLabel(
                 bridgeProfile(
                     profileId = "profile-active",

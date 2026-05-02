@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.emanueledipietro.remodex.R
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.ui.RemodexBrandMark
 import kotlinx.coroutines.launch
 
@@ -77,32 +78,32 @@ private val onboardingFeatures = listOf(
     OnboardingFeature(
         icon = Icons.Outlined.Bolt,
         accent = Color(0xFFFFD54F),
-        title = "Fast mode",
-        subtitle = "Lower-latency turns for quick interactions",
+        title = remodexLocalizedText("Fast 模式", "Fast mode"),
+        subtitle = remodexLocalizedText("让快速交互拥有更低延迟", "Lower-latency turns for quick interactions"),
     ),
     OnboardingFeature(
         icon = Icons.Outlined.AccountTree,
         accent = Color(0xFF7BD88F),
-        title = "Git from your phone",
-        subtitle = "Commit, push, pull, and switch branches",
+        title = remodexLocalizedText("手机上操作 Git", "Git from your phone"),
+        subtitle = remodexLocalizedText("提交, 推送, 拉取, 切换分支", "Commit, push, pull, and switch branches"),
     ),
     OnboardingFeature(
         icon = Icons.Outlined.Lock,
         accent = Color(0xFF6EE7F2),
-        title = "End-to-end encrypted",
-        subtitle = "The relay never sees your prompts or code",
+        title = remodexLocalizedText("端到端加密", "End-to-end encrypted"),
+        subtitle = remodexLocalizedText("relay 看不到你的 prompt 或代码", "The relay never sees your prompts or code"),
     ),
     OnboardingFeature(
         icon = Icons.Outlined.Waves,
         accent = Color(0xFFC4B5FD),
-        title = "Voice mode",
-        subtitle = "Talk to Codex with speech-to-text",
+        title = remodexLocalizedText("语音模式", "Voice mode"),
+        subtitle = remodexLocalizedText("用语音转文字和 Codex 对话", "Talk to Codex with speech-to-text"),
     ),
     OnboardingFeature(
         icon = Icons.Outlined.AccountTree,
         accent = Color(0xFFFFB86B),
-        title = "Subagents, skills and /commands",
-        subtitle = "Spawn and monitor parallel agents from your phone",
+        title = remodexLocalizedText("Subagents, skills 和 /commands", "Subagents, skills and /commands"),
+        subtitle = remodexLocalizedText("在手机上创建并查看并行 agents", "Spawn and monitor parallel agents from your phone"),
     ),
 )
 
@@ -110,22 +111,31 @@ private val onboardingSteps = listOf(
     OnboardingStep(
         stepNumber = 1,
         icon = Icons.Outlined.Terminal,
-        title = "Install Codex CLI",
-        description = "The AI coding agent that lives in your terminal. Remodex connects to it from your Android phone.",
+        title = remodexLocalizedText("安装 Codex CLI", "Install Codex CLI"),
+        description = remodexLocalizedText(
+            "运行在终端里的 AI coding agent. Remodex 会从 Android 手机连接到它.",
+            "The AI coding agent that lives in your terminal. Remodex connects to it from your Android phone.",
+        ),
         command = "npm install -g @openai/codex@latest",
     ),
     OnboardingStep(
         stepNumber = 2,
         icon = Icons.Outlined.Link,
-        title = "Install the Bridge",
-        description = "A lightweight relay that securely connects your Mac to your Android phone.",
+        title = remodexLocalizedText("安装 Bridge", "Install the Bridge"),
+        description = remodexLocalizedText(
+            "用于安全连接电脑和 Android 手机的轻量 bridge.",
+            "A lightweight relay that securely connects your computer to your Android phone.",
+        ),
         command = remodexBridgeUpdateCommand,
     ),
     OnboardingStep(
         stepNumber = 3,
         icon = Icons.Outlined.QrCodeScanner,
-        title = "Start Pairing",
-        description = "Run this on your Mac. A QR code will appear in your terminal, and you will scan it next.",
+        title = remodexLocalizedText("开始配对", "Start Pairing"),
+        description = remodexLocalizedText(
+            "在电脑上运行这条命令. 终端会显示 QR code, 下一步用手机扫描.",
+            "Run this on your computer. A QR code will appear in your terminal, and you will scan it next.",
+        ),
         command = "remodex up",
     ),
 )
@@ -207,7 +217,7 @@ fun OnboardingScreen(
                 onDismissRequest = { showCodexInstallReminder = false },
                 dismissButton = {
                     TextButton(onClick = { showCodexInstallReminder = false }) {
-                        Text("Stay Here")
+                        Text(remodexLocalizedText("留在这里", "Stay Here"))
                     }
                 },
                 confirmButton = {
@@ -217,16 +227,18 @@ fun OnboardingScreen(
                             advanceToNextPage()
                         },
                     ) {
-                        Text("Continue Anyway")
+                        Text(remodexLocalizedText("仍然继续", "Continue Anyway"))
                     }
                 },
                 title = {
-                    Text("Install Codex CLI First")
+                    Text(remodexLocalizedText("先安装 Codex CLI", "Install Codex CLI First"))
                 },
                 text = {
                     Text(
-                        "Copy and paste \"$CodexInstallCommand\" on your Mac before moving on. " +
-                            "Remodex will not work until Codex CLI is installed and available in your PATH.",
+                        remodexLocalizedText(
+                            "继续之前, 请先在电脑上复制并执行 \"$CodexInstallCommand\". Codex CLI 安装并出现在 PATH 后, Remodex 才能正常工作.",
+                            "Copy and paste \"$CodexInstallCommand\" on your computer before moving on. Remodex will not work until Codex CLI is installed and available in your PATH.",
+                        ),
                     )
                 },
             )
@@ -361,7 +373,10 @@ private fun OnboardingWelcomePage() {
                     color = Color.White,
                 )
                 Text(
-                    text = "Control Codex from your Android phone.",
+                    text = remodexLocalizedText(
+                        "用 Android 手机控制 Codex.",
+                        "Control Codex from your Android phone.",
+                    ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color.White.copy(alpha = 0.56f),
                     textAlign = TextAlign.Center,
@@ -379,7 +394,7 @@ private fun OnboardingWelcomePage() {
                     tint = Color.White.copy(alpha = 0.58f),
                 )
                 Text(
-                    text = "End-to-end encrypted",
+                    text = remodexLocalizedText("端到端加密", "End-to-end encrypted"),
                     style = MaterialTheme.typography.labelMedium,
                     color = Color.White.copy(alpha = 0.58f),
                 )
@@ -409,13 +424,16 @@ private fun OnboardingFeaturesPage() {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = "What you get",
+                    text = remodexLocalizedText("你可以做什么", "What you get"),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
                 )
                 Text(
-                    text = "Everything runs on your Mac.\nYour phone is the remote.",
+                    text = remodexLocalizedText(
+                        "所有执行都在电脑上完成.\n手机只是遥控器.",
+                        "Everything runs on your computer.\nYour phone is the remote.",
+                    ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color.White.copy(alpha = 0.45f),
                     textAlign = TextAlign.Center,
@@ -566,7 +584,7 @@ private fun OnboardingStepPage(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        text = "STEP ${step.stepNumber}",
+                    text = remodexLocalizedText("第 ${step.stepNumber} 步", "STEP ${step.stepNumber}"),
                         style = MaterialTheme.typography.labelSmall,
                         color = accent.copy(alpha = 0.72f),
                     )
@@ -619,9 +637,9 @@ private fun OnboardingCommandCard(
 
 private fun onboardingButtonTitle(currentPage: Int): String {
     return when (currentPage) {
-        0 -> "Get Started"
-        1 -> "Set Up"
-        OnboardingPageCount - 1 -> "Scan QR Code"
-        else -> "Continue"
+        0 -> remodexLocalizedText("开始使用", "Get Started")
+        1 -> remodexLocalizedText("开始设置", "Set Up")
+        OnboardingPageCount - 1 -> remodexLocalizedText("扫描 QR code", "Scan QR Code")
+        else -> remodexLocalizedText("继续", "Continue")
     }
 }

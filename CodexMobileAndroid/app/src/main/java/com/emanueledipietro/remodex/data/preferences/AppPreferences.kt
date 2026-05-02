@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.preferences
 
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
@@ -16,6 +17,7 @@ data class AppPreferences(
     val runtimeOverridesByThread: Map<String, RemodexRuntimeOverrides> = emptyMap(),
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
+    val appLanguage: RemodexAppLanguage = RemodexAppLanguage.SYSTEM,
     val appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     val macNicknamesByDeviceId: Map<String, String> = emptyMap(),
 )

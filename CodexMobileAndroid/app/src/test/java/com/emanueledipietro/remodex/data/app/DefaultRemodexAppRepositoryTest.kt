@@ -26,6 +26,7 @@ import com.emanueledipietro.remodex.data.threads.ThreadCommandService
 import com.emanueledipietro.remodex.data.voice.RemodexVoiceTranscriptionService
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
@@ -2874,7 +2875,7 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
         repository.setDefaultModelId("gpt-5.3-codex")
         repository.setDefaultReasoningEffort("medium")
-        repository.setDefaultAccessMode(RemodexAccessMode.ON_REQUEST)
+        repository.setDefaultAccessMode(RemodexAccessMode.AUTO_REVIEW)
         repository.setPlanningMode("thread-notifications", RemodexPlanningMode.PLAN)
         advanceUntilIdle()
 
@@ -2909,7 +2910,7 @@ class DefaultRemodexAppRepositoryTest {
         )
         assertEquals("gpt-5.3-codex", selectedThread?.runtimeConfig?.selectedModelId)
         assertEquals("medium", selectedThread?.runtimeConfig?.reasoningEffort)
-        assertEquals(RemodexAccessMode.ON_REQUEST, selectedThread?.runtimeConfig?.accessMode)
+        assertEquals(RemodexAccessMode.AUTO_REVIEW, selectedThread?.runtimeConfig?.accessMode)
         assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
         assertEquals(
             RemodexThreadSyncState.ARCHIVED_LOCAL,
@@ -3011,14 +3012,14 @@ class DefaultRemodexAppRepositoryTest {
         repository.setSelectedModelId("gpt-5.4")
         repository.setReasoningEffort("thread-notifications", "low")
         repository.setServiceTier("thread-notifications", null)
-        repository.setAccessMode("thread-notifications", RemodexAccessMode.ON_REQUEST)
+        repository.setAccessMode("thread-notifications", RemodexAccessMode.AUTO_REVIEW)
         advanceUntilIdle()
 
         val selectedThread = repository.session.value.selectedThread
         assertEquals("gpt-5.4", selectedThread?.runtimeConfig?.selectedModelId)
         assertEquals(RemodexPlanningMode.PLAN, selectedThread?.runtimeConfig?.planningMode)
         assertEquals("low", selectedThread?.runtimeConfig?.reasoningEffort)
-        assertEquals(RemodexAccessMode.ON_REQUEST, selectedThread?.runtimeConfig?.accessMode)
+        assertEquals(RemodexAccessMode.AUTO_REVIEW, selectedThread?.runtimeConfig?.accessMode)
         assertEquals("gpt-5.4, Plan, low reasoning", selectedThread?.runtimeLabel)
     }
 
@@ -3208,6 +3209,10 @@ class DefaultRemodexAppRepositoryTest {
 
         override suspend fun setAppearanceMode(mode: RemodexAppearanceMode) {
             backingState.value = backingState.value.copy(appearanceMode = mode)
+        }
+
+        override suspend fun setAppLanguage(language: RemodexAppLanguage) {
+            backingState.value = backingState.value.copy(appLanguage = language)
         }
 
         override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {

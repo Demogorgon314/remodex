@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
@@ -38,6 +39,7 @@ private val RuntimeOverridesByProfileJsonKey = stringPreferencesKey("runtime_ove
 private val RuntimeDefaultsJsonKey = stringPreferencesKey("runtime_defaults_json")
 private val RuntimeDefaultsByProfileJsonKey = stringPreferencesKey("runtime_defaults_by_profile_json")
 private val AppearanceModeKey = stringPreferencesKey("appearance_mode")
+private val AppLanguageKey = stringPreferencesKey("app_language")
 private val AppFontStyleKey = stringPreferencesKey("app_font_style")
 private val MacNicknamesJsonKey = stringPreferencesKey("mac_nicknames_json")
 private val Context.remodexDataStore by preferencesDataStore(name = RemodexPreferencesName)
@@ -242,6 +244,12 @@ class DataStoreAppPreferencesRepository(
         }
     }
 
+    override suspend fun setAppLanguage(language: RemodexAppLanguage) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            preferences[AppLanguageKey] = language.name
+        }
+    }
+
     override suspend fun setAppFontStyle(style: RemodexAppFontStyle) {
         context.remodexDataStore.edit { preferences: MutablePreferences ->
             preferences[AppFontStyleKey] = style.name
@@ -366,6 +374,9 @@ class DataStoreAppPreferencesRepository(
             appearanceMode = preferences[AppearanceModeKey]
                 ?.let(RemodexAppearanceMode::valueOf)
                 ?: RemodexAppearanceMode.SYSTEM,
+            appLanguage = preferences[AppLanguageKey]
+                ?.let(RemodexAppLanguage::valueOf)
+                ?: RemodexAppLanguage.SYSTEM,
             appFontStyle = preferences[AppFontStyleKey]
                 ?.let(RemodexAppFontStyle::valueOf)
                 ?: RemodexAppFontStyle.SYSTEM,

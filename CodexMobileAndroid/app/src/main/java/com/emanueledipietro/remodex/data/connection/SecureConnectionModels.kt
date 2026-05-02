@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.connection
 
 import kotlinx.serialization.Serializable
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 
 const val remodexSecureProtocolVersion = 1
 const val remodexSecureHandshakeTag = "remodex-e2ee-v1"
@@ -27,14 +28,17 @@ enum class SecureConnectionState {
 
 val SecureConnectionState.statusLabel: String
     get() = when (this) {
-        SecureConnectionState.NOT_PAIRED -> "Not paired"
-        SecureConnectionState.TRUSTED_MAC -> "Trusted Mac"
-        SecureConnectionState.LIVE_SESSION_UNRESOLVED -> "Trusted Mac ready"
-        SecureConnectionState.HANDSHAKING -> "Secure handshake in progress"
-        SecureConnectionState.ENCRYPTED -> "End-to-end encrypted"
-        SecureConnectionState.RECONNECTING -> "Reconnecting securely"
-        SecureConnectionState.REPAIR_REQUIRED -> "Re-pair required"
-        SecureConnectionState.UPDATE_REQUIRED -> "Update required"
+        SecureConnectionState.NOT_PAIRED -> remodexLocalizedText("未配对", "Not paired")
+        SecureConnectionState.TRUSTED_MAC -> remodexLocalizedText("已信任电脑", "Trusted computer")
+        SecureConnectionState.LIVE_SESSION_UNRESOLVED -> remodexLocalizedText(
+            "已信任电脑就绪",
+            "Trusted computer ready",
+        )
+        SecureConnectionState.HANDSHAKING -> remodexLocalizedText("正在安全握手", "Secure handshake")
+        SecureConnectionState.ENCRYPTED -> remodexLocalizedText("端到端加密", "End-to-end encrypted")
+        SecureConnectionState.RECONNECTING -> remodexLocalizedText("正在安全重连", "Secure reconnecting")
+        SecureConnectionState.REPAIR_REQUIRED -> remodexLocalizedText("需要重新配对", "Repair required")
+        SecureConnectionState.UPDATE_REQUIRED -> remodexLocalizedText("需要更新", "Update required")
     }
 
 @Serializable
@@ -227,7 +231,10 @@ class TrustedSessionResolveException(
 ) : Exception(message)
 
 data class SecureConnectionSnapshot(
-    val phaseMessage: String = "Run remodex up on your Mac, then scan a pairing QR to trust this Android device.",
+    val phaseMessage: String = remodexLocalizedText(
+        "在电脑上运行 remodex up, 然后扫描配对 QR 来信任这台 Android 设备.",
+        "Run remodex up on your computer, then scan the pairing QR to trust this Android device.",
+    ),
     val secureState: SecureConnectionState = SecureConnectionState.NOT_PAIRED,
     val activeProfileId: String? = null,
     val relayUrl: String? = null,

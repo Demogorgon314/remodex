@@ -144,6 +144,7 @@ import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
 import com.emanueledipietro.remodex.model.remodexApprovalRequestMessage
+import com.emanueledipietro.remodex.model.remodexLocalizedText
 import com.emanueledipietro.remodex.platform.media.ComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.canLaunchComposerCameraCapture
 import com.emanueledipietro.remodex.platform.media.createComposerCameraCapture
@@ -163,7 +164,7 @@ internal enum class ShellRoute(val title: String) {
     SETTINGS("Settings"),
     ABOUT_REMODEX("About Remodex"),
     ARCHIVED_CHATS("Archived Chats"),
-    MY_MACS("My Macs"),
+    MY_MACS("My Computers"),
 }
 
 internal enum class ShellBackAction {
@@ -1218,6 +1219,7 @@ private fun MainPane(
                         uiState = uiState,
                         notificationPermissionUiState = notificationPermissionUiState,
                         onNotificationAction = onNotificationAction,
+                        onSelectAppLanguage = viewModel::setAppLanguage,
                         onSelectAppFontStyle = viewModel::setAppFontStyle,
                         onSelectDefaultModelId = viewModel::setDefaultModelId,
                         onSelectDefaultReasoningEffort = viewModel::setDefaultReasoningEffort,
@@ -1422,7 +1424,7 @@ private fun BridgeUpdateDialogBody(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        text = "Run this on your Mac",
+                        text = remodexLocalizedText("在电脑上运行此命令", "Run this command on your computer"),
                         style = MaterialTheme.typography.labelMedium,
                         color = chrome.secondaryText,
                     )
@@ -1439,13 +1441,19 @@ private fun BridgeUpdateDialogBody(
                 }
             }
             Text(
-                text = "After the package updates, restart the bridge on your Mac and come back here.",
+                text = remodexLocalizedText(
+                    "更新 package 后, 重启电脑上的 bridge, 然后回到这里.",
+                    "After updating the package, restart the bridge on your computer, then come back here.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
         } else {
             Text(
-                text = "Install the latest Remodex build on this Android phone, then reconnect to the Mac bridge.",
+                text = remodexLocalizedText(
+                    "在这台 Android 手机上安装最新版 Remodex, 然后重新连接电脑 bridge.",
+                    "Install the latest Remodex on this Android phone, then reconnect to the computer bridge.",
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = chrome.secondaryText,
             )
@@ -1658,7 +1666,7 @@ private fun ShellTopBar(
         ShellRoute.SETTINGS -> shellRoute.title
         ShellRoute.ABOUT_REMODEX -> shellRoute.title
         ShellRoute.ARCHIVED_CHATS -> shellRoute.title
-        ShellRoute.MY_MACS -> shellRoute.title
+        ShellRoute.MY_MACS -> remodexLocalizedText("我的电脑", shellRoute.title)
     }
     val subtitleProjectPath = when (shellRoute) {
         ShellRoute.CONTENT -> {

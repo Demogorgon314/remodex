@@ -4,6 +4,7 @@ import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexConnectionStatus
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
+import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
@@ -22,6 +23,7 @@ data class RemodexSessionSnapshot(
     val runtimeDefaults: RemodexRuntimeDefaults = RemodexRuntimeDefaults(),
     val availableModels: List<RemodexModelOption> = emptyList(),
     val appearanceMode: RemodexAppearanceMode = RemodexAppearanceMode.SYSTEM,
+    val appLanguage: RemodexAppLanguage = RemodexAppLanguage.SYSTEM,
     val appFontStyle: RemodexAppFontStyle = RemodexAppFontStyle.SYSTEM,
     val trustedMac: RemodexTrustedMacPresentation? = null,
     val bridgeProfiles: List<RemodexBridgeProfilePresentation> = emptyList(),

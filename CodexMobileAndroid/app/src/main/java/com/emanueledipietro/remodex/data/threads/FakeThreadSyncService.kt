@@ -344,9 +344,9 @@ class FakeThreadSyncService(
                                 turnId = turnId,
                                 itemId = "tool-activity-$turnId",
                                 line = if (attachments.isEmpty()) {
-                                    "Streaming the local-first turn to the paired Mac bridge."
+                                    "Streaming the local-first turn to the paired computer bridge."
                                 } else {
-                                    "Streaming the local-first turn plus ${attachments.size} attachment(s) to the paired Mac bridge."
+                                    "Streaming the local-first turn plus ${attachments.size} attachment(s) to the paired computer bridge."
                                 },
                                 orderIndex = nextOrderIndex + 1,
                             ),
@@ -1061,7 +1061,7 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                 selectedModelId = "gpt-5.4",
                 planningMode = com.emanueledipietro.remodex.model.RemodexPlanningMode.PLAN,
                 reasoningEffort = "medium",
-                accessMode = RemodexAccessMode.ON_REQUEST,
+                accessMode = RemodexAccessMode.AUTO_REVIEW,
             ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(
@@ -1115,7 +1115,7 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                 availableModels = availableModels,
                 selectedModelId = "gpt-5.4",
                 reasoningEffort = "low",
-                accessMode = RemodexAccessMode.ON_REQUEST,
+                accessMode = RemodexAccessMode.AUTO_REVIEW,
             ).normalizeSelections(),
             timelineMutations = listOf(
                 TimelineMutation.Upsert(
@@ -1123,7 +1123,7 @@ private fun seededThreadSnapshots(): List<ThreadSyncSnapshot> {
                         id = "reconnect-system-1",
                         speaker = ConversationSpeaker.SYSTEM,
                         kind = ConversationItemKind.COMMAND_EXECUTION,
-                        text = "Saved pairing is available for this Mac.",
+                        text = "Saved pairing is available for this computer.",
                         supportingText = "Recovery stays visible until trust is valid again.",
                         orderIndex = 0,
                     ),
