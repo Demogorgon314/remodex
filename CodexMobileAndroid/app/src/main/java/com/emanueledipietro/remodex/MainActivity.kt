@@ -3,10 +3,10 @@ package com.emanueledipietro.remodex
 import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
@@ -23,7 +23,7 @@ import com.emanueledipietro.remodex.ui.theme.RemodexTheme
 
 private const val PendingThreadDeepLinkStateKey = "pending_thread_deep_link_id"
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private val appContainer
         get() = (application as RemodexApplication).container
 
