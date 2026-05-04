@@ -543,7 +543,9 @@ private class ComposerMenuState(
             suppressNextTriggerToggle = false
             return
         }
-        expanded = !expanded
+        if (!expanded) {
+            expanded = true
+        }
     }
 
     fun onDismissRequest() {
@@ -8039,7 +8041,7 @@ private fun ComposerDropdownMenu(
             )
         },
         onDismissRequest = onDismissRequest,
-        properties = PopupProperties(focusable = false),
+        properties = PopupProperties(focusable = true),
     ) {
         AnimatedVisibility(
             visibleState = transitionState,
