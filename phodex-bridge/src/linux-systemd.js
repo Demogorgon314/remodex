@@ -82,6 +82,11 @@ async function startLinuxBridgeService({
   clearBridgeStatus({ env, fsImpl });
   ensureRemodexStateDir({ env, fsImpl, osImpl });
   ensureRemodexLogsDir({ env, fsImpl, osImpl });
+  ensureLinuxUserLinger({
+    env,
+    osImpl,
+    execFileSyncImpl,
+  });
 
   const unitPath = writeUserServiceUnit({
     env,
@@ -326,6 +331,48 @@ function runSystemctl(args, {
   }
 }
 
+function ensureLinuxUserLinger({
+  env = process.env,
+  osImpl = os,
+  execFileSyncImpl = execFileSync,
+} = {}) {
+  const username = resolveLoginUser({ env, osImpl });
+  if (!username) {
+    throw new Error(
+      "Could not determine the Linux user for systemd linger. "
+      + "Run `loginctl enable-linger $(whoami)` and retry `remodex up`."
+    );
+  }
+
+  try {
+    runLoginctl(["enable-linger", username], { execFileSyncImpl });
+  } catch (error) {
+    const detail = extractCommandErrorMessage(error);
+    throw new Error(
+      `Could not enable systemd linger for ${username}. `
+      + `Run \`sudo loginctl enable-linger ${username}\` and retry \`remodex up\`.`
+      + (detail ? `\n${detail}` : "")
+    );
+  }
+}
+
+function runLoginctl(args, {
+  execFileSyncImpl = execFileSync,
+  encoding = "utf8",
+} = {}) {
+  try {
+    return execFileSyncImpl("loginctl", args, {
+      encoding,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error("`loginctl` is required to make the Linux bridge service survive SSH logout.");
+    }
+    throw error;
+  }
+}
+
 function parseSystemdShowOutput(output) {
   const values = Object.create(null);
   for (const line of String(output || "").split(/\r?\n/)) {
@@ -382,6 +429,20 @@ function isMissingSystemdUnitError(error) {
     || combined.includes("not loaded");
 }
 
+function extractCommandErrorMessage(error) {
+  return [
+    error?.message,
+    error?.stderr?.toString?.("utf8"),
+    error?.stdout?.toString?.("utf8"),
+  ].filter(Boolean).join("\n").trim();
+}
+
+function resolveLoginUser({ env = process.env, osImpl = os } = {}) {
+  return normalizeNonEmptyString(env.USER)
+    || normalizeNonEmptyString(env.LOGNAME)
+    || normalizeNonEmptyString(osImpl.userInfo?.().username);
+}
+
 function assertLinuxPlatform(platform = process.platform) {
   if (platform !== "linux") {
     throw new Error("Linux bridge service management is only available on Linux.");
@@ -424,6 +485,7 @@ function sleep(ms) {
 
 module.exports = {
   buildUserServiceUnit,
+  ensureLinuxUserLinger,
   getLinuxBridgeServiceStatus,
   printLinuxBridgePairingQr,
   printLinuxBridgeServiceStatus,

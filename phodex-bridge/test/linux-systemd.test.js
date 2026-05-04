@@ -11,9 +11,11 @@ const os = require("os");
 const path = require("path");
 const {
   buildUserServiceUnit,
+  ensureLinuxUserLinger,
   getLinuxBridgeServiceStatus,
   printLinuxBridgePairingQr,
   resolveUserServiceUnitPath,
+  startLinuxBridgeService,
   stopLinuxBridgeService,
 } = require("../src/linux-systemd");
 const {
@@ -86,6 +88,52 @@ test("printLinuxBridgePairingQr prints the persisted short pairing code", () => 
 
     assert.match(output, /AB23CD34EF/);
   });
+});
+
+test("startLinuxBridgeService enables linger before starting the user service", async () => {
+  await withTempDaemonEnv(async ({ rootDir }) => {
+    const calls = [];
+
+    await startLinuxBridgeService({
+      platform: "linux",
+      env: {
+        HOME: rootDir,
+        REMODEX_DEVICE_STATE_DIR: rootDir,
+        REMODEX_RELAY: "ws://127.0.0.1:9000/relay",
+        USER: "tester",
+        PATH: "/usr/bin",
+      },
+      execFileSyncImpl(command, args) {
+        calls.push([command, args]);
+        return "";
+      },
+      osImpl: {
+        homedir: () => rootDir,
+        userInfo: () => ({ username: "fallback" }),
+      },
+    });
+
+    assert.deepEqual(calls.slice(0, 4), [
+      ["loginctl", ["enable-linger", "tester"]],
+      ["systemctl", ["--user", "daemon-reload"]],
+      ["systemctl", ["--user", "enable", "com.remodex.bridge.service"]],
+      ["systemctl", ["--user", "restart", "com.remodex.bridge.service"]],
+    ]);
+  });
+});
+
+test("ensureLinuxUserLinger reports an actionable command when loginctl fails", () => {
+  assert.throws(
+    () => ensureLinuxUserLinger({
+      env: { USER: "tester" },
+      execFileSyncImpl() {
+        const error = new Error("permission denied");
+        error.stderr = Buffer.from("Interactive authentication required.");
+        throw error;
+      },
+    }),
+    /sudo loginctl enable-linger tester/
+  );
 });
 
 test("getLinuxBridgeServiceStatus reports systemd + runtime metadata together", () => {
