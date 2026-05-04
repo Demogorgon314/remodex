@@ -1,11 +1,19 @@
 package com.emanueledipietro.remodex.feature.mymacs
 
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class MyMacsScreenTest {
+    @After
+    fun tearDown() {
+        AppCompatDelegate.setApplicationLocales(LocaleListCompat.getEmptyLocaleList())
+    }
+
     @Test
     fun `resolve current mac profile prefers active profile while offline`() {
         val activeOfflineProfile = bridgeProfile(
@@ -28,6 +36,8 @@ class MyMacsScreenTest {
 
     @Test
     fun `current mac label reflects offline selected profile`() {
+        AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("zh-CN"))
+
         assertEquals(
             "已选择",
             currentMacConnectionLabel(
