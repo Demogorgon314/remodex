@@ -268,6 +268,59 @@ class CancellingRelayWebSocketFactory : RelayWebSocketFactory {
     }
 }
 
+class ThrowingRelayWebSocketFactory(
+    private val error: RuntimeException,
+) : RelayWebSocketFactory {
+    override fun open(
+        url: String,
+        headers: Map<String, String>,
+        events: Channel<RelayWireEvent>,
+    ): RelayWebSocket {
+        throw error
+    }
+}
+
+class SecureErrorRelayWebSocketFactory(
+    private val code: String,
+    private val message: String,
+) : RelayWebSocketFactory {
+    private val json = Json {
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
+    override fun open(
+        url: String,
+        headers: Map<String, String>,
+        events: Channel<RelayWireEvent>,
+    ): RelayWebSocket {
+        events.trySend(RelayWireEvent.Opened)
+
+        return object : RelayWebSocket {
+            override fun send(text: String): Boolean {
+                events.trySend(
+                    RelayWireEvent.Message(
+                        json.encodeToString(
+                            SecureErrorMessage.serializer(),
+                            SecureErrorMessage(
+                                kind = "secureError",
+                                code = code,
+                                message = message,
+                            ),
+                        ),
+                    ),
+                )
+                return true
+            }
+
+            override fun close(code: Int, reason: String): Boolean {
+                events.close()
+                return true
+            }
+        }
+    }
+}
+
 class ScriptedRpcRelayWebSocketFactory(
     private val macDeviceId: String,
     private val macIdentity: TestMacIdentity,

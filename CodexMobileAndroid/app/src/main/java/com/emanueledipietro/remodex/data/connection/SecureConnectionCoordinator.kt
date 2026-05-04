@@ -43,6 +43,7 @@ class SecureConnectionCoordinator(
         private const val explicitRelayDropCloseCode = 4004
         private const val trustedReconnectRecoveryMessage =
             "Secure reconnect could not be restored from the saved session. Try reconnecting again."
+        private val sensitiveLogTokenRegex = Regex("""(?i)\b(sessionId|macDeviceId|profileId)=([^ ]+)""")
     }
 
     private val json = Json {
@@ -75,6 +76,15 @@ class SecureConnectionCoordinator(
     val bridgeProfiles: StateFlow<BridgeProfilesSnapshot> = bridgeProfilesState.asStateFlow()
     val notifications: Flow<RpcMessage> = notificationsChannel.receiveAsFlow()
     val requests: Flow<RpcMessage> = requestsChannel.receiveAsFlow()
+
+    init {
+        logConnection(
+            event = "initialized",
+            extra = "activeProfileId=${pairingState?.profileId.orEmpty()} macDeviceId=${pairingState?.macDeviceId.orEmpty()} "
+                + "hasPairing=${pairingState != null} trustedMacCount=${trustedMacRegistry.records.size} "
+                + "relayProfileCount=${relayProfileRegistry.profiles.size}",
+        )
+    }
 
     suspend fun sendRequest(
         method: String,
@@ -350,9 +360,21 @@ class SecureConnectionCoordinator(
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            val hasSavedTrustedMac = trustedMacRegistry.records[currentPairingState.macDeviceId] != null
+            autoReconnectAllowed = hasSavedTrustedMac
+            logConnection(
+                event = "retryConnectionUnexpectedError",
+                extra = "errorType=${error::class.java.simpleName} hasSavedTrustedMac=$hasSavedTrustedMac "
+                    + "nextSecureState=${if (hasSavedTrustedMac) SecureConnectionState.TRUSTED_MAC else SecureConnectionState.REPAIR_REQUIRED} "
+                    + "macDeviceId=${currentPairingState.macDeviceId} message=${error.message.orEmpty()}",
+            )
             updateState(
                 phaseMessage = error.message ?: "The secure Android connection failed before the bridge finished the handshake.",
-                secureState = SecureConnectionState.REPAIR_REQUIRED,
+                secureState = if (hasSavedTrustedMac) {
+                    SecureConnectionState.TRUSTED_MAC
+                } else {
+                    SecureConnectionState.REPAIR_REQUIRED
+                },
                 relayUrl = currentPairingState.relayUrl,
                 macDeviceId = currentPairingState.macDeviceId,
                 macFingerprint = SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
@@ -368,11 +390,11 @@ class SecureConnectionCoordinator(
         return try {
             resolveTrustedSession(currentPairingState, trustedMac)
         } catch (error: TrustedSessionResolveException) {
-            if (error.code == "session_unavailable" && currentPairingState.sessionId.isNotBlank()) {
+            if (shouldFallbackToSavedSessionAfterResolveError(error, currentPairingState, trustedMac)) {
                 autoReconnectAllowed = true
                 logConnection(
                     event = "trustedSessionResolveFallbackToSaved",
-                    extra = "macDeviceId=${currentPairingState.macDeviceId}",
+                    extra = "code=${error.code} macDeviceId=${currentPairingState.macDeviceId}",
                 )
                 updateState(
                     phaseMessage = "Trusted session lookup is temporarily unavailable. Trying the saved relay session.",
@@ -387,6 +409,29 @@ class SecureConnectionCoordinator(
                 throw error
             }
         }
+    }
+
+    private fun shouldFallbackToSavedSessionAfterResolveError(
+        error: TrustedSessionResolveException,
+        currentPairingState: RelayPairingState,
+        trustedMac: TrustedMacRecord?,
+    ): Boolean {
+        if (currentPairingState.sessionId.isBlank() || trustedMac == null) {
+            logConnection(
+                event = "trustedSessionResolveFallbackDenied",
+                extra = "code=${error.code} hasSavedSession=${currentPairingState.sessionId.isNotBlank()} "
+                    + "hasTrustedMac=${trustedMac != null} macDeviceId=${currentPairingState.macDeviceId}",
+            )
+            return false
+        }
+        val shouldFallback = error.code == "session_unavailable"
+            || error.code == "phone_not_trusted"
+            || error.code == "invalid_signature"
+        logConnection(
+            event = "trustedSessionResolveFallbackDecision",
+            extra = "code=${error.code} shouldFallback=$shouldFallback macDeviceId=${currentPairingState.macDeviceId}",
+        )
+        return shouldFallback
     }
 
     private suspend fun resolveTrustedSession(
@@ -1005,13 +1050,13 @@ class SecureConnectionCoordinator(
         )
         val nextState = when (error.code) {
             "session_unavailable" -> SecureConnectionState.LIVE_SESSION_UNRESOLVED
-            "phone_not_trusted", "invalid_signature" -> SecureConnectionState.REPAIR_REQUIRED
             else -> SecureConnectionState.TRUSTED_MAC
         }
         updateState(
             phaseMessage = when (error.code) {
                 "session_unavailable" -> "Your trusted computer is offline right now."
-                "phone_not_trusted", "invalid_signature" -> "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect."
+                "phone_not_trusted", "invalid_signature" ->
+                    "The relay could not verify the trusted reconnect. Try reconnecting again, or scan a new QR code if this keeps failing."
                 "resolve_request_expired", "resolve_request_replayed" -> "The trusted reconnect request expired. Try reconnecting again."
                 else -> error.message ?: "The trusted computer relay could not resolve the current bridge session."
             },
@@ -1088,8 +1133,7 @@ class SecureConnectionCoordinator(
             "pairing_expired",
             "phone_not_trusted",
             "phone_identity_changed",
-            "phone_replacement_required",
-            "invalid_signature" -> SecureConnectionState.REPAIR_REQUIRED
+            "phone_replacement_required" -> SecureConnectionState.REPAIR_REQUIRED
 
             else -> when {
                 error.message?.contains("different secure transport version", ignoreCase = true) == true -> {
@@ -1098,7 +1142,10 @@ class SecureConnectionCoordinator(
 
                 error.message?.contains("expired", ignoreCase = true) == true
                     || error.message?.contains("not trusted", ignoreCase = true) == true
-                    || error.message?.contains("identity", ignoreCase = true) == true -> {
+                    || (
+                        error.message?.contains("identity", ignoreCase = true) == true
+                            && trustedMacRegistry.records[currentPairingState.macDeviceId] == null
+                    ) -> {
                     SecureConnectionState.REPAIR_REQUIRED
                 }
 
@@ -1120,6 +1167,12 @@ class SecureConnectionCoordinator(
             relayCloseCode == null && secureState == SecureConnectionState.TRUSTED_MAC -> true
             else -> false
         }
+        logConnection(
+            event = "transportErrorMapped",
+            extra = "secureErrorCode=${error.code.orEmpty()} relayCloseCode=${relayCloseCode ?: -1} "
+                + "nextSecureState=$secureState trustedReconnect=$wasTrustedReconnectAttempt "
+                + "macDeviceId=${currentPairingState.macDeviceId}",
+        )
 
         updateState(
             phaseMessage = explicitRelayDropMessage(relayCloseCode)
@@ -1222,12 +1275,34 @@ class SecureConnectionCoordinator(
         event: String,
         extra: String = "",
     ) {
-        val suffix = extra.takeIf(String::isNotBlank)?.let { " $it" }.orEmpty()
+        val suffix = sanitizeLogExtra(extra).takeIf(String::isNotBlank)?.let { " $it" }.orEmpty()
         runCatching {
             Log.d(
                 logTag,
                 "event=$event secureState=${connectionState.value.secureState} attempt=$currentAttempt autoReconnectAllowed=$autoReconnectAllowed$suffix",
             )
+        }
+    }
+
+    private fun sanitizeLogExtra(extra: String): String {
+        if (extra.isBlank()) {
+            return extra
+        }
+        return sensitiveLogTokenRegex.replace(extra) { match ->
+            val key = match.groupValues[1]
+            val value = match.groupValues[2]
+            "$key=${shortLogToken(value)}"
+        }
+    }
+
+    private fun shortLogToken(value: String): String {
+        val normalized = value.trim()
+        if (normalized.isEmpty()) {
+            return ""
+        }
+        return when {
+            normalized.length <= 8 -> "***"
+            else -> "${normalized.take(4)}...${normalized.takeLast(4)}"
         }
     }
 

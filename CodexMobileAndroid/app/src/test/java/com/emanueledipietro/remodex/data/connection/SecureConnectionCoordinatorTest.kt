@@ -105,7 +105,7 @@ class SecureConnectionCoordinatorTest {
     }
 
     @Test
-    fun `trusted reconnect invalid trust falls back to repair required`() = runTest {
+    fun `trusted reconnect bridge invalid trust falls back to repair required`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         seedTrustedMacState(
@@ -121,7 +121,10 @@ class SecureConnectionCoordinatorTest {
                     message = "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect.",
                 ),
             ),
-            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            relayWebSocketFactory = SecureErrorRelayWebSocketFactory(
+                code = "phone_not_trusted",
+                message = "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect.",
+            ),
             scope = this,
         )
 
@@ -133,6 +136,72 @@ class SecureConnectionCoordinatorTest {
             "This Android device is no longer trusted by the computer. Scan a new QR code to reconnect.",
             coordinator.state.value.phaseMessage,
         )
+    }
+
+    @Test
+    fun `trusted reconnect resolve invalid trust tries saved session before repair required`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-resolve-stale-trust",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+            sessionId = "saved-session-resolve-stale-trust",
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = ThrowingTrustedSessionResolver(
+                TrustedSessionResolveException(
+                    code = "phone_not_trusted",
+                    message = "This Android device is no longer trusted by the computer.",
+                ),
+            ),
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = "mac-resolve-stale-trust",
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+        assertEquals(SecureConnectionState.ENCRYPTED, coordinator.state.value.secureState)
+        assertTrue(coordinator.state.value.autoReconnectAllowed)
+    }
+
+    @Test
+    fun `trusted reconnect transport invalid signature keeps saved pairing recoverable`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-stale-session-signature",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = StaticTrustedSessionResolver(
+                TrustedSessionResolveResponse(
+                    ok = true,
+                    macDeviceId = "mac-stale-session-signature",
+                    macIdentityPublicKey = macIdentity.publicKeyBase64,
+                    displayName = "Desk Mac",
+                    sessionId = "session-stale-signature",
+                ),
+            ),
+            relayWebSocketFactory = SecureErrorRelayWebSocketFactory(
+                code = "invalid_signature",
+                message = "The secure Mac signature could not be verified.",
+            ),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.TRUSTED_MAC)
+
+        assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
+        assertTrue(coordinator.state.value.autoReconnectAllowed)
     }
 
     @Test
@@ -198,6 +267,39 @@ class SecureConnectionCoordinatorTest {
         advanceUntilIdle()
 
         assertFalse(coordinator.state.value.secureState == SecureConnectionState.REPAIR_REQUIRED)
+    }
+
+    @Test
+    fun `trusted reconnect transient open failure keeps saved pairing reconnectable`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-transient-open-failure",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = StaticTrustedSessionResolver(
+                TrustedSessionResolveResponse(
+                    ok = true,
+                    macDeviceId = "mac-transient-open-failure",
+                    macIdentityPublicKey = macIdentity.publicKeyBase64,
+                    displayName = "Desk Mac",
+                    sessionId = "session-transient-open-failure",
+                ),
+            ),
+            relayWebSocketFactory = ThrowingRelayWebSocketFactory(
+                IllegalStateException("Temporary socket open failure."),
+            ),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.TRUSTED_MAC)
+
+        assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
+        assertTrue(coordinator.state.value.autoReconnectAllowed)
     }
 
     @Test
