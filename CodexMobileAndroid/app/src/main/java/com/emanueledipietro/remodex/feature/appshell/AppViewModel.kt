@@ -1129,6 +1129,18 @@ class AppViewModel(
         }
     }
 
+    fun regenerateThreadTitle(
+        threadId: String,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            val didRegenerate = runCatching {
+                repository.regenerateThreadTitle(threadId)
+            }.getOrDefault(false)
+            onComplete(didRegenerate)
+        }
+    }
+
     fun archiveThread(threadId: String) {
         viewModelScope.launch {
             repository.archiveThread(threadId)

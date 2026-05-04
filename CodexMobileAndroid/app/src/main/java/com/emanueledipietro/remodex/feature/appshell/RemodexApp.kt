@@ -928,6 +928,9 @@ private fun RemodexShell(
                         },
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
+                        onRegenerateThreadTitle = { threadId, onComplete ->
+                            viewModel.regenerateThreadTitle(threadId, onComplete)
+                        },
                         onArchiveThread = viewModel::archiveThread,
                         onUnarchiveThread = viewModel::unarchiveThread,
                         onDeleteThread = viewModel::deleteThread,
@@ -1062,6 +1065,9 @@ private fun RemodexShell(
                         },
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
+                        onRegenerateThreadTitle = { threadId, onComplete ->
+                            viewModel.regenerateThreadTitle(threadId, onComplete)
+                        },
                         onArchiveThread = viewModel::archiveThread,
                         onUnarchiveThread = viewModel::unarchiveThread,
                         onDeleteThread = viewModel::deleteThread,

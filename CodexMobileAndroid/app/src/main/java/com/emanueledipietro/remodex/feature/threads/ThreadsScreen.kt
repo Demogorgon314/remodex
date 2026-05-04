@@ -2,6 +2,22 @@
 
 package com.emanueledipietro.remodex.feature.threads
 
+import android.view.HapticFeedbackConstants
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -11,15 +27,18 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -35,7 +54,10 @@ import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenu
@@ -50,7 +72,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,12 +86,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.onClick
@@ -74,15 +105,24 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import com.emanueledipietro.remodex.R
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
@@ -162,6 +202,7 @@ fun ThreadsScreen(
     onCreateWorktreeThread: (String) -> Unit,
     onSetProjectGroupCollapsed: (String, Boolean) -> Unit,
     onRenameThread: (String, String) -> Unit,
+    onRegenerateThreadTitle: (String, (Boolean) -> Unit) -> Unit,
     onArchiveThread: (String) -> Unit,
     onUnarchiveThread: (String) -> Unit,
     onDeleteThread: (String) -> Unit,
@@ -186,6 +227,7 @@ fun ThreadsScreen(
     var hasInitializedProjectExpansion by rememberSaveable { mutableStateOf(false) }
     var revealedProjectGroupIds by remember { mutableStateOf(setOf<String>()) }
     var expandedSubagentParentIds by remember { mutableStateOf(setOf<String>()) }
+    var regeneratingTitleThreadIds by remember { mutableStateOf(setOf<String>()) }
 
     val groups = remember(uiState.threads, searchText) {
         SidebarThreadGrouping.makeGroups(
@@ -371,6 +413,7 @@ fun ThreadsScreen(
                                     depth = row.depth,
                                     hasChildren = row.hasChildren,
                                     isExpanded = row.isExpanded,
+                                    isRegeneratingTitle = row.thread.id in regeneratingTitleThreadIds,
                                     onToggleExpanded = if (row.hasChildren) {
                                         { toggleSubagentExpansion(row.thread.id) }
                                     } else {
@@ -378,6 +421,14 @@ fun ThreadsScreen(
                                     },
                                     onSelectThread = { onSelectThread(row.thread.id) },
                                     onRenameThread = presentRenamePrompt,
+                                    onRegenerateThreadTitle = {
+                                        if (row.thread.id !in regeneratingTitleThreadIds) {
+                                            regeneratingTitleThreadIds = regeneratingTitleThreadIds + row.thread.id
+                                            onRegenerateThreadTitle(row.thread.id) {
+                                                regeneratingTitleThreadIds = regeneratingTitleThreadIds - row.thread.id
+                                            }
+                                        }
+                                    },
                                     onArchiveThread = { onArchiveThread(row.thread.id) },
                                     onUnarchiveThread = { onUnarchiveThread(row.thread.id) },
                                     onDeleteThread = { onDeleteThread(row.thread.id) },
@@ -1159,9 +1210,11 @@ private fun ThreadTreeRow(
     depth: Int,
     childrenByParentId: Map<String, List<RemodexThreadSummary>>,
     expandedSubagentParentIds: Set<String>,
+    regeneratingTitleThreadIds: Set<String>,
     onToggleSubagentExpansion: (String) -> Unit,
     onSelectThread: (String) -> Unit,
     onRenameThread: (String, String) -> Unit,
+    onRegenerateThreadTitle: (String, (Boolean) -> Unit) -> Unit,
     onArchiveThread: (String) -> Unit,
     onUnarchiveThread: (String) -> Unit,
     onDeleteThread: (String) -> Unit,
@@ -1175,6 +1228,7 @@ private fun ThreadTreeRow(
         depth = depth,
         hasChildren = childThreads.isNotEmpty(),
         isExpanded = expanded,
+        isRegeneratingTitle = thread.id in regeneratingTitleThreadIds,
         onToggleExpanded = if (childThreads.isNotEmpty()) {
             { onToggleSubagentExpansion(thread.id) }
         } else {
@@ -1182,6 +1236,7 @@ private fun ThreadTreeRow(
         },
         onSelectThread = { onSelectThread(thread.id) },
         onRenameThread = onRenameThread,
+        onRegenerateThreadTitle = { onRegenerateThreadTitle(thread.id) {} },
         onArchiveThread = { onArchiveThread(thread.id) },
         onUnarchiveThread = { onUnarchiveThread(thread.id) },
         onDeleteThread = { onDeleteThread(thread.id) },
@@ -1195,9 +1250,11 @@ private fun ThreadTreeRow(
                 depth = depth + 1,
                 childrenByParentId = childrenByParentId,
                 expandedSubagentParentIds = expandedSubagentParentIds,
+                regeneratingTitleThreadIds = regeneratingTitleThreadIds,
                 onToggleSubagentExpansion = onToggleSubagentExpansion,
                 onSelectThread = onSelectThread,
                 onRenameThread = onRenameThread,
+                onRegenerateThreadTitle = onRegenerateThreadTitle,
                 onArchiveThread = onArchiveThread,
                 onUnarchiveThread = onUnarchiveThread,
                 onDeleteThread = onDeleteThread,
@@ -1214,17 +1271,19 @@ private fun ThreadRow(
     depth: Int,
     hasChildren: Boolean,
     isExpanded: Boolean,
+    isRegeneratingTitle: Boolean,
     onToggleExpanded: (() -> Unit)?,
     onSelectThread: () -> Unit,
     onRenameThread: (String, String) -> Unit,
+    onRegenerateThreadTitle: () -> Unit,
     onArchiveThread: () -> Unit,
     onUnarchiveThread: () -> Unit,
     onDeleteThread: () -> Unit,
 ) {
     var menuExpanded by remember(thread.id) { mutableStateOf(false) }
-    var menuOffset by remember(thread.id) { mutableStateOf(DpOffset.Zero) }
+    var menuOffset by remember(thread.id) { mutableStateOf(IntOffset.Zero) }
     val timingLabel = compactTimingLabel(thread.lastUpdatedLabel)
-    val density = LocalDensity.current
+    val performLongPressHaptic = rememberLongPressHaptic()
 
     Box(
         modifier = Modifier
@@ -1243,7 +1302,7 @@ private fun ThreadRow(
                     },
                     shape = RoundedCornerShape(SidebarRowCornerRadius),
                 )
-                .pointerInput(thread.id, isSelected, hasChildren, density) {
+                .pointerInput(thread.id, isSelected, hasChildren) {
                     detectTapGestures(
                         onTap = {
                             if (isSelected && hasChildren) {
@@ -1253,12 +1312,11 @@ private fun ThreadRow(
                             }
                         },
                         onLongPress = { pressOffset ->
-                            menuOffset = with(density) {
-                                DpOffset(
-                                    x = pressOffset.x.toDp(),
-                                    y = pressOffset.y.toDp(),
-                                )
-                            }
+                            performLongPressHaptic()
+                            menuOffset = IntOffset(
+                                x = pressOffset.x.toInt(),
+                                y = pressOffset.y.toInt(),
+                            )
                             menuExpanded = true
                         },
                     )
@@ -1274,7 +1332,8 @@ private fun ThreadRow(
                         true
                     }
                     onLongClick {
-                        menuOffset = DpOffset.Zero
+                        performLongPressHaptic()
+                        menuOffset = IntOffset.Zero
                         menuExpanded = true
                         true
                     }
@@ -1285,18 +1344,29 @@ private fun ThreadRow(
         ) {
             ThreadLeadingIndicator(thread = thread)
 
-            Text(
-                text = threadDisplayTitle(thread),
-                style = if (thread.isSubagent) {
-                    MaterialTheme.typography.bodySmall
-                } else {
-                    MaterialTheme.typography.bodyMedium
-                },
-                fontWeight = if (thread.isSubagent) FontWeight.Medium else FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            val titleStyle = if (thread.isSubagent) {
+                MaterialTheme.typography.bodySmall
+            } else {
+                MaterialTheme.typography.bodyMedium
+            }
+            val titleWeight = if (thread.isSubagent) FontWeight.Medium else FontWeight.Normal
+            if (isRegeneratingTitle) {
+                ShimmeringThreadTitle(
+                    text = threadDisplayTitle(thread),
+                    style = titleStyle,
+                    fontWeight = titleWeight,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Text(
+                    text = threadDisplayTitle(thread),
+                    style = titleStyle,
+                    fontWeight = titleWeight,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -1349,19 +1419,38 @@ private fun ThreadRow(
             }
         }
 
-        DropdownMenu(
+        ThreadContextMenu(
             expanded = menuExpanded,
             onDismissRequest = { menuExpanded = false },
-            offset = menuOffset,
+            pressOffset = menuOffset,
         ) {
-            DropdownMenuItem(
+            ThreadContextMenuItem(
                 text = { Text("Rename") },
                 onClick = {
                     menuExpanded = false
                     onRenameThread(thread.id, thread.displayTitle)
                 },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Edit,
+                        contentDescription = null,
+                    )
+                },
             )
-            DropdownMenuItem(
+            ThreadContextMenuItem(
+                text = { Text("Regenerate Title") },
+                onClick = {
+                    menuExpanded = false
+                    onRegenerateThreadTitle()
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Refresh,
+                        contentDescription = null,
+                    )
+                },
+            )
+            ThreadContextMenuItem(
                 text = {
                     Text(
                         if (thread.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL) {
@@ -1379,15 +1468,203 @@ private fun ThreadRow(
                         onArchiveThread()
                     }
                 },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Archive,
+                        contentDescription = null,
+                    )
+                },
             )
-            DropdownMenuItem(
+            ThreadContextMenuItem(
                 text = { Text("Delete") },
                 onClick = {
                     menuExpanded = false
                     onDeleteThread()
                 },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.DeleteOutline,
+                        contentDescription = null,
+                    )
+                },
             )
         }
+    }
+}
+
+@Composable
+private fun ShimmeringThreadTitle(
+    text: String,
+    style: TextStyle,
+    fontWeight: FontWeight,
+    modifier: Modifier = Modifier,
+) {
+    val baseColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
+    val highlightColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.94f)
+    val transition = rememberInfiniteTransition(label = "thread_title_generation_shimmer")
+    val shimmerOffset by transition.animateFloat(
+        initialValue = -320f,
+        targetValue = 720f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1250, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "thread_title_generation_shimmer_offset",
+    )
+    val brush = Brush.linearGradient(
+        colors = listOf(baseColor, baseColor, highlightColor, baseColor, baseColor),
+        start = Offset(shimmerOffset, 0f),
+        end = Offset(shimmerOffset + 260f, 0f),
+    )
+
+    Text(
+        text = text,
+        style = style.merge(TextStyle(brush = brush)),
+        fontWeight = fontWeight,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun rememberLongPressHaptic(): () -> Unit {
+    val view = LocalView.current
+    return remember(view) {
+        {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
+    }
+}
+
+@Composable
+private fun ThreadContextMenu(
+    expanded: Boolean,
+    pressOffset: IntOffset,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val verticalGapPx = with(density) { 8.dp.roundToPx() }
+    val windowMarginPx = with(density) { 12.dp.roundToPx() }
+    val transitionState = remember { MutableTransitionState(false) }
+    LaunchedEffect(expanded) {
+        transitionState.targetState = expanded
+    }
+    if (!transitionState.currentState && !transitionState.targetState) {
+        return
+    }
+
+    Popup(
+        popupPositionProvider = remember(verticalGapPx, windowMarginPx, pressOffset) {
+            ThreadContextMenuPositionProvider(
+                verticalGapPx = verticalGapPx,
+                windowMarginPx = windowMarginPx,
+                pressOffset = pressOffset,
+            )
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true),
+    ) {
+        AnimatedVisibility(
+            visibleState = transitionState,
+            enter = fadeIn(animationSpec = tween(durationMillis = 150)) +
+                slideInVertically(
+                    animationSpec = tween(durationMillis = 180),
+                    initialOffsetY = { fullHeight -> fullHeight / 10 },
+                ) +
+                scaleIn(
+                    animationSpec = tween(durationMillis = 160),
+                    initialScale = 0.97f,
+                ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                slideOutVertically(
+                    animationSpec = tween(durationMillis = 120),
+                    targetOffsetY = { fullHeight -> fullHeight / 14 },
+                ) +
+                scaleOut(
+                    animationSpec = tween(durationMillis = 110),
+                    targetScale = 0.985f,
+                ),
+        ) {
+            Surface(
+                color = chrome.panelSurfaceStrong,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 184.dp, max = 236.dp)
+                        .padding(vertical = 2.dp),
+                    content = content,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThreadContextMenuItem(
+    text: @Composable () -> Unit,
+    onClick: () -> Unit,
+    leadingIcon: (@Composable () -> Unit)? = null,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        CompositionLocalProvider(LocalContentColor provides chrome.titleText) {
+            leadingIcon?.invoke()
+            Box(modifier = Modifier.weight(1f)) {
+                ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
+                    text()
+                }
+            }
+        }
+    }
+}
+
+private class ThreadContextMenuPositionProvider(
+    private val verticalGapPx: Int,
+    private val windowMarginPx: Int,
+    private val pressOffset: IntOffset,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val anchorX = anchorBounds.left + pressOffset.x
+        val preferredX = when (layoutDirection) {
+            LayoutDirection.Ltr -> anchorX
+            LayoutDirection.Rtl -> anchorX - popupContentSize.width
+        }
+        val maxX = (windowSize.width - popupContentSize.width - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedX = preferredX.coerceIn(windowMarginPx, maxX)
+
+        val anchorY = anchorBounds.top + pressOffset.y
+        val belowY = anchorY + verticalGapPx
+        val aboveY = anchorY - popupContentSize.height - verticalGapPx
+        val maxY = (windowSize.height - popupContentSize.height - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedY = when {
+            belowY <= maxY -> belowY
+            aboveY >= windowMarginPx -> aboveY
+            else -> belowY.coerceIn(windowMarginPx, maxY)
+        }
+
+        return IntOffset(resolvedX, resolvedY)
     }
 }
 
@@ -1398,7 +1675,20 @@ private fun ThreadRenameDialog(
     onDraftChange: (String) -> Unit,
     onRename: (String) -> Unit,
 ) {
-    val trimmedDraft = state.draftTitle.trim()
+    val focusRequester = remember { FocusRequester() }
+    var draftFieldValue by remember(state.threadId) {
+        mutableStateOf(
+            TextFieldValue(
+                text = state.draftTitle,
+                selection = TextRange(state.draftTitle.length),
+            ),
+        )
+    }
+    LaunchedEffect(state.threadId) {
+        draftFieldValue = draftFieldValue.copy(selection = TextRange(draftFieldValue.text.length))
+        focusRequester.requestFocus()
+    }
+    val trimmedDraft = draftFieldValue.text.trim()
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
@@ -1417,11 +1707,17 @@ private fun ThreadRenameDialog(
         title = { Text("Rename Conversation") },
         text = {
             OutlinedTextField(
-                value = state.draftTitle,
-                onValueChange = onDraftChange,
+                value = draftFieldValue,
+                onValueChange = { value ->
+                    draftFieldValue = value
+                    onDraftChange(value.text)
+                },
                 singleLine = true,
                 label = { Text("Name") },
-                modifier = Modifier.testTag(SidebarRenameTextFieldTag),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester)
+                    .testTag(SidebarRenameTextFieldTag),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
             )
         },

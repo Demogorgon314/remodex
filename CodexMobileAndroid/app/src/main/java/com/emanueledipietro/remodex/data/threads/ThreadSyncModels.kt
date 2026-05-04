@@ -128,6 +128,8 @@ interface ThreadCommandService {
         name: String,
     )
 
+    suspend fun regenerateThreadTitle(threadId: String): Boolean
+
     suspend fun archiveThread(
         threadId: String,
         unarchive: Boolean,

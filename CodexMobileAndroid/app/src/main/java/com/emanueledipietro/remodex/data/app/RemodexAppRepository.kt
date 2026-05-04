@@ -84,6 +84,8 @@ interface RemodexAppRepository {
         name: String,
     )
 
+    suspend fun regenerateThreadTitle(threadId: String): Boolean
+
     suspend fun archiveThread(threadId: String)
 
     suspend fun unarchiveThread(threadId: String)

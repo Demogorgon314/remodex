@@ -266,6 +266,13 @@ class FakeThreadSyncService(
         }
     }
 
+    override suspend fun regenerateThreadTitle(threadId: String): Boolean {
+        renameThread(threadId, "Regenerated title")
+        return backingThreads.value.any { snapshot ->
+            snapshot.id == threadId && snapshot.name == "Regenerated title"
+        }
+    }
+
     override suspend fun archiveThread(
         threadId: String,
         unarchive: Boolean,

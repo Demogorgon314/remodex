@@ -1873,6 +1873,46 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `sync preserves cached generated thread name when live snapshot omits name`() = runTest {
+        val cacheStore = InMemoryThreadCacheStore(
+            initialThreads = listOf(
+                CachedThreadRecord(
+                    id = "generated-title-thread",
+                    title = "Generated Android Title",
+                    name = "Generated Android Title",
+                    preview = "Cached generated title",
+                    projectPath = "/tmp/remodex",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1_000L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineItems = emptyList(),
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = FakeThreadSyncService(
+                initialThreads = listOf(
+                    testThreadSnapshot(
+                        id = "generated-title-thread",
+                        title = "Conversation",
+                        projectPath = "/tmp/remodex",
+                        lastUpdatedEpochMs = 2_000L,
+                    ),
+                ),
+            ),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        val thread = repository.session.value.threads.firstOrNull()
+        assertEquals("Generated Android Title", thread?.name)
+        assertEquals("Generated Android Title", thread?.title)
+        assertEquals("Generated Android Title", thread?.displayTitle)
+    }
+
+    @Test
     fun `persisted associated managed worktree path restores thread without timeline hint`() = runTest {
         val worktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
         val preferencesRepository = TestAppPreferencesRepository(

@@ -188,9 +188,11 @@ class DefaultRemodexAppRepository(
             .map(CachedThreadRecord::toBaseThreadSummary)
             .map { syncedThread ->
                 cachedThreadsById[syncedThread.id]?.let { cachedThread ->
-                    syncedThread.withPreferredManagedWorktreePath(
-                        cachedThread.preferredManagedWorktreeProjectPathForSync(),
-                    )
+                    syncedThread
+                        .withPersistentLocalThreadName(cachedThread)
+                        .withPreferredManagedWorktreePath(
+                            cachedThread.preferredManagedWorktreeProjectPathForSync(),
+                        )
                 } ?: syncedThread
             }
         buildList {
@@ -1502,6 +1504,10 @@ class DefaultRemodexAppRepository(
             },
         )
         threadCommandService.renameThread(threadId, trimmedName)
+    }
+
+    override suspend fun regenerateThreadTitle(threadId: String): Boolean {
+        return threadCommandService.regenerateThreadTitle(threadId)
     }
 
     override suspend fun archiveThread(threadId: String) {
@@ -3459,17 +3465,19 @@ class DefaultRemodexAppRepository(
             }
             val localThread = localById[syncedThread.id]
             mergedById[syncedThread.id] = if (localThread != null) {
-                syncedThread.copy(
-                    projectPath = preferredManagedWorktreePath(
-                        primaryProjectPath = syncedThread.projectPath,
-                        fallbackProjectPath = localThread.preferredManagedWorktreeProjectPathForSync(),
-                    ),
-                    syncState = if (localThread.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL) {
-                        RemodexThreadSyncState.ARCHIVED_LOCAL
-                    } else {
-                        syncedThread.syncState
-                    },
-                )
+                syncedThread
+                    .withPersistentLocalThreadName(localThread)
+                    .copy(
+                        projectPath = preferredManagedWorktreePath(
+                            primaryProjectPath = syncedThread.projectPath,
+                            fallbackProjectPath = localThread.preferredManagedWorktreeProjectPathForSync(),
+                        ),
+                        syncState = if (localThread.syncState == RemodexThreadSyncState.ARCHIVED_LOCAL) {
+                            RemodexThreadSyncState.ARCHIVED_LOCAL
+                        } else {
+                            syncedThread.syncState
+                        },
+                    )
             } else {
                 syncedThread
             }
@@ -3548,6 +3556,17 @@ private fun optimisticPendingUserMessageText(
 
 private fun nextLocalOrderIndex(thread: RemodexThreadSummary): Long {
     return thread.messages.maxOfOrNull(RemodexConversationItem::orderIndex)?.plus(1L) ?: 0L
+}
+
+private fun RemodexThreadSummary.withPersistentLocalThreadName(
+    localThread: RemodexThreadSummary,
+): RemodexThreadSummary {
+    val syncedName = name?.trim()?.takeIf(String::isNotEmpty)
+    if (syncedName != null) {
+        return this
+    }
+    val localName = localThread.name?.trim()?.takeIf(String::isNotEmpty) ?: return this
+    return copy(title = localName, name = localName)
 }
 
 private const val ThreadCacheStreamingWriteDebounceMs = 120L

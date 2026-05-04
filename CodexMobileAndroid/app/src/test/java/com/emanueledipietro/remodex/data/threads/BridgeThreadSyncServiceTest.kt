@@ -3341,7 +3341,6 @@ class BridgeThreadSyncServiceTest {
             assertEquals("on-request", capturedForkParams?.firstString("approvalPolicy"))
         } finally {
             coordinator.disconnect()
-            advanceUntilIdle()
         }
     }
 
@@ -3392,7 +3391,6 @@ class BridgeThreadSyncServiceTest {
             )
         } finally {
             coordinator.disconnect()
-            advanceUntilIdle()
         }
     }
 
@@ -4033,6 +4031,218 @@ class BridgeThreadSyncServiceTest {
         } finally {
             coordinator.disconnect()
             advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `regenerate thread title uses first user message and overwrites current title`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-regenerate-title",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/generateTitle" to { request ->
+                    val params = request.params?.jsonObjectOrNull
+                    assertEquals(
+                        "Fix the thread title from the first message.",
+                        params?.firstString("message"),
+                    )
+                    buildJsonObject {
+                        put("title", JsonPrimitive("Fix Thread Title"))
+                    }
+                },
+                "thread/name/set" to {
+                    buildJsonObject { }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-regenerate-title",
+                        title = "Manual Title",
+                        name = "Manual Title",
+                        preview = "Fix the thread title from the first message.",
+                        projectPath = "/tmp/thread-regenerate-title",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = listOf(
+                            TimelineMutation.Upsert(
+                                RemodexConversationItem(
+                                    id = "user-1",
+                                    speaker = ConversationSpeaker.USER,
+                                    text = "Fix the thread title from the first message.",
+                                    orderIndex = 1L,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+            service.regenerateThreadTitle("thread-regenerate-title")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-regenerate-title" }
+            assertEquals("Fix Thread Title", thread.name)
+            val renameRequest = relayFactory.receivedRequests.lastOrNull { request ->
+                request.method == "thread/name/set"
+            }
+            assertEquals(
+                "Fix Thread Title",
+                renameRequest?.params?.jsonObjectOrNull?.firstString("name"),
+            )
+        } finally {
+            coordinator.disconnect()
+        }
+    }
+
+    @Test
+    fun `regenerate thread title hydrates non-current thread before generating title`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-regenerate-title-hydrate",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to {
+                    buildJsonObject {
+                        put("data", buildJsonArray { })
+                    }
+                },
+                "thread/read" to { request ->
+                    assertEquals(
+                        "thread-regenerate-title-hydrated",
+                        request.params?.jsonObjectOrNull?.firstString("threadId"),
+                    )
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-regenerate-title-hydrated"))
+                                put("title", JsonPrimitive("Manual Title"))
+                                put("name", JsonPrimitive("Manual Title"))
+                                put("cwd", JsonPrimitive("/tmp/thread-regenerate-title-hydrated"))
+                                put(
+                                    "turns",
+                                    buildJsonArray {
+                                        add(
+                                            buildJsonObject {
+                                                put("id", JsonPrimitive("turn-1"))
+                                                put(
+                                                    "items",
+                                                    buildJsonArray {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("id", JsonPrimitive("user-1"))
+                                                                put("type", JsonPrimitive("user_message"))
+                                                                put(
+                                                                    "text",
+                                                                    JsonPrimitive("Hydrate this sidebar thread before title generation."),
+                                                                )
+                                                            },
+                                                        )
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/generateTitle" to { request ->
+                    val params = request.params?.jsonObjectOrNull
+                    assertEquals(
+                        "Hydrate this sidebar thread before title generation.",
+                        params?.firstString("message"),
+                    )
+                    buildJsonObject {
+                        put("title", JsonPrimitive("Hydrated Sidebar Thread"))
+                    }
+                },
+                "thread/name/set" to {
+                    buildJsonObject { }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-regenerate-title-hydrated",
+                        title = "Manual Title",
+                        name = "Manual Title",
+                        preview = "Hydrate this sidebar thread before title generation.",
+                        projectPath = "/tmp/thread-regenerate-title-hydrated",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+
+            service.regenerateThreadTitle("thread-regenerate-title-hydrated")
+            advanceUntilIdle()
+
+            val thread = service.threads.value.first { it.id == "thread-regenerate-title-hydrated" }
+            assertEquals("Hydrated Sidebar Thread", thread.name)
+            val requestMethods = relayFactory.receivedRequests.map { request -> request.method }
+            assertTrue(requestMethods.containsAll(listOf("thread/read", "thread/generateTitle", "thread/name/set")))
+        } finally {
+            coordinator.disconnect()
         }
     }
 

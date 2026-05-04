@@ -665,6 +665,11 @@ class BridgeThreadSyncService(
         val maxOrderIndex: Long,
     )
 
+    private data class ThreadTitleSeed(
+        val message: String,
+        val attachmentCount: Int,
+    )
+
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val stopTurnRetryDelaysMs = listOf(200L, 200L)
     private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
@@ -1314,6 +1319,43 @@ class BridgeThreadSyncService(
         }
         localThreadNameById[threadId] = trimmedName
         sendThreadNameSetRpc(threadId = threadId, name = trimmedName)
+    }
+
+    override suspend fun regenerateThreadTitle(threadId: String): Boolean {
+        if (!isConnected()) {
+            return false
+        }
+        val normalizedThreadId = threadId.trim().takeIf(String::isNotEmpty) ?: return false
+        val snapshot = threadTitleRegenerationSnapshot(normalizedThreadId) ?: return false
+        val seed = threadTitleRegenerationSeed(snapshot) ?: return false
+        val generatedTitle = generatedThreadTitleOrNull(
+            seed = seed.message,
+            threadId = normalizedThreadId,
+            attachmentCount = seed.attachmentCount,
+            runtimeConfig = snapshot.runtimeConfig,
+        ) ?: fallbackThreadTitle(seed.message)
+        renameThread(threadId = normalizedThreadId, name = generatedTitle)
+        return currentThreadSnapshot(normalizedThreadId)?.name?.trim() == generatedTitle
+    }
+
+    private suspend fun threadTitleRegenerationSnapshot(threadId: String): ThreadSyncSnapshot? {
+        val existingSnapshot = currentThreadSnapshot(threadId) ?: return null
+        if (threadTitleRegenerationSeed(existingSnapshot) != null) {
+            return existingSnapshot
+        }
+        val response = runCatching {
+            retryAfterThreadMaterialization {
+                requestThreadRead(threadId)
+            }
+        }.getOrNull() ?: return existingSnapshot
+        return mergeThreadSnapshotResponse(
+            source = "thread/read",
+            threadId = threadId,
+            response = response,
+            existingSnapshot = existingSnapshot,
+            syncState = currentSyncState(threadId),
+            allowHistoryMergeWhileRunning = false,
+        ) ?: existingSnapshot
     }
 
     private suspend fun sendThreadNameSetRpc(
@@ -11185,6 +11227,22 @@ class BridgeThreadSyncService(
         }
     }
 
+    private fun threadTitleRegenerationSeed(snapshot: ThreadSyncSnapshot): ThreadTitleSeed? {
+        val firstUserMessage = projectedTimelineItems(snapshot)
+            .firstOrNull { item ->
+                item.speaker == ConversationSpeaker.USER &&
+                    item.deliveryState != RemodexMessageDeliveryState.PENDING
+            }
+            ?: return null
+        val message = firstUserMessage.text.trim().takeIf(String::isNotEmpty)
+            ?: firstUserMessage.attachments.takeIf(List<RemodexConversationAttachment>::isNotEmpty)?.let { "Image request" }
+            ?: return null
+        return ThreadTitleSeed(
+            message = message,
+            attachmentCount = firstUserMessage.attachments.size,
+        )
+    }
+
     private fun fallbackThreadTitle(seed: String): String {
         val title = seed
             .split(Regex("\\s+"))
@@ -11609,7 +11667,9 @@ class BridgeThreadSyncService(
             block()
         } catch (error: Throwable) {
             if (error is CancellationException || error is SecureTransportException) {
-                Log.d(logTag, "$operation skipped: ${error.message.orEmpty()}")
+                runCatching {
+                    Log.d(logTag, "$operation skipped: ${error.message.orEmpty()}")
+                }
                 return null
             }
             throw error

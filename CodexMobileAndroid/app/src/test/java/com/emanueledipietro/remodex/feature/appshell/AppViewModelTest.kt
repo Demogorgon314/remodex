@@ -4139,6 +4139,8 @@ class AppViewModelTest {
 
         override suspend fun renameThread(threadId: String, name: String) = Unit
 
+        override suspend fun regenerateThreadTitle(threadId: String): Boolean = true
+
         override suspend fun archiveThread(threadId: String) = Unit
 
         override suspend fun unarchiveThread(threadId: String) = Unit
