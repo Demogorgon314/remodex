@@ -216,12 +216,6 @@ class DefaultRemodexAppRepositoryTest {
         val hydratedSelectedThread = requireNotNull(repository.session.value.selectedThread).copy(
             title = "Hydrated Android notifications",
         )
-        setSelectedThreadDetail(
-            repository = repository,
-            threadId = hydratedSelectedThread.id,
-            thread = hydratedSelectedThread,
-        )
-
         syncService.updateThreads(
             syncService.threads.value.filterNot { snapshot ->
                 snapshot.id == hydratedSelectedThread.id
@@ -230,6 +224,12 @@ class DefaultRemodexAppRepositoryTest {
         advanceUntilIdle()
 
         assertEquals(hydratedSelectedThread.id, repository.session.value.selectedThreadId)
+        setSelectedThreadDetail(
+            repository = repository,
+            threadId = hydratedSelectedThread.id,
+            thread = hydratedSelectedThread,
+        )
+
         assertEquals(
             "Hydrated Android notifications",
             repository.session.value.selectedThreadSnapshot?.title,

@@ -10,7 +10,7 @@ class ConversationScreenQueuedDraftsTest {
     fun `composer placeholder switches to queue copy while thread is running`() {
         assertEquals("Queue a follow-up", resolveConversationComposerPlaceholder(canStop = true))
         assertEquals(
-            "Ask anything... @files, \$skills, /commands",
+            "Ask anything... @plugins, \$skills, /commands",
             resolveConversationComposerPlaceholder(canStop = false),
         )
     }

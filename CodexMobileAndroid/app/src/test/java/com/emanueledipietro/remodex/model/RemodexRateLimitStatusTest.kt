@@ -1,11 +1,25 @@
 package com.emanueledipietro.remodex.model
 
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class RemodexRateLimitStatusTest {
+    @Before
+    fun setUp() {
+        AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("zh-CN"))
+    }
+
+    @After
+    fun tearDown() {
+        AppCompatDelegate.setApplicationLocales(LocaleListCompat.getEmptyLocaleList())
+    }
+
     @Test
     fun `visible display sections keep default and spark limits separate`() {
         val sections = RemodexRateLimitBucket.visibleDisplaySections(
