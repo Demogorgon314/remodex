@@ -24,6 +24,14 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -36,6 +44,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -64,18 +73,19 @@ import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -110,6 +120,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -2185,10 +2202,12 @@ private fun ShellTopBarGitActionsButton(
 ) {
     val chrome = remodexConversationChrome()
     var expanded by rememberSaveable { mutableStateOf(false) }
+    val performLightHaptic = rememberShellLightImpactHaptic()
     val syncStatusColor = when (gitSyncState) {
         "behind_only", "diverged", "dirty_and_behind" -> Color(0xFFE59A18)
         else -> null
     }
+    val menuIconColor = chrome.secondaryText
 
     Box {
         val triggerContent: @Composable () -> Unit = {
@@ -2212,21 +2231,27 @@ private fun ShellTopBarGitActionsButton(
                         role = Role.Button
                         contentDescription = "Git actions"
                     }
-                    .clickable { expanded = true },
+                    .clickable {
+                        performLightHaptic()
+                        expanded = true
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 triggerContent()
             }
         } else {
             ShellTopBarButton(
-                onClick = { expanded = true },
+                onClick = {
+                    performLightHaptic()
+                    expanded = true
+                },
                 contentDescription = "Git actions",
             ) {
                 triggerContent()
             }
         }
 
-        DropdownMenu(
+        ShellTopBarContextMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
@@ -2234,7 +2259,7 @@ private fun ShellTopBarGitActionsButton(
                 label = "Update",
                 leadingIcon = {
                     RemodexGitSyncGlyph(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = menuIconColor,
                         modifier = Modifier.size(20.dp),
                     )
                 },
@@ -2251,7 +2276,7 @@ private fun ShellTopBarGitActionsButton(
                         painter = painterResource(id = R.drawable.ic_git_commit),
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = menuIconColor,
                     )
                 },
                 enabled = isEnabled && onCommitGitChanges != null,
@@ -2264,7 +2289,7 @@ private fun ShellTopBarGitActionsButton(
                 label = "Push",
                 leadingIcon = {
                     RemodexGitPushGlyph(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = menuIconColor,
                         modifier = Modifier.size(20.dp),
                     )
                 },
@@ -2307,7 +2332,7 @@ private fun ShellTopBarGitActionsButton(
                     label = "Discard Local Changes",
                     leadingIcon = {
                         RemodexTrashCircleGlyph(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = menuIconColor,
                             modifier = Modifier.size(20.dp),
                         )
                     },
@@ -2368,12 +2393,146 @@ private fun ShellTopBarGitActionMenuItem(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    DropdownMenuItem(
-        text = { Text(label) },
-        onClick = onClick,
-        enabled = enabled,
-        leadingIcon = leadingIcon,
-    )
+    val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberShellLightImpactHaptic()
+    val contentColor = if (enabled) {
+        chrome.titleText
+    } else {
+        chrome.secondaryText.copy(alpha = 0.72f)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(
+                enabled = enabled,
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
+            .padding(horizontal = 13.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        CompositionLocalProvider(LocalContentColor provides contentColor) {
+            leadingIcon()
+            Box(modifier = Modifier.weight(1f)) {
+                ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
+                    Text(label)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShellTopBarContextMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
+    val verticalGapPx = with(density) { 8.dp.roundToPx() }
+    val windowMarginPx = with(density) { 12.dp.roundToPx() }
+    val transitionState = remember { MutableTransitionState(false) }
+    LaunchedEffect(expanded) {
+        transitionState.targetState = expanded
+    }
+    if (!transitionState.currentState && !transitionState.targetState) {
+        return
+    }
+
+    Popup(
+        popupPositionProvider = remember(verticalGapPx, windowMarginPx) {
+            ShellTopBarContextMenuPositionProvider(
+                verticalGapPx = verticalGapPx,
+                windowMarginPx = windowMarginPx,
+            )
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true),
+    ) {
+        AnimatedVisibility(
+            visibleState = transitionState,
+            enter = fadeIn(animationSpec = tween(durationMillis = 150)) +
+                slideInVertically(
+                    animationSpec = tween(durationMillis = 180),
+                    initialOffsetY = { fullHeight -> fullHeight / 10 },
+                ) +
+                scaleIn(
+                    animationSpec = tween(durationMillis = 160),
+                    initialScale = 0.97f,
+                ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 110)) +
+                slideOutVertically(
+                    animationSpec = tween(durationMillis = 120),
+                    targetOffsetY = { fullHeight -> fullHeight / 14 },
+                ) +
+                scaleOut(
+                    animationSpec = tween(durationMillis = 110),
+                    targetScale = 0.985f,
+                ),
+        ) {
+            Surface(
+                color = chrome.panelSurfaceStrong,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 184.dp, max = 236.dp)
+                        .padding(vertical = 2.dp),
+                    content = content,
+                )
+            }
+        }
+    }
+}
+
+private class ShellTopBarContextMenuPositionProvider(
+    private val verticalGapPx: Int,
+    private val windowMarginPx: Int,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val preferredX = when (layoutDirection) {
+            LayoutDirection.Ltr -> anchorBounds.right - popupContentSize.width
+            LayoutDirection.Rtl -> anchorBounds.left
+        }
+        val maxX = (windowSize.width - popupContentSize.width - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedX = preferredX.coerceIn(windowMarginPx, maxX)
+
+        val belowY = anchorBounds.bottom + verticalGapPx
+        val aboveY = anchorBounds.top - popupContentSize.height - verticalGapPx
+        val maxY = (windowSize.height - popupContentSize.height - windowMarginPx).coerceAtLeast(windowMarginPx)
+        val resolvedY = when {
+            belowY <= maxY -> belowY
+            aboveY >= windowMarginPx -> aboveY
+            else -> belowY.coerceIn(windowMarginPx, maxY)
+        }
+
+        return IntOffset(resolvedX, resolvedY)
+    }
+}
+
+@Composable
+private fun rememberShellLightImpactHaptic(): () -> Unit {
+    val view = LocalView.current
+    return remember(view) {
+        {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+    }
 }
 
 internal fun fitProjectPathForWidth(

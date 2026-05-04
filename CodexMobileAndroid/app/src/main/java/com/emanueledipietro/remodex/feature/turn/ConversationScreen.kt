@@ -309,6 +309,7 @@ private val ComposerAttachmentRemoveButtonSize = 22.dp
 private val ComposerModelMenuMaxWidth = 160.dp
 private val ComposerReasoningMenuMaxWidth = 132.dp
 private val ComposerMenuCornerRadius = 18.dp
+private val ComposerSecondaryControlHeight = 36.dp
 private val FileAutocompleteRowHeight = 38.dp
 private val ConversationBottomAnchorHeight = 1.dp
 private val FileChangeAddedColor = Color(0xFF22A653)
@@ -4827,6 +4828,12 @@ private fun ComposerSecondaryBar(
         }
     }
 
+    LaunchedEffect(branchMenuState.expanded, thread.id) {
+        if (branchMenuState.expanded) {
+            onRefreshGitState()
+        }
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
@@ -5124,7 +5131,7 @@ private fun SecondaryBarPill(
     val chrome = remodexConversationChrome()
     val performLightHaptic = rememberLightImpactHaptic()
     Surface(
-        modifier = modifier,
+        modifier = modifier.height(ComposerSecondaryControlHeight),
         color = chrome.mutedSurface,
         shape = RemodexConversationShapes.pill,
         border = BorderStroke(1.dp, chrome.subtleBorder),
@@ -5133,6 +5140,7 @@ private fun SecondaryBarPill(
     ) {
         Row(
             modifier = Modifier
+                .height(ComposerSecondaryControlHeight)
                 .clickable(
                     enabled = enabled && onClick != null,
                     onClick = {
@@ -5142,7 +5150,7 @@ private fun SecondaryBarPill(
                         onClick?.invoke()
                     },
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             content = content,
@@ -5162,7 +5170,7 @@ private fun SecondaryBarCircleButton(
     val performLightHaptic = rememberLightImpactHaptic()
     Surface(
         modifier = modifier
-            .requiredSize(36.dp)
+            .requiredSize(ComposerSecondaryControlHeight)
             .clip(CircleShape)
             .clickable(
                 enabled = enabled,
