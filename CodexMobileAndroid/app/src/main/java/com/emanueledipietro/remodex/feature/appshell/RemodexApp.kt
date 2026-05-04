@@ -2505,6 +2505,7 @@ private fun ThreadCompletionBanner(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HomeEmptyState(
     uiState: AppUiState,
