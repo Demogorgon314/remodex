@@ -34,6 +34,8 @@ import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -53,6 +55,7 @@ import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexGptAccountStatus
@@ -1639,6 +1642,8 @@ class DefaultRemodexAppRepository(
         threadId: String,
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
         planningModeOverride: RemodexPlanningMode?,
         queuedDraftContext: RemodexQueuedDraftContext?,
         forceQueue: Boolean,
@@ -1700,6 +1705,8 @@ class DefaultRemodexAppRepository(
                         planningModeOverride,
                     ),
                     attachments = attachments,
+                    skillMentions = skillMentions,
+                    mentionMentions = mentionMentions,
                 )
                 refreshBaseThreadsFromSync()
                 return
@@ -1723,6 +1730,8 @@ class DefaultRemodexAppRepository(
                     planningModeOverride,
                 ),
                 attachments = attachments,
+                skillMentions = skillMentions,
+                mentionMentions = mentionMentions,
                 existingOptimisticMessageId = optimisticPreSendState?.messageId,
             )
         } catch (error: Throwable) {
@@ -1745,6 +1754,8 @@ class DefaultRemodexAppRepository(
                     resumedContinuationThread.runtimeConfig,
                     planningModeOverride,
                 ),
+                skillMentions = skillMentions,
+                mentionMentions = mentionMentions,
             )
         }
         refreshBaseThreadsFromSync()
@@ -1851,6 +1862,8 @@ class DefaultRemodexAppRepository(
                     planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
                 ),
                 attachments = draft.attachments,
+                skillMentions = draft.rawMentionedSkills,
+                mentionMentions = draft.rawMentionedPlugins,
             )
         } catch (error: Throwable) {
             persistQueuedDrafts(
@@ -1879,6 +1892,8 @@ class DefaultRemodexAppRepository(
                         planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
                     ),
                     attachments = draft.attachments,
+                    skillMentions = draft.rawMentionedSkills,
+                    mentionMentions = draft.rawMentionedPlugins,
                 )
             } else {
                 sendPromptWithLocalOptimistic(
@@ -1888,6 +1903,8 @@ class DefaultRemodexAppRepository(
                         planningMode = draft.planningMode ?: thread.runtimeConfig.planningMode,
                     ),
                     attachments = draft.attachments,
+                    skillMentions = draft.rawMentionedSkills,
+                    mentionMentions = draft.rawMentionedPlugins,
                 )
             }
         } catch (error: Throwable) {
@@ -2223,6 +2240,13 @@ class DefaultRemodexAppRepository(
         forceReload: Boolean,
     ): List<RemodexSkillMetadata> {
         return threadCommandService.listSkills(threadId, forceReload)
+    }
+
+    override suspend fun listPlugins(
+        threadId: String,
+        forceReload: Boolean,
+    ): List<RemodexPluginMetadata> {
+        return threadCommandService.listPlugins(threadId, forceReload)
     }
 
     override suspend fun startCodeReview(
@@ -2963,6 +2987,8 @@ class DefaultRemodexAppRepository(
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill> = emptyList(),
+        mentionMentions: List<RemodexComposerMentionedPlugin> = emptyList(),
         existingOptimisticMessageId: String? = null,
     ) {
         val optimisticMessage = existingOptimisticMessageId?.let { messageId ->
@@ -2982,6 +3008,8 @@ class DefaultRemodexAppRepository(
                 prompt = prompt,
                 runtimeConfig = runtimeConfig,
                 attachments = attachments,
+                skillMentions = skillMentions,
+                mentionMentions = mentionMentions,
             )
         } catch (error: Throwable) {
             if (error is CancellationException) {
@@ -3038,6 +3066,7 @@ class DefaultRemodexAppRepository(
             rawInput = context?.rawInput,
             rawMentionedFiles = context?.rawMentionedFiles.orEmpty(),
             rawMentionedSkills = context?.rawMentionedSkills.orEmpty(),
+            rawMentionedPlugins = context?.rawMentionedPlugins.orEmpty(),
             rawSubagentsSelectionArmed = context?.rawSubagentsSelectionArmed == true,
         )
     }

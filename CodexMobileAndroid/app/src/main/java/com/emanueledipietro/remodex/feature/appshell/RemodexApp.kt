@@ -1179,6 +1179,8 @@ private fun MainPane(
                             onRemoveMentionedFile = viewModel::removeMentionedFile,
                             onSelectSkillAutocomplete = viewModel::selectSkillAutocomplete,
                             onRemoveMentionedSkill = viewModel::removeMentionedSkill,
+                            onSelectPluginAutocomplete = viewModel::selectPluginAutocomplete,
+                            onRemoveMentionedPlugin = viewModel::removeMentionedPlugin,
                             onSelectSlashCommand = viewModel::selectSlashCommand,
                             onSelectCodeReviewTarget = viewModel::selectCodeReviewTarget,
                             onSelectCodeReviewBranch = viewModel::selectCodeReviewBranch,

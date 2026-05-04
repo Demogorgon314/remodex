@@ -58,6 +58,34 @@ object RemodexComposerCommandLogic {
         return token.takeIf { candidate -> candidate.query.any(Char::isLetter) }
     }
 
+    fun trailingPluginToken(text: String): RemodexTrailingToken? {
+        if (text.isEmpty()) {
+            return null
+        }
+        val lastWhitespaceIndex = text.indexOfLast(Char::isWhitespace)
+        val tokenStart = if (lastWhitespaceIndex >= 0) lastWhitespaceIndex + 1 else 0
+        if (tokenStart >= text.length) {
+            return null
+        }
+        val token = text.substring(tokenStart)
+        if (!token.startsWith("@")) {
+            return null
+        }
+        val lastAtOffset = token.lastIndexOf('@')
+        val triggerIndex = tokenStart + lastAtOffset
+        if (triggerIndex > 0 && text[triggerIndex - 1].isLetterOrDigit()) {
+            return null
+        }
+        val query = text.substring(triggerIndex + 1)
+        if (query.any { character ->
+                character.isWhitespace() || character == '@' || character == '(' || character == ')'
+            }
+        ) {
+            return null
+        }
+        return RemodexTrailingToken(query = query, startIndex = triggerIndex)
+    }
+
     fun trailingSlashCommandToken(text: String): RemodexTrailingToken? {
         if (text.isEmpty()) {
             return null
@@ -92,6 +120,15 @@ object RemodexComposerCommandLogic {
             return null
         }
         return text.replaceRange(token.startIndex, text.length, "\$$trimmedSkill ")
+    }
+
+    fun replaceTrailingPluginToken(text: String, selectedPlugin: String): String? {
+        val trimmedPlugin = selectedPlugin.trim()
+        val token = trailingPluginToken(text) ?: return null
+        if (trimmedPlugin.isEmpty()) {
+            return null
+        }
+        return text.replaceRange(token.startIndex, text.length, "@$trimmedPlugin ")
     }
 
     fun removeTrailingSlashCommandToken(text: String): String? {
@@ -277,6 +314,17 @@ object RemodexComposerCommandLogic {
                 ignoreCase = true,
             )
         }
+    }
+
+    fun removePluginMentionAlias(
+        text: String,
+        mention: RemodexComposerMentionedPlugin,
+    ): String {
+        return removeBoundedToken(
+            token = "@${mention.name}",
+            text = text,
+            ignoreCase = true,
+        )
     }
 
     private fun trailingToken(

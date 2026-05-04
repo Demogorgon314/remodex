@@ -13,6 +13,8 @@ import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
@@ -37,6 +39,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -295,6 +298,8 @@ class FakeThreadSyncService(
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
     ) {
         val now = System.currentTimeMillis()
         backingThreads.update { threads ->
@@ -369,11 +374,13 @@ class FakeThreadSyncService(
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
     ) {
         val snapshot = backingThreads.value.firstOrNull { it.id == threadId }
         val activeTurnId = snapshot?.activeTurnId
         if (snapshot == null || !snapshot.isRunning || activeTurnId.isNullOrBlank()) {
-            sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
             return
         }
 
@@ -537,6 +544,8 @@ class FakeThreadSyncService(
             },
             runtimeConfig = backingThreads.value.firstOrNull { it.id == threadId }?.runtimeConfig ?: RemodexRuntimeConfig(),
             attachments = emptyList(),
+            skillMentions = emptyList(),
+            mentionMentions = emptyList(),
         )
     }
 
@@ -666,6 +675,32 @@ class FakeThreadSyncService(
                 name = "git-cleanup",
                 description = "Summarize local repo state before git actions.",
                 path = "/skills/git-cleanup",
+            ),
+        )
+    }
+
+    override suspend fun listPlugins(
+        threadId: String,
+        forceReload: Boolean,
+    ): List<RemodexPluginMetadata> {
+        return listOf(
+            RemodexPluginMetadata(
+                id = "github@openai",
+                name = "github",
+                marketplaceName = "openai",
+                displayName = "GitHub",
+                shortDescription = "Inspect repositories, pull requests, and issues.",
+                installed = true,
+                enabled = true,
+            ),
+            RemodexPluginMetadata(
+                id = "browser-use@openai",
+                name = "browser-use",
+                marketplaceName = "openai",
+                displayName = "Browser Use",
+                shortDescription = "Open and inspect local browser targets.",
+                installed = true,
+                enabled = true,
             ),
         )
     }

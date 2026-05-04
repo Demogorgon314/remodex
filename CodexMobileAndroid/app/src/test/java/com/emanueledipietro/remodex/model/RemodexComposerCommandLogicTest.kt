@@ -64,4 +64,33 @@ class RemodexComposerCommandLogicTest {
             ),
         )
     }
+
+    @Test
+    fun trailingPluginToken_acceptsBareAtAndQuery() {
+        assertEquals(
+            "",
+            RemodexComposerCommandLogic.trailingPluginToken("@")?.query,
+        )
+        assertEquals(
+            "github",
+            RemodexComposerCommandLogic.trailingPluginToken("ask @github")?.query,
+        )
+    }
+
+    @Test
+    fun trailingPluginToken_rejectsEmailsAndCompletedMentions() {
+        assertNull(RemodexComposerCommandLogic.trailingPluginToken("me@example.com"))
+        assertNull(RemodexComposerCommandLogic.trailingPluginToken("@github ready"))
+    }
+
+    @Test
+    fun replaceTrailingPluginToken_replacesTheActiveToken() {
+        assertEquals(
+            "ask @github ",
+            RemodexComposerCommandLogic.replaceTrailingPluginToken(
+                text = "ask @gi",
+                selectedPlugin = "github",
+            ),
+        )
+    }
 }

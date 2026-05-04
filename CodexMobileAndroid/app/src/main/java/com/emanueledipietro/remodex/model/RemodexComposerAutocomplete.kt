@@ -24,6 +24,47 @@ data class RemodexSkillMetadata(
         get() = name.trim().lowercase()
 }
 
+data class RemodexPluginMetadata(
+    val id: String,
+    val name: String,
+    val marketplaceName: String,
+    val marketplacePath: String? = null,
+    val displayName: String? = null,
+    val shortDescription: String? = null,
+    val installed: Boolean = false,
+    val enabled: Boolean = false,
+    val installPolicy: String? = null,
+) {
+    val mentionPath: String
+        get() = "plugin://$name@$marketplaceName"
+
+    val displayTitle: String
+        get() = displayName?.trim()?.takeIf(String::isNotEmpty) ?: name
+
+    val isAvailableForMention: Boolean
+        get() = installed || enabled || installPolicy == "INSTALLED_BY_DEFAULT"
+
+    val searchBlob: String
+        get() = listOf(name, displayName.orEmpty(), shortDescription.orEmpty(), marketplaceName)
+            .joinToString(separator = "\n") { normalizedDiscoveryText(it) }
+
+    fun matchesSearch(query: String): Boolean {
+        val normalizedQuery = normalizedDiscoveryText(query)
+        return normalizedQuery.isEmpty() || searchBlob.contains(normalizedQuery)
+    }
+
+    companion object {
+        fun normalizedDiscoveryText(value: String): String {
+            return value
+                .lowercase()
+                .replace(Regex("[:/_-]+"), " ")
+                .split(Regex("\\s+"))
+                .filter(String::isNotEmpty)
+                .joinToString(" ")
+        }
+    }
+}
+
 @Serializable
 data class RemodexComposerMentionedFile(
     val id: String,
@@ -37,6 +78,14 @@ data class RemodexComposerMentionedSkill(
     val name: String,
     val path: String? = null,
     val description: String? = null,
+)
+
+@Serializable
+data class RemodexComposerMentionedPlugin(
+    val id: String,
+    val name: String,
+    val path: String,
+    val displayName: String? = null,
 )
 
 enum class RemodexComposerReviewTarget {
@@ -215,6 +264,7 @@ enum class RemodexSlashCommand(
 enum class RemodexComposerAutocompletePanel {
     NONE,
     FILES,
+    PLUGINS,
     SKILLS,
     COMMANDS,
     REVIEW_TARGETS,
@@ -228,6 +278,9 @@ data class RemodexComposerAutocompleteState(
     val fileItems: List<RemodexFuzzyFileMatch> = emptyList(),
     val isFileLoading: Boolean = false,
     val fileQuery: String = "",
+    val pluginItems: List<RemodexPluginMetadata> = emptyList(),
+    val isPluginLoading: Boolean = false,
+    val pluginQuery: String = "",
     val skillItems: List<RemodexSkillMetadata> = emptyList(),
     val isSkillLoading: Boolean = false,
     val skillQuery: String = "",

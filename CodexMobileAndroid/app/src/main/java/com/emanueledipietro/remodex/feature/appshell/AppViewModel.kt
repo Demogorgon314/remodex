@@ -36,6 +36,7 @@ import com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState
 import com.emanueledipietro.remodex.model.RemodexComposerCommandLogic
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedFile
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexComposerReviewSelection
@@ -54,6 +55,7 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexNotificationRegistrationState
@@ -61,6 +63,7 @@ import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.normalizeRemodexFilesystemProjectPath
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
+import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
@@ -99,6 +102,7 @@ data class ComposerUiState(
     val voice: ComposerVoiceUiState = ComposerVoiceUiState(),
     val mentionedFiles: List<RemodexComposerMentionedFile> = emptyList(),
     val mentionedSkills: List<RemodexComposerMentionedSkill> = emptyList(),
+    val mentionedPlugins: List<RemodexComposerMentionedPlugin> = emptyList(),
     val reviewSelection: RemodexComposerReviewSelection? = null,
     val isSubagentsSelectionArmed: Boolean = false,
     val queuedDrafts: List<RemodexQueuedDraft> = emptyList(),
@@ -280,6 +284,7 @@ private data class ComposerRenderStateA(
     val attachmentsByThread: Map<String, List<RemodexComposerAttachment>> = emptyMap(),
     val mentionedFilesByThread: Map<String, List<RemodexComposerMentionedFile>> = emptyMap(),
     val mentionedSkillsByThread: Map<String, List<RemodexComposerMentionedSkill>> = emptyMap(),
+    val mentionedPluginsByThread: Map<String, List<RemodexComposerMentionedPlugin>> = emptyMap(),
     val reviewSelectionsByThread: Map<String, RemodexComposerReviewSelection?> = emptyMap(),
 )
 
@@ -325,6 +330,7 @@ private data class PendingComposerSendState(
     val attachments: List<RemodexComposerAttachment>,
     val mentionedFiles: List<RemodexComposerMentionedFile>,
     val mentionedSkills: List<RemodexComposerMentionedSkill>,
+    val mentionedPlugins: List<RemodexComposerMentionedPlugin>,
     val reviewSelection: RemodexComposerReviewSelection?,
     val isSubagentsSelectionArmed: Boolean,
 )
@@ -373,6 +379,7 @@ class AppViewModel(
     private val composerAttachments = MutableStateFlow<Map<String, List<RemodexComposerAttachment>>>(emptyMap())
     private val composerMentionedFiles = MutableStateFlow<Map<String, List<RemodexComposerMentionedFile>>>(emptyMap())
     private val composerMentionedSkills = MutableStateFlow<Map<String, List<RemodexComposerMentionedSkill>>>(emptyMap())
+    private val composerMentionedPlugins = MutableStateFlow<Map<String, List<RemodexComposerMentionedPlugin>>>(emptyMap())
     private val composerReviewSelections = MutableStateFlow<Map<String, RemodexComposerReviewSelection?>>(emptyMap())
     private val composerSubagentsSelections = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val attachmentMessages = MutableStateFlow<Map<String, String?>>(emptyMap())
@@ -405,6 +412,7 @@ class AppViewModel(
     private val switchingMacDeviceIdState = MutableStateFlow<String?>(null)
     private val macSwitchNoticeState = MutableStateFlow<String?>(null)
     private var fileAutocompleteJob: Job? = null
+    private var pluginAutocompleteJob: Job? = null
     private var skillAutocompleteJob: Job? = null
     private var reviewAutocompleteJob: Job? = null
     private var autoReconnectJob: Job? = null
@@ -428,19 +436,28 @@ class AppViewModel(
     internal var reconnectSleepChunkMillisOverride: Long? = null
     private val gitStateRefreshDebounceMillis = 350L
 
+    private val composerMentionState =
+        combine(
+            composerMentionedSkills,
+            composerMentionedPlugins,
+        ) { mentionedSkillsByThread, mentionedPluginsByThread ->
+            mentionedSkillsByThread to mentionedPluginsByThread
+        }
+
     private val composerRenderStateA =
         combine(
             composerDrafts,
             composerAttachments,
             composerMentionedFiles,
-            composerMentionedSkills,
+            composerMentionState,
             composerReviewSelections,
-        ) { draftsByThread, attachmentsByThread, mentionedFilesByThread, mentionedSkillsByThread, reviewSelectionsByThread ->
+        ) { draftsByThread, attachmentsByThread, mentionedFilesByThread, mentionState, reviewSelectionsByThread ->
             ComposerRenderStateA(
                 draftsByThread = draftsByThread,
                 attachmentsByThread = attachmentsByThread,
                 mentionedFilesByThread = mentionedFilesByThread,
-                mentionedSkillsByThread = mentionedSkillsByThread,
+                mentionedSkillsByThread = mentionState.first,
+                mentionedPluginsByThread = mentionState.second,
                 reviewSelectionsByThread = reviewSelectionsByThread,
             )
         }
@@ -585,6 +602,7 @@ class AppViewModel(
             val attachments = selectedThread?.id?.let(renderStateA.attachmentsByThread::get).orEmpty()
             val mentionedFiles = selectedThread?.id?.let(renderStateA.mentionedFilesByThread::get).orEmpty()
             val mentionedSkills = selectedThread?.id?.let(renderStateA.mentionedSkillsByThread::get).orEmpty()
+            val mentionedPlugins = selectedThread?.id?.let(renderStateA.mentionedPluginsByThread::get).orEmpty()
             val reviewSelection = selectedThread?.id?.let(renderStateA.reviewSelectionsByThread::get)
             val isSubagentsSelectionArmed = selectedThread?.id?.let(renderStateB.subagentsSelectionsByThread::get) == true
             val attachmentMessage = selectedThread?.id?.let(renderStateB.attachmentMessagesByThread::get)
@@ -629,6 +647,7 @@ class AppViewModel(
                     attachments = attachments,
                     mentionedFiles = mentionedFiles,
                     mentionedSkills = mentionedSkills,
+                    mentionedPlugins = mentionedPlugins,
                     reviewSelection = reviewSelection,
                     isSubagentsSelectionArmed = isSubagentsSelectionArmed,
                     attachmentLimitMessage = attachmentMessage,
@@ -1178,6 +1197,7 @@ class AppViewModel(
                 attachments = composer.attachments,
                 mentionedFiles = composer.mentionedFiles,
                 mentionedSkills = composer.mentionedSkills,
+                mentionedPlugins = composer.mentionedPlugins,
                 reviewSelection = composer.reviewSelection,
                 isSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
@@ -1301,6 +1321,7 @@ class AppViewModel(
                 composer.attachments.isEmpty() &&
                     composer.mentionedFiles.isEmpty() &&
                     composer.mentionedSkills.isEmpty() &&
+                    composer.mentionedPlugins.isEmpty() &&
                     !composer.isSubagentsSelectionArmed &&
                     RemodexComposerCommandLogic.isStandaloneSlashCommand(
                         text = composer.draftText,
@@ -1318,6 +1339,7 @@ class AppViewModel(
                 composer.attachments.isEmpty() &&
                     composer.mentionedFiles.isEmpty() &&
                     composer.mentionedSkills.isEmpty() &&
+                    composer.mentionedPlugins.isEmpty() &&
                     !composer.isSubagentsSelectionArmed &&
                     RemodexComposerCommandLogic.isStandaloneSlashCommand(
                         text = composer.draftText,
@@ -1340,6 +1362,7 @@ class AppViewModel(
                 rawInput = composer.draftText,
                 rawMentionedFiles = composer.mentionedFiles,
                 rawMentionedSkills = composer.mentionedSkills,
+                rawMentionedPlugins = composer.mentionedPlugins,
                 rawSubagentsSelectionArmed = composer.isSubagentsSelectionArmed,
             )
             val queuePausedWhileIdle = composer.isQueuePaused && !selectedThread.isRunning
@@ -1357,6 +1380,8 @@ class AppViewModel(
                     threadId = threadId,
                     prompt = payload,
                     attachments = composer.attachments,
+                    skillMentions = composer.mentionedSkills,
+                    mentionMentions = composer.mentionedPlugins,
                     queuedDraftContext = queuedDraftContext,
                     forceQueue = queuePausedWhileIdle,
                 )
@@ -1677,6 +1702,62 @@ class AppViewModel(
             }
         }
         composerMentionedFiles.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply {
+                this[threadId] = mentionsByThread[threadId].orEmpty()
+                    .filterNot { item -> item.id == mentionId }
+            }
+        }
+    }
+
+    fun selectPluginAutocomplete(plugin: RemodexPluginMetadata) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val normalizedName = plugin.name.trim()
+        val normalizedPath = plugin.mentionPath.trim()
+        if (normalizedName.isEmpty() || normalizedPath.isEmpty()) {
+            clearComposerAutocomplete()
+            return
+        }
+        clearReviewSelectionIfConfirmed(threadId)
+        composerDrafts.update { draftsByThread ->
+            val currentDraft = draftsByThread[threadId].orEmpty()
+            draftsByThread.toMutableMap().apply {
+                this[threadId] = RemodexComposerCommandLogic.replaceTrailingPluginToken(
+                    text = currentDraft,
+                    selectedPlugin = normalizedName,
+                ) ?: currentDraft
+            }
+        }
+        composerMentionedPlugins.update { mentionsByThread ->
+            val existing = mentionsByThread[threadId].orEmpty()
+            if (existing.any { mention -> mention.path == normalizedPath }) {
+                mentionsByThread
+            } else {
+                mentionsByThread.toMutableMap().apply {
+                    this[threadId] = existing + RemodexComposerMentionedPlugin(
+                        id = normalizedPath,
+                        name = normalizedName,
+                        path = normalizedPath,
+                        displayName = plugin.displayName,
+                    )
+                }
+            }
+        }
+        clearComposerAutocomplete()
+    }
+
+    fun removeMentionedPlugin(mentionId: String) {
+        val threadId = uiState.value.selectedThread?.id ?: return
+        val mention = composerMentionedPlugins.value[threadId].orEmpty().firstOrNull { it.id == mentionId } ?: return
+        composerDrafts.update { draftsByThread ->
+            val currentDraft = draftsByThread[threadId].orEmpty()
+            draftsByThread.toMutableMap().apply {
+                this[threadId] = RemodexComposerCommandLogic.removePluginMentionAlias(
+                    text = currentDraft,
+                    mention = mention,
+                )
+            }
+        }
+        composerMentionedPlugins.update { mentionsByThread ->
             mentionsByThread.toMutableMap().apply {
                 this[threadId] = mentionsByThread[threadId].orEmpty()
                     .filterNot { item -> item.id == mentionId }
@@ -2189,8 +2270,17 @@ class AppViewModel(
     }
 
     fun selectModel(modelId: String?) {
+        val threadId = uiState.value.selectedThread?.id
+        val selectedModelSupportsFast = modelId?.let { requestedModelId ->
+            uiState.value.composer.runtimeConfig.availableModels.firstOrNull { model ->
+                model.id == requestedModelId || model.model == requestedModelId
+            }?.let(RemodexRuntimeMetaMapper::supportsFastMode)
+        } == true
         viewModelScope.launch {
             repository.setSelectedModelId(modelId)
+            if (!selectedModelSupportsFast && threadId != null) {
+                repository.setServiceTier(threadId, null)
+            }
         }
     }
 
@@ -3457,6 +3547,7 @@ class AppViewModel(
         val composer = uiState.value.composer
         val slashToken = RemodexComposerCommandLogic.trailingSlashCommandToken(input)
         val fileToken = RemodexComposerCommandLogic.trailingFileToken(input)
+        val pluginToken = RemodexComposerCommandLogic.trailingPluginToken(input)
         val skillToken = RemodexComposerCommandLogic.trailingSkillToken(input)
 
         when {
@@ -3470,17 +3561,35 @@ class AppViewModel(
                     return
                 }
                 fileAutocompleteJob?.cancel()
+                pluginAutocompleteJob?.cancel()
                 skillAutocompleteJob?.cancel()
                 reviewAutocompleteJob?.cancel()
                 if (fileToken.query.length < MinAutocompleteQueryLength) {
-                    clearComposerAutocomplete()
+                    if (pluginToken != null) {
+                        launchPluginAutocomplete(
+                            threadId = threadId,
+                            query = pluginToken.query,
+                            panel = RemodexComposerAutocompletePanel.PLUGINS,
+                        )
+                    } else {
+                        clearComposerAutocomplete()
+                    }
                     return
                 }
                 autocompleteState.value = RemodexComposerAutocompleteState(
                     panel = RemodexComposerAutocompletePanel.FILES,
                     fileQuery = fileToken.query,
                     isFileLoading = true,
+                    pluginQuery = pluginToken?.query.orEmpty(),
+                    isPluginLoading = pluginToken != null,
                 )
+                if (pluginToken != null) {
+                    launchPluginAutocomplete(
+                        threadId = threadId,
+                        query = pluginToken.query,
+                        panel = RemodexComposerAutocompletePanel.FILES,
+                    )
+                }
                 val expectedQuery = fileToken.query
                 fileAutocompleteJob = viewModelScope.launch {
                     delay(AutocompleteDebounceMs)
@@ -3511,9 +3620,21 @@ class AppViewModel(
                 }
             }
 
+            pluginToken != null -> {
+                fileAutocompleteJob?.cancel()
+                skillAutocompleteJob?.cancel()
+                reviewAutocompleteJob?.cancel()
+                launchPluginAutocomplete(
+                    threadId = threadId,
+                    query = pluginToken.query,
+                    panel = RemodexComposerAutocompletePanel.PLUGINS,
+                )
+            }
+
             skillToken != null -> {
                 skillAutocompleteJob?.cancel()
                 fileAutocompleteJob?.cancel()
+                pluginAutocompleteJob?.cancel()
                 reviewAutocompleteJob?.cancel()
                 if (skillToken.query.length < MinAutocompleteQueryLength) {
                     clearComposerAutocomplete()
@@ -3560,6 +3681,7 @@ class AppViewModel(
 
             slashToken != null -> {
                 fileAutocompleteJob?.cancel()
+                pluginAutocompleteJob?.cancel()
                 skillAutocompleteJob?.cancel()
                 reviewAutocompleteJob?.cancel()
                 val availableCommands = availableSlashCommands(
@@ -3580,8 +3702,64 @@ class AppViewModel(
         }
     }
 
+    private fun launchPluginAutocomplete(
+        threadId: String,
+        query: String,
+        panel: RemodexComposerAutocompletePanel,
+    ) {
+        pluginAutocompleteJob?.cancel()
+        autocompleteState.value = autocompleteState.value.copy(
+            panel = panel,
+            pluginQuery = query,
+            isPluginLoading = true,
+        )
+        val expectedQuery = query
+        pluginAutocompleteJob = viewModelScope.launch {
+            delay(AutocompleteDebounceMs)
+            runCatching {
+                repository.listPlugins(threadId = threadId, forceReload = false)
+                    .filter { plugin -> plugin.matchesSearch(expectedQuery) }
+                    .take(MaxAutocompleteItems)
+            }.onSuccess { matches ->
+                val currentToken = RemodexComposerCommandLogic.trailingPluginToken(
+                    composerDrafts.value[threadId].orEmpty(),
+                )
+                if (currentToken?.query != expectedQuery) {
+                    return@onSuccess
+                }
+                val nextPanel = if (panel == RemodexComposerAutocompletePanel.PLUGINS && matches.isEmpty()) {
+                    RemodexComposerAutocompletePanel.NONE
+                } else {
+                    panel
+                }
+                autocompleteState.value = autocompleteState.value.copy(
+                    panel = nextPanel,
+                    pluginQuery = expectedQuery,
+                    pluginItems = matches,
+                    isPluginLoading = false,
+                )
+            }.onFailure {
+                val currentToken = RemodexComposerCommandLogic.trailingPluginToken(
+                    composerDrafts.value[threadId].orEmpty(),
+                )
+                if (currentToken?.query != expectedQuery) {
+                    return@onFailure
+                }
+                if (panel == RemodexComposerAutocompletePanel.PLUGINS) {
+                    clearComposerAutocomplete()
+                } else {
+                    autocompleteState.value = autocompleteState.value.copy(
+                        pluginItems = emptyList(),
+                        isPluginLoading = false,
+                    )
+                }
+            }
+        }
+    }
+
     private fun clearComposerAutocomplete() {
         fileAutocompleteJob?.cancel()
+        pluginAutocompleteJob?.cancel()
         skillAutocompleteJob?.cancel()
         reviewAutocompleteJob?.cancel()
         autocompleteState.value = RemodexComposerAutocompleteState()
@@ -3714,6 +3892,9 @@ class AppViewModel(
         composerMentionedSkills.update { mentionsByThread ->
             mentionsByThread.toMutableMap().apply { remove(threadId) }
         }
+        composerMentionedPlugins.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply { remove(threadId) }
+        }
         composerReviewSelections.update { selectionsByThread ->
             selectionsByThread.toMutableMap().apply { remove(threadId) }
         }
@@ -3833,6 +4014,15 @@ class AppViewModel(
                 }
             }
         }
+        composerMentionedPlugins.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply {
+                if (draft.rawMentionedPlugins.isEmpty()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = draft.rawMentionedPlugins
+                }
+            }
+        }
         composerReviewSelections.update { selectionsByThread ->
             selectionsByThread.toMutableMap().apply { remove(threadId) }
         }
@@ -3876,6 +4066,11 @@ class AppViewModel(
         composerMentionedSkills.update { mentionsByThread ->
             mentionsByThread.toMutableMap().apply {
                 this[threadId] = pendingComposerState.mentionedSkills
+            }
+        }
+        composerMentionedPlugins.update { mentionsByThread ->
+            mentionsByThread.toMutableMap().apply {
+                this[threadId] = pendingComposerState.mentionedPlugins
             }
         }
         composerReviewSelections.update { selectionsByThread ->
@@ -4789,6 +4984,7 @@ class AppViewModel(
         attachments: List<RemodexComposerAttachment>,
         mentionedFiles: List<RemodexComposerMentionedFile>,
         mentionedSkills: List<RemodexComposerMentionedSkill>,
+        mentionedPlugins: List<RemodexComposerMentionedPlugin>,
         reviewSelection: RemodexComposerReviewSelection?,
         isSubagentsSelectionArmed: Boolean,
         attachmentLimitMessage: String?,
@@ -4812,6 +5008,7 @@ class AppViewModel(
             attachments.isNotEmpty() ||
             mentionedFiles.isNotEmpty() ||
             mentionedSkills.isNotEmpty() ||
+            mentionedPlugins.isNotEmpty() ||
             reviewSelection != null ||
             isSubagentsSelectionArmed ||
             thread.runtimeConfig.planningMode == RemodexPlanningMode.PLAN
@@ -4833,6 +5030,7 @@ class AppViewModel(
             voice = voiceUiState.copy(isConnected = isConnected),
             mentionedFiles = mentionedFiles,
             mentionedSkills = mentionedSkills,
+            mentionedPlugins = mentionedPlugins,
             reviewSelection = reviewSelection,
             isSubagentsSelectionArmed = isSubagentsSelectionArmed,
             queuedDrafts = thread.queuedDraftItems,

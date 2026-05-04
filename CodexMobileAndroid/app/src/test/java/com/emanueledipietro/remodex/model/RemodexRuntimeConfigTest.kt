@@ -77,7 +77,32 @@ class RemodexRuntimeConfigTest {
         ).normalizeSelections()
 
         assertTrue(config.availableModels.any { option -> option.id == "gpt-5.5" })
-        assertTrue(config.availableModels.any { option -> option.id == "gpt-5.4-mini" })
+        assertTrue(config.availableModels.any { option -> option.id == "gpt-5.2-codex" })
+    }
+
+    @Test
+    fun `codex reference models mirror iOS fast capability fallback`() {
+        val models = RemodexRuntimeConfig().normalizeSelections().availableModels
+        val fastModelIds = models.filter(RemodexRuntimeMetaMapper::supportsFastMode).map(RemodexModelOption::id).toSet()
+
+        assertTrue("gpt-5.5" in fastModelIds)
+        assertTrue("gpt-5.4" in fastModelIds)
+        assertTrue("gpt-5.2-codex" in fastModelIds)
+        assertTrue("gpt-5.2" in fastModelIds)
+    }
+
+    @Test
+    fun `known fast model remains fast capable even when metadata omits flag`() {
+        assertTrue(
+            RemodexRuntimeMetaMapper.supportsFastMode(
+                RemodexModelOption(
+                    id = "gpt-5.5",
+                    model = "gpt-5.5",
+                    displayName = "GPT-5.5",
+                    supportsFastMode = false,
+                ),
+            ),
+        )
     }
 
     @Test

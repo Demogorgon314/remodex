@@ -9,6 +9,8 @@ import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
@@ -31,6 +33,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputRequest
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
@@ -137,6 +140,8 @@ interface ThreadCommandService {
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill> = emptyList(),
+        mentionMentions: List<RemodexComposerMentionedPlugin> = emptyList(),
     )
 
     suspend fun steerPrompt(
@@ -144,6 +149,8 @@ interface ThreadCommandService {
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill> = emptyList(),
+        mentionMentions: List<RemodexComposerMentionedPlugin> = emptyList(),
     )
 
     suspend fun compactThread(threadId: String)
@@ -192,6 +199,11 @@ interface ThreadCommandService {
         threadId: String,
         forceReload: Boolean = false,
     ): List<RemodexSkillMetadata>
+
+    suspend fun listPlugins(
+        threadId: String,
+        forceReload: Boolean = false,
+    ): List<RemodexPluginMetadata>
 
     suspend fun loadGitState(threadId: String): RemodexGitState
 

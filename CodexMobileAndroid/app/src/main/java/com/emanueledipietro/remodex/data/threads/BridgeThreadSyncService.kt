@@ -30,6 +30,8 @@ import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexApprovalRequest
 import com.emanueledipietro.remodex.model.RemodexCodeReviewRequest
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
@@ -67,6 +69,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputOption
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputAnswer
 import com.emanueledipietro.remodex.model.RemodexStructuredUserInputQuestion
@@ -1381,6 +1384,8 @@ class BridgeThreadSyncService(
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
     ) {
         if (!isConnected()) {
             return
@@ -1404,6 +1409,7 @@ class BridgeThreadSyncService(
 
         var imageUrlKey = "url"
         var includeCollaborationMode = shouldIncludeCollaborationMode(runtimeConfig.planningMode)
+        var includeStructuredItems = true
         var turnStartResponse: RpcMessage? = null
         val response = try {
             retryAfterThreadMaterialization {
@@ -1419,9 +1425,12 @@ class BridgeThreadSyncService(
                                     prompt = trimmedPrompt,
                                     attachments = attachments,
                                     runtimeConfig = runtimeConfig,
+                                    skillMentions = skillMentions,
+                                    mentionMentions = mentionMentions,
                                     includeServiceTier = includeServiceTier,
                                     imageUrlKey = imageUrlKey,
                                     includeCollaborationMode = includeCollaborationMode,
+                                    includeStructuredItems = includeStructuredItems,
                                 )
                             },
                         )
@@ -1435,6 +1444,13 @@ class BridgeThreadSyncService(
                         }
                         if (consumeUnsupportedCollaborationMode(error, includeCollaborationMode)) {
                             includeCollaborationMode = false
+                            continue
+                        }
+                        if (includeStructuredItems &&
+                            (skillMentions.isNotEmpty() || mentionMentions.isNotEmpty()) &&
+                            shouldRetryWithStructuredInputFallback(error)
+                        ) {
+                            includeStructuredItems = false
                             continue
                         }
                         throw error
@@ -1473,6 +1489,8 @@ class BridgeThreadSyncService(
         prompt: String,
         runtimeConfig: RemodexRuntimeConfig,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
     ) {
         if (!isConnected()) {
             return
@@ -1488,6 +1506,8 @@ class BridgeThreadSyncService(
                 prompt = trimmedPrompt,
                 runtimeConfig = runtimeConfig,
                 attachments = attachments,
+                skillMentions = skillMentions,
+                mentionMentions = mentionMentions,
             )
             return
         }
@@ -1501,6 +1521,7 @@ class BridgeThreadSyncService(
 
         var imageUrlKey = "url"
         var includeCollaborationMode = shouldIncludeCollaborationMode(runtimeConfig.planningMode)
+        var includeStructuredItems = true
         var responseMessage: RpcMessage? = null
         var currentExpectedTurnId = resolveSteerExpectedTurnId(threadId)
         var didRetryWithRefreshedTurnId = false
@@ -1520,9 +1541,12 @@ class BridgeThreadSyncService(
                                         prompt = trimmedPrompt,
                                         attachments = attachments,
                                         runtimeConfig = runtimeConfig,
+                                        skillMentions = skillMentions,
+                                        mentionMentions = mentionMentions,
                                         includeServiceTier = includeServiceTier,
                                         imageUrlKey = imageUrlKey,
                                         includeCollaborationMode = includeCollaborationMode,
+                                        includeStructuredItems = includeStructuredItems,
                                     )
                                 } else {
                                     buildTurnSteerParams(
@@ -1530,9 +1554,12 @@ class BridgeThreadSyncService(
                                         prompt = trimmedPrompt,
                                         attachments = attachments,
                                         runtimeConfig = runtimeConfig,
+                                        skillMentions = skillMentions,
+                                        mentionMentions = mentionMentions,
                                         includeServiceTier = includeServiceTier,
                                         imageUrlKey = imageUrlKey,
                                         includeCollaborationMode = includeCollaborationMode,
+                                        includeStructuredItems = includeStructuredItems,
                                         expectedTurnId = steeringTurnId,
                                     )
                                 }
@@ -1548,6 +1575,13 @@ class BridgeThreadSyncService(
                         }
                         if (consumeUnsupportedCollaborationMode(error, includeCollaborationMode)) {
                             includeCollaborationMode = false
+                            continue
+                        }
+                        if (includeStructuredItems &&
+                            (skillMentions.isNotEmpty() || mentionMentions.isNotEmpty()) &&
+                            shouldRetryWithStructuredInputFallback(error)
+                        ) {
+                            includeStructuredItems = false
                             continue
                         }
                         if (
@@ -2006,6 +2040,29 @@ class BridgeThreadSyncService(
         return decodeSkillMetadata(response.result)
             .distinctBy { skill -> skill.id }
             .sortedBy { skill -> skill.name.lowercase(Locale.ROOT) }
+    }
+
+    override suspend fun listPlugins(
+        threadId: String,
+        forceReload: Boolean,
+    ): List<RemodexPluginMetadata> {
+        val root = resolvedProjectPath(threadId)
+        if (!isConnected() || root.isEmpty()) {
+            return emptyList()
+        }
+        val response = secureConnectionCoordinator.sendRequest(
+            method = "plugin/list",
+            params = buildJsonObject {
+                put("cwds", buildJsonArray { add(JsonPrimitive(root)) })
+                if (forceReload) {
+                    put("forceReload", JsonPrimitive(true))
+                }
+            },
+        )
+        return decodePluginMetadata(response.result)
+            .filter(RemodexPluginMetadata::isAvailableForMention)
+            .distinctBy(RemodexPluginMetadata::mentionPath)
+            .sortedBy { plugin -> plugin.displayTitle.lowercase(Locale.ROOT) }
     }
 
     override suspend fun loadGitState(threadId: String): RemodexGitState {
@@ -2947,6 +3004,38 @@ class BridgeThreadSyncService(
         }
     }
 
+    private fun decodePluginMetadata(result: JsonElement?): List<RemodexPluginMetadata> {
+        val resultObject = result?.jsonObjectOrNull ?: return emptyList()
+        val marketplaces = resultObject.firstArray("marketplaces").orEmpty()
+        return marketplaces.flatMap { marketplaceValue ->
+            val marketplaceObject = marketplaceValue.jsonObjectOrNull ?: return@flatMap emptyList()
+            val marketplaceName = marketplaceObject.firstString("name").orEmpty().trim()
+            if (marketplaceName.isEmpty()) {
+                return@flatMap emptyList()
+            }
+            val marketplacePath = marketplaceObject.firstString("path")
+            marketplaceObject.firstArray("plugins").orEmpty().mapNotNull { pluginValue ->
+                val pluginObject = pluginValue.jsonObjectOrNull ?: return@mapNotNull null
+                val pluginName = pluginObject.firstString("name").orEmpty().trim()
+                if (pluginName.isEmpty()) {
+                    return@mapNotNull null
+                }
+                val interfaceObject = pluginObject.firstObject("interface")
+                RemodexPluginMetadata(
+                    id = pluginObject.firstString("id") ?: pluginName,
+                    name = pluginName,
+                    marketplaceName = marketplaceName,
+                    marketplacePath = marketplacePath,
+                    displayName = interfaceObject?.firstString("displayName", "display_name"),
+                    shortDescription = interfaceObject?.firstString("shortDescription", "short_description"),
+                    installed = pluginObject.firstBoolean("installed") ?: false,
+                    enabled = pluginObject.firstBoolean("enabled") ?: false,
+                    installPolicy = pluginObject.firstString("installPolicy", "install_policy"),
+                )
+            }
+        }
+    }
+
     private fun defaultForkBranchName(title: String): String {
         val slug = title.lowercase(Locale.ROOT)
             .replace(Regex("[^a-z0-9]+"), "-")
@@ -3370,6 +3459,10 @@ class BridgeThreadSyncService(
 
     private fun shouldRetryWithImageUrlFieldFallback(error: Throwable): Boolean {
         return shouldRetryWithImageUrlFieldFallbackValue(error)
+    }
+
+    private fun shouldRetryWithStructuredInputFallback(error: Throwable): Boolean {
+        return shouldRetryWithStructuredInputFallbackValue(error)
     }
 
     private fun shouldRetrySteerWithRefreshedTurnId(error: Throwable): Boolean {
@@ -10832,9 +10925,12 @@ class BridgeThreadSyncService(
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
         runtimeConfig: RemodexRuntimeConfig,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
         includeServiceTier: Boolean,
         imageUrlKey: String,
         includeCollaborationMode: Boolean,
+        includeStructuredItems: Boolean,
     ): JsonObject {
         val inputItems = buildJsonArray {
             attachments.forEach { attachment ->
@@ -10860,6 +10956,34 @@ class BridgeThreadSyncService(
                         put("text", JsonPrimitive(prompt))
                     },
                 )
+            }
+            if (includeStructuredItems) {
+                skillMentions.forEach { mention ->
+                    val normalizedId = mention.id.trim().takeIf(String::isNotEmpty) ?: return@forEach
+                    add(
+                        buildJsonObject {
+                            put("type", JsonPrimitive("skill"))
+                            put("id", JsonPrimitive(normalizedId))
+                            mention.name.trim().takeIf(String::isNotEmpty)?.let { name ->
+                                put("name", JsonPrimitive(name))
+                            }
+                            mention.path?.trim()?.takeIf(String::isNotEmpty)?.let { path ->
+                                put("path", JsonPrimitive(path))
+                            }
+                        },
+                    )
+                }
+                mentionMentions.forEach { mention ->
+                    val normalizedName = mention.name.trim().takeIf(String::isNotEmpty) ?: return@forEach
+                    val normalizedPath = mention.path.trim().takeIf(String::isNotEmpty) ?: return@forEach
+                    add(
+                        buildJsonObject {
+                            put("type", JsonPrimitive("mention"))
+                            put("name", JsonPrimitive(normalizedName))
+                            put("path", JsonPrimitive(normalizedPath))
+                        },
+                    )
+                }
             }
         }
         return buildJsonObject {
@@ -10887,9 +11011,12 @@ class BridgeThreadSyncService(
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
         runtimeConfig: RemodexRuntimeConfig,
+        skillMentions: List<RemodexComposerMentionedSkill>,
+        mentionMentions: List<RemodexComposerMentionedPlugin>,
         includeServiceTier: Boolean,
         imageUrlKey: String,
         includeCollaborationMode: Boolean,
+        includeStructuredItems: Boolean,
         expectedTurnId: String,
     ): JsonObject {
         val baseParams = buildTurnStartParams(
@@ -10897,9 +11024,12 @@ class BridgeThreadSyncService(
             prompt = prompt,
             attachments = attachments,
             runtimeConfig = runtimeConfig,
+            skillMentions = skillMentions,
+            mentionMentions = mentionMentions,
             includeServiceTier = includeServiceTier,
             imageUrlKey = imageUrlKey,
             includeCollaborationMode = includeCollaborationMode,
+            includeStructuredItems = includeStructuredItems,
         )
         return JsonObject(baseParams + ("expectedTurnId" to JsonPrimitive(expectedTurnId)))
     }
@@ -11036,6 +11166,20 @@ class BridgeThreadSyncService(
                 ?: model.ifEmpty { id },
             description = modelObject.firstString("description")?.trim().orEmpty(),
             isDefault = modelObject.firstBoolean("isDefault", "is_default") ?: false,
+            supportsFastMode = modelObject.firstBoolean(
+                "supportsFastMode",
+                "supports_fast_mode",
+                "fastMode",
+                "fast_mode",
+                "fastServiceTier",
+                "fast_service_tier",
+            )
+                ?: (modelObject.firstArray("additionalSpeedTiers", "additional_speed_tiers")
+                    .orEmpty()
+                    .any { tier -> tier.jsonPrimitive.contentOrNull?.trim()?.lowercase() == "fast" } ||
+                    model.ifEmpty { id }.lowercase().let { value ->
+                        value in setOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2-codex", "gpt-5.2")
+                    }),
             supportedReasoningEfforts = modelObject
                 .firstArray("supportedReasoningEfforts", "supported_reasoning_efforts", "supported_reasoning_levels")
                 .orEmpty()
@@ -11535,6 +11679,27 @@ internal fun shouldRetryWithImageUrlFieldFallbackValue(error: Throwable): Boolea
         || message.contains("unknown field")
         || message.contains("expected")
         || message.contains("invalid")
+}
+
+internal fun shouldRetryWithStructuredInputFallbackValue(error: Throwable): Boolean {
+    val rpcError = error as? RpcError ?: return false
+    if (rpcError.code != -32600 && rpcError.code != -32602) {
+        return false
+    }
+    val message = rpcError.message.lowercase(Locale.ROOT)
+    val mentionsStructuredInput = message.contains("skill") ||
+        message.contains("mention") ||
+        message.contains("input")
+    if (!mentionsStructuredInput) {
+        return false
+    }
+    return message.contains("invalid params") ||
+        message.contains("invalid param") ||
+        message.contains("unknown") ||
+        message.contains("unexpected") ||
+        message.contains("unrecognized") ||
+        message.contains("unsupported") ||
+        message.contains("failed to parse")
 }
 
 internal fun shouldRetrySteerWithRefreshedTurnIdValue(error: Throwable): Boolean {

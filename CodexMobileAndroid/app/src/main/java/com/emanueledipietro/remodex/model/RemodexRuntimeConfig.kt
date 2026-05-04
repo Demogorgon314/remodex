@@ -122,6 +122,7 @@ data class RemodexModelOption(
     val displayName: String,
     val description: String = "",
     val isDefault: Boolean = false,
+    val supportsFastMode: Boolean = false,
     val supportedReasoningEfforts: List<RemodexReasoningEffortOption> = emptyList(),
     val defaultReasoningEffort: String? = null,
 ) {
@@ -145,6 +146,7 @@ data class RemodexModelOption(
             model = normalizedModel.ifEmpty { normalizedId },
             displayName = displayName.trim().ifEmpty { normalizedModel.ifEmpty { normalizedId } },
             description = description.trim(),
+            supportsFastMode = supportsFastMode,
             supportedReasoningEfforts = normalizedEfforts,
             defaultReasoningEffort = normalizedDefaultReasoning,
         )

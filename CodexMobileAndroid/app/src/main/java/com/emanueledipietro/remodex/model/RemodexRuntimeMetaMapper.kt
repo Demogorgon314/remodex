@@ -4,9 +4,11 @@ object RemodexRuntimeMetaMapper {
     private val preferredModelOrder = listOf(
         "gpt-5.5",
         "gpt-5.4",
-        "gpt-5.4-mini",
         "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-max",
         "gpt-5.2",
+        "gpt-5.1-codex-mini",
     )
 
     private val codexReferenceModels = listOf(
@@ -23,9 +25,9 @@ object RemodexRuntimeMetaMapper {
             defaultReasoningEffort = "xhigh",
         ),
         codexReferenceModel(
-            id = "gpt-5.4-mini",
-            displayName = "GPT-5.4-Mini",
-            description = "Small, fast, and cost-efficient model for simpler coding tasks.",
+            id = "gpt-5.2-codex",
+            displayName = "GPT-5.2-Codex",
+            description = "Optimized for coding workflows.",
             defaultReasoningEffort = "medium",
         ),
         codexReferenceModel(
@@ -38,6 +40,18 @@ object RemodexRuntimeMetaMapper {
             id = "gpt-5.2",
             displayName = "GPT-5.2",
             description = "Optimized for professional work and long-running agents.",
+            defaultReasoningEffort = "medium",
+        ),
+        codexReferenceModel(
+            id = "gpt-5.1-codex-max",
+            displayName = "GPT-5.1-Codex-Max",
+            description = "Previous generation high-capability coding model.",
+            defaultReasoningEffort = "medium",
+        ),
+        codexReferenceModel(
+            id = "gpt-5.1-codex-mini",
+            displayName = "GPT-5.1-Codex-Mini",
+            description = "Previous generation compact coding model.",
             defaultReasoningEffort = "medium",
         ),
     )
@@ -79,11 +93,20 @@ object RemodexRuntimeMetaMapper {
         return when (model.model.lowercase()) {
             "gpt-5.5" -> "GPT-5.5"
             "gpt-5.3-codex" -> "GPT-5.3-Codex"
+            "gpt-5.2-codex" -> "GPT-5.2-Codex"
+            "gpt-5.1-codex-max" -> "GPT-5.1-Codex-Max"
             "gpt-5.4" -> "GPT-5.4"
-            "gpt-5.4-mini" -> "GPT-5.4-Mini"
             "gpt-5.2" -> "GPT-5.2"
+            "gpt-5.1-codex-mini" -> "GPT-5.1-Codex-Mini"
             else -> model.displayName
         }
+    }
+
+    fun supportsFastMode(model: RemodexModelOption): Boolean {
+        return model.supportsFastMode ||
+            listOf(model.id, model.model, model.displayName)
+                .map { value -> value.trim().lowercase() }
+                .any { value -> value in StaticFastModeModelIdentifiers }
     }
 
     fun reasoningTitle(effort: String): String {
@@ -121,6 +144,7 @@ private fun codexReferenceModel(
         displayName = displayName,
         description = description,
         isDefault = id == "gpt-5.5",
+        supportsFastMode = id in StaticFastModeModelIdentifiers,
         supportedReasoningEfforts = listOf(
             RemodexReasoningEffortOption(
                 reasoningEffort = "low",
@@ -142,3 +166,11 @@ private fun codexReferenceModel(
         defaultReasoningEffort = defaultReasoningEffort,
     )
 }
+
+private val StaticFastModeModelIdentifiers = setOf(
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2-codex",
+    "gpt-5.2",
+)

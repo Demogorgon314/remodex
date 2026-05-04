@@ -12,6 +12,7 @@ data class RemodexQueuedDraft(
     val rawInput: String? = null,
     val rawMentionedFiles: List<RemodexComposerMentionedFile> = emptyList(),
     val rawMentionedSkills: List<RemodexComposerMentionedSkill> = emptyList(),
+    val rawMentionedPlugins: List<RemodexComposerMentionedPlugin> = emptyList(),
     val rawSubagentsSelectionArmed: Boolean = false,
 )
 
@@ -19,5 +20,6 @@ data class RemodexQueuedDraftContext(
     val rawInput: String,
     val rawMentionedFiles: List<RemodexComposerMentionedFile> = emptyList(),
     val rawMentionedSkills: List<RemodexComposerMentionedSkill> = emptyList(),
+    val rawMentionedPlugins: List<RemodexComposerMentionedPlugin> = emptyList(),
     val rawSubagentsSelectionArmed: Boolean = false,
 )

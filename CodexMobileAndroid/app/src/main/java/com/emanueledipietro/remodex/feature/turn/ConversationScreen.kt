@@ -78,6 +78,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -96,6 +97,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.automirrored.outlined.Reply
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.AccountCircle
@@ -247,6 +249,7 @@ import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPlanState
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexServiceTier
@@ -311,6 +314,7 @@ private val FileChangeAddedColor = Color(0xFF22A653)
 private val FileChangeDeletedColor = Color(0xFFE04646)
 private val ComposerMentionFileTint = Color(0xFF2563EB)
 private val ComposerMentionSkillTint = Color(0xFF4F46E5)
+private val ComposerMentionPluginTint = Color(0xFF0F766E)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
 private const val ConversationTimelinePageSize = 40
@@ -1435,6 +1439,8 @@ fun ConversationScreen(
     onRemoveMentionedFile: (String) -> Unit,
     onSelectSkillAutocomplete: (RemodexSkillMetadata) -> Unit,
     onRemoveMentionedSkill: (String) -> Unit,
+    onSelectPluginAutocomplete: (RemodexPluginMetadata) -> Unit,
+    onRemoveMentionedPlugin: (String) -> Unit,
     onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
     onSelectCodeReviewBranch: (String) -> Unit,
@@ -2100,6 +2106,8 @@ fun ConversationScreen(
                 onRemoveMentionedFile = onRemoveMentionedFile,
                 onSelectSkillAutocomplete = onSelectSkillAutocomplete,
                 onRemoveMentionedSkill = onRemoveMentionedSkill,
+                onSelectPluginAutocomplete = onSelectPluginAutocomplete,
+                onRemoveMentionedPlugin = onRemoveMentionedPlugin,
                 onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                 onSelectCodeReviewBranch = onSelectCodeReviewBranch,
                 onSelectCodeReviewCommit = onSelectCodeReviewCommit,
@@ -2373,6 +2381,8 @@ private fun ConversationComposerPane(
     onRemoveMentionedFile: (String) -> Unit,
     onSelectSkillAutocomplete: (RemodexSkillMetadata) -> Unit,
     onRemoveMentionedSkill: (String) -> Unit,
+    onSelectPluginAutocomplete: (RemodexPluginMetadata) -> Unit,
+    onRemoveMentionedPlugin: (String) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
     onSelectCodeReviewBranch: (String) -> Unit,
     onSelectCodeReviewCommit: (RemodexGitCommit) -> Unit,
@@ -2504,6 +2514,7 @@ private fun ConversationComposerPane(
                                         uiState = uiState,
                                         onSelectFileAutocomplete = onSelectFileAutocomplete,
                                         onSelectSkillAutocomplete = onSelectSkillAutocomplete,
+                                        onSelectPluginAutocomplete = onSelectPluginAutocomplete,
                                         onSelectSlashCommand = handleSelectSlashCommand,
                                         onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                                         onSelectCodeReviewBranch = onSelectCodeReviewBranch,
@@ -2534,6 +2545,8 @@ private fun ConversationComposerPane(
                                     onRemoveMentionedFile = onRemoveMentionedFile,
                                     onSelectSkillAutocomplete = onSelectSkillAutocomplete,
                                     onRemoveMentionedSkill = onRemoveMentionedSkill,
+                                    onSelectPluginAutocomplete = onSelectPluginAutocomplete,
+                                    onRemoveMentionedPlugin = onRemoveMentionedPlugin,
                                     onSelectSlashCommand = handleSelectSlashCommand,
                                     onSelectCodeReviewTarget = onSelectCodeReviewTarget,
                                     onSelectCodeReviewBranch = onSelectCodeReviewBranch,
@@ -4736,7 +4749,7 @@ internal fun resolveConversationComposerPlaceholder(canStop: Boolean): String {
     return if (canStop) {
         "Queue a follow-up"
     } else {
-        "Ask anything... @files, \$skills, /commands"
+        "Ask anything... @plugins, \$skills, /commands"
     }
 }
 
@@ -5718,6 +5731,8 @@ private fun ComposerCard(
     onRemoveMentionedFile: (String) -> Unit,
     onSelectSkillAutocomplete: (RemodexSkillMetadata) -> Unit,
     onRemoveMentionedSkill: (String) -> Unit,
+    onSelectPluginAutocomplete: (RemodexPluginMetadata) -> Unit,
+    onRemoveMentionedPlugin: (String) -> Unit,
     onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
     onSelectCodeReviewBranch: (String) -> Unit,
@@ -5769,9 +5784,9 @@ private fun ComposerCard(
         RemodexRuntimeMetaMapper.orderedModels(composer.runtimeConfig.availableModels)
     }
     val selectedModelOption = remember(orderedModels, composer.runtimeConfig.selectedModelId) {
-        orderedModels.firstOrNull { option ->
-            option.id == composer.runtimeConfig.selectedModelId || option.model == composer.runtimeConfig.selectedModelId
-        }
+        composer.runtimeConfig.selectedModelOption(from = orderedModels)
+            ?: orderedModels.firstOrNull { option -> option.isDefault }
+            ?: orderedModels.firstOrNull()
     }
     val selectedModelTitle = selectedModelOption
         ?.let(RemodexRuntimeMetaMapper::modelTitle)
@@ -5785,6 +5800,8 @@ private fun ComposerCard(
             option.reasoningEffort == composer.runtimeConfig.reasoningEffort
         }
     }
+    val selectedModelSupportsFastMode = selectedModelOption?.let(RemodexRuntimeMetaMapper::supportsFastMode) == true
+    val canUseFastMode = selectedModelSupportsFastMode
     val canAddAttachments = composer.attachments.size < composer.maxAttachments
     val plusMenuState = rememberComposerMenuState(uiState.selectedThread?.id, "plus")
     val receiveContentListener = remember(context, onReceiveComposerAttachmentUris) {
@@ -5811,6 +5828,7 @@ private fun ComposerCard(
             if (composer.attachments.isNotEmpty() ||
                 composer.mentionedFiles.isNotEmpty() ||
                 composer.mentionedSkills.isNotEmpty() ||
+                composer.mentionedPlugins.isNotEmpty() ||
                 composer.reviewSelection != null ||
                 composer.isSubagentsSelectionArmed
             ) {
@@ -5819,6 +5837,7 @@ private fun ComposerCard(
                     onRemoveAttachment = onRemoveAttachment,
                     onRemoveMentionedFile = onRemoveMentionedFile,
                     onRemoveMentionedSkill = onRemoveMentionedSkill,
+                    onRemoveMentionedPlugin = onRemoveMentionedPlugin,
                     onClearReviewSelection = onClearReviewSelection,
                     onClearSubagentsSelection = onClearSubagentsSelection,
                 )
@@ -5859,7 +5878,7 @@ private fun ComposerCard(
                     ),
                     lineLimits = TextFieldLineLimits.MultiLine(
                         minHeightInLines = 1,
-                        maxHeightInLines = 8,
+                        maxHeightInLines = 4,
                     ),
                     cursorBrush = SolidColor(chrome.accent),
                 )
@@ -5923,36 +5942,6 @@ private fun ComposerCard(
                                 onDismissRequest = plusMenuState::onDismissRequest,
                             ) {
                                 ComposerDropdownMenuItem(
-                                    text = { Text("Take a photo") },
-                                    selected = false,
-                                    enabled = canAddAttachments,
-                                    onClick = {
-                                        plusMenuState.collapse()
-                                        onOpenCameraCapture()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Outlined.CameraAlt,
-                                            contentDescription = null,
-                                        )
-                                    },
-                                )
-                                ComposerDropdownMenuItem(
-                                    text = { Text("Photo library") },
-                                    selected = false,
-                                    enabled = canAddAttachments,
-                                    onClick = {
-                                        plusMenuState.collapse()
-                                        onOpenAttachmentPicker()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Outlined.AddPhotoAlternate,
-                                            contentDescription = null,
-                                        )
-                                    },
-                                )
-                                ComposerDropdownMenuItem(
                                     text = { Text("Plan mode") },
                                     selected = composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN,
                                     onClick = {
@@ -5982,39 +5971,86 @@ private fun ComposerCard(
                                         null
                                     },
                                 )
+                                if (canUseFastMode) {
+                                    ComposerDropdownMenuItem(
+                                        text = { Text("Fast Mode") },
+                                        selected = composer.runtimeConfig.serviceTier == RemodexServiceTier.FAST,
+                                        onClick = {
+                                            plusMenuState.collapse()
+                                            onSelectServiceTier(
+                                                if (composer.runtimeConfig.serviceTier == RemodexServiceTier.FAST) {
+                                                    null
+                                                } else {
+                                                    RemodexServiceTier.FAST
+                                                },
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = if (composer.runtimeConfig.serviceTier == RemodexServiceTier.FAST) {
+                                                    Icons.Filled.Bolt
+                                                } else {
+                                                    Icons.Outlined.Bolt
+                                                },
+                                                contentDescription = null,
+                                            )
+                                        },
+                                    )
+                                }
+                                ComposerDropdownMenuItem(
+                                    text = { Text("Photo library") },
+                                    selected = false,
+                                    enabled = canAddAttachments,
+                                    onClick = {
+                                        plusMenuState.collapse()
+                                        onOpenAttachmentPicker()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.AddPhotoAlternate,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                )
+                                ComposerDropdownMenuItem(
+                                    text = { Text("Take a photo") },
+                                    selected = false,
+                                    enabled = canAddAttachments,
+                                    onClick = {
+                                        plusMenuState.collapse()
+                                        onOpenCameraCapture()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.CameraAlt,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                )
                             }
                         }
 
-                        CompactRuntimeSelector(
-                            title = selectedModelTitle,
-                            options = orderedModels,
-                            selected = selectedModelOption,
-                            label = { option -> RemodexRuntimeMetaMapper.modelTitle(option) },
-                            key = { option -> option.id },
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .widthIn(max = ComposerModelMenuMaxWidth),
-                            leadingIcon = if (composer.runtimeConfig.serviceTier != null) {
-                                Icons.Outlined.Bolt
-                            } else {
-                                null
-                            },
-                            menuTitle = "Select model",
-                            onClear = { onSelectModel(null) },
-                            onSelect = { option -> onSelectModel(option.id) },
-                        )
-                        ReasoningRuntimeSelector(
-                            title = composer.runtimeConfig.reasoningEffort
-                                ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
-                                ?: "Auto",
+                        ComposerRuntimeSelector(
+                            title = compactRuntimeTitle(
+                                modelTitle = selectedModelTitle,
+                                reasoningTitle = composer.runtimeConfig.reasoningEffort
+                                    ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
+                                    ?: "Select reasoning",
+                            ),
+                            modelOptions = orderedModels,
+                            selectedModel = selectedModelOption,
                             reasoningOptions = composer.runtimeConfig.availableReasoningEfforts,
                             selectedReasoning = selectedReasoningOption,
-                            onSelectReasoning = { option -> onSelectReasoningEffort(option.reasoningEffort) },
                             speedOptions = composer.runtimeConfig.availableServiceTiers,
                             selectedSpeed = composer.runtimeConfig.serviceTier,
+                            supportsFastMode = selectedModelSupportsFastMode,
+                            showsSpeedBadge = selectedModelSupportsFastMode &&
+                                composer.runtimeConfig.serviceTier != null,
                             modifier = Modifier
                                 .weight(1f, fill = false)
-                                .widthIn(max = ComposerReasoningMenuMaxWidth),
+                                .widthIn(max = ComposerModelMenuMaxWidth + ComposerReasoningMenuMaxWidth),
+                            onSelectModel = { option -> onSelectModel(option.id) },
+                            onSelectReasoning = { option -> onSelectReasoningEffort(option.reasoningEffort) },
                             onSelectSpeed = onSelectServiceTier,
                         )
                         if (composer.runtimeConfig.planningMode == RemodexPlanningMode.PLAN) {
@@ -6080,6 +6116,7 @@ private fun ComposerAccessoryStrip(
     onRemoveAttachment: (String) -> Unit,
     onRemoveMentionedFile: (String) -> Unit,
     onRemoveMentionedSkill: (String) -> Unit,
+    onRemoveMentionedPlugin: (String) -> Unit,
     onClearReviewSelection: () -> Unit,
     onClearSubagentsSelection: () -> Unit,
 ) {
@@ -6151,6 +6188,23 @@ private fun ComposerAccessoryStrip(
                         leadingGlyph = "$",
                         colors = skillChipColors,
                         onRemove = { onRemoveMentionedSkill(mention.id) },
+                    )
+                }
+            }
+        }
+
+        if (composer.mentionedPlugins.isNotEmpty()) {
+            val pluginChipColors = rememberMentionChipColors(
+                tint = ComposerMentionPluginTint,
+                chrome = chrome,
+            )
+            AccessoryChipRow {
+                composer.mentionedPlugins.forEach { mention ->
+                    AccessoryChip(
+                        label = mention.displayName?.takeIf(String::isNotBlank) ?: mention.name,
+                        leadingGlyph = "@",
+                        colors = pluginChipColors,
+                        onRemove = { onRemoveMentionedPlugin(mention.id) },
                     )
                 }
             }
@@ -6259,6 +6313,7 @@ private fun AutocompletePanel(
     uiState: AppUiState,
     onSelectFileAutocomplete: (RemodexFuzzyFileMatch) -> Unit,
     onSelectSkillAutocomplete: (RemodexSkillMetadata) -> Unit,
+    onSelectPluginAutocomplete: (RemodexPluginMetadata) -> Unit,
     onSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     onSelectCodeReviewTarget: (RemodexComposerReviewTarget) -> Unit,
     onSelectCodeReviewBranch: (String) -> Unit,
@@ -6283,11 +6338,10 @@ private fun AutocompletePanel(
     ) {
         when (autocomplete.panel) {
             RemodexComposerAutocompletePanel.FILES -> {
-                FileAutocompletePanel(
-                    items = autocomplete.fileItems,
-                    isLoading = autocomplete.isFileLoading,
-                    query = autocomplete.fileQuery,
-                    onSelect = onSelectFileAutocomplete,
+                FileAndPluginAutocompletePanel(
+                    autocomplete = autocomplete,
+                    onSelectFile = onSelectFileAutocomplete,
+                    onSelectPlugin = onSelectPluginAutocomplete,
                 )
             }
 
@@ -6297,6 +6351,15 @@ private fun AutocompletePanel(
                     isLoading = autocomplete.isSkillLoading,
                     query = autocomplete.skillQuery,
                     onSelect = onSelectSkillAutocomplete,
+                )
+            }
+
+            RemodexComposerAutocompletePanel.PLUGINS -> {
+                PluginAutocompletePanel(
+                    items = autocomplete.pluginItems,
+                    isLoading = autocomplete.isPluginLoading,
+                    query = autocomplete.pluginQuery,
+                    onSelect = onSelectPluginAutocomplete,
                 )
             }
 
@@ -6330,6 +6393,40 @@ private fun AutocompletePanel(
 
             RemodexComposerAutocompletePanel.NONE -> Unit
         }
+    }
+}
+
+@Composable
+private fun FileAndPluginAutocompletePanel(
+    autocomplete: com.emanueledipietro.remodex.model.RemodexComposerAutocompleteState,
+    onSelectFile: (RemodexFuzzyFileMatch) -> Unit,
+    onSelectPlugin: (RemodexPluginMetadata) -> Unit,
+) {
+    val showPlugins = autocomplete.pluginItems.isNotEmpty() || autocomplete.isPluginLoading
+    if (!showPlugins) {
+        FileAutocompletePanel(
+            items = autocomplete.fileItems,
+            isLoading = autocomplete.isFileLoading,
+            query = autocomplete.fileQuery,
+            onSelect = onSelectFile,
+        )
+        return
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        FileAutocompletePanel(
+            items = autocomplete.fileItems,
+            isLoading = autocomplete.isFileLoading,
+            query = autocomplete.fileQuery,
+            onSelect = onSelectFile,
+        )
+        HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+        PluginAutocompletePanel(
+            items = autocomplete.pluginItems,
+            isLoading = autocomplete.isPluginLoading,
+            query = autocomplete.pluginQuery,
+            onSelect = onSelectPlugin,
+        )
     }
 }
 
@@ -6383,6 +6480,35 @@ private fun SkillAutocompletePanel(
             SkillAutocompleteRow(
                 skill = skill,
                 onClick = { onSelect(skill) },
+            )
+            if (index != items.lastIndex) {
+                HorizontalDivider(color = remodexConversationChrome().subtleBorder)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PluginAutocompletePanel(
+    items: List<RemodexPluginMetadata>,
+    isLoading: Boolean,
+    query: String,
+    onSelect: (RemodexPluginMetadata) -> Unit,
+) {
+    if (isLoading) {
+        AutocompleteLoadingState("Searching plugins...")
+        return
+    }
+    if (items.isEmpty()) {
+        AutocompleteEmptyState("No plugins for @$query")
+        return
+    }
+
+    AutocompleteListContainer(maxHeight = SkillAutocompleteRowHeight * MaxAutocompleteVisibleRows) {
+        items.forEachIndexed { index, plugin ->
+            PluginAutocompleteRow(
+                plugin = plugin,
+                onClick = { onSelect(plugin) },
             )
             if (index != items.lastIndex) {
                 HorizontalDivider(color = remodexConversationChrome().subtleBorder)
@@ -6665,6 +6791,61 @@ private fun SkillAutocompleteRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+@Composable
+private fun PluginAutocompleteRow(
+    plugin: RemodexPluginMetadata,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = SkillAutocompleteRowHeight)
+            .clickable(
+                onClick = {
+                    performLightHaptic()
+                    onClick()
+                },
+            )
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = plugin.displayTitle,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "@${plugin.name}",
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        val subtitle = plugin.shortDescription?.takeIf(String::isNotBlank)
+            ?: plugin.marketplaceName.takeIf(String::isNotBlank)
+            ?: plugin.mentionPath
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.labelSmall,
+            color = chrome.secondaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -7239,6 +7420,368 @@ private fun MetaPill(
     }
 }
 
+private fun compactRuntimeTitle(modelTitle: String, reasoningTitle: String?): String {
+    val compactModel = modelTitle
+        .removePrefix("GPT-")
+        .removePrefix("gpt-")
+        .replace("-", " ")
+    return listOfNotNull(compactModel, reasoningTitle)
+        .joinToString(" ")
+        .ifBlank { "Auto" }
+}
+
+private val RuntimeFeaturedModelIdentifiers = setOf("gpt-5.5", "gpt-5.4")
+
+private fun runtimeFeaturedModels(
+    modelOptions: List<RemodexModelOption>,
+    selectedModel: RemodexModelOption?,
+): List<RemodexModelOption> {
+    val seenIds = mutableSetOf<String>()
+    val result = mutableListOf<RemodexModelOption>()
+    fun append(model: RemodexModelOption) {
+        if (seenIds.add(model.id)) {
+            result += model
+        }
+    }
+    modelOptions
+        .filter { model ->
+            model.id.lowercase() in RuntimeFeaturedModelIdentifiers ||
+                model.model.lowercase() in RuntimeFeaturedModelIdentifiers
+        }
+        .forEach(::append)
+    selectedModel?.let(::append)
+    return result
+}
+
+@Composable
+private fun ComposerRuntimeSelector(
+    title: String,
+    modelOptions: List<RemodexModelOption>,
+    selectedModel: RemodexModelOption?,
+    reasoningOptions: List<com.emanueledipietro.remodex.model.RemodexReasoningEffortOption>,
+    selectedReasoning: com.emanueledipietro.remodex.model.RemodexReasoningEffortOption?,
+    speedOptions: List<RemodexServiceTier>,
+    selectedSpeed: RemodexServiceTier?,
+    supportsFastMode: Boolean,
+    showsSpeedBadge: Boolean,
+    modifier: Modifier = Modifier,
+    onSelectModel: (RemodexModelOption) -> Unit,
+    onSelectReasoning: (com.emanueledipietro.remodex.model.RemodexReasoningEffortOption) -> Unit,
+    onSelectSpeed: (RemodexServiceTier?) -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val menuState = rememberComposerMenuState()
+    var showsAllModelsSheet by rememberSaveable { mutableStateOf(false) }
+    val featuredModels = remember(modelOptions, selectedModel) {
+        runtimeFeaturedModels(modelOptions, selectedModel)
+    }
+    val hasNonFeaturedModels = remember(modelOptions, featuredModels) {
+        modelOptions.any { option -> featuredModels.none { featured -> featured.id == option.id } }
+    }
+    Box(modifier = modifier) {
+        ComposerMenuTrigger(
+            title = title,
+            modifier = Modifier.testTag(ComposerReasoningTriggerTag),
+            leadingIcon = if (showsSpeedBadge) {
+                {
+                    Icon(
+                        imageVector = Icons.Outlined.Bolt,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(12.dp)
+                            .testTag(ComposerReasoningTriggerIconTag),
+                        tint = chrome.secondaryText,
+                    )
+                }
+            } else {
+                null
+            },
+            onClick = { menuState.onTriggerClick() },
+        )
+        ComposerDropdownMenu(
+            expanded = menuState.expanded,
+            onDismissRequest = menuState::onDismissRequest,
+        ) {
+            RuntimeMenuSectionLabel("Effort")
+            if (reasoningOptions.isEmpty()) {
+                ComposerDropdownMenuItem(
+                    text = { Text("No reasoning options") },
+                    selected = false,
+                    enabled = false,
+                    onClick = {},
+                )
+            } else {
+                reasoningOptions.forEach { option ->
+                    val isSelected = selectedReasoning?.reasoningEffort == option.reasoningEffort
+                    ComposerDropdownMenuItem(
+                        text = { Text(option.label) },
+                        selected = isSelected,
+                        onClick = {
+                            menuState.collapse()
+                            onSelectReasoning(option)
+                        },
+                        trailingIcon = if (isSelected) {
+                            { ComposerMenuCheckmark() }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+
+            HorizontalDivider()
+            RuntimeMenuSectionLabel("Change model")
+            if (modelOptions.isEmpty()) {
+                ComposerDropdownMenuItem(
+                    text = { Text("No models available") },
+                    selected = false,
+                    enabled = false,
+                    onClick = {},
+                )
+            } else {
+                featuredModels.forEach { option ->
+                    val isSelected = selectedModel?.id == option.id
+                    val modelSupportsFastMode = RemodexRuntimeMetaMapper.supportsFastMode(option)
+                    ComposerDropdownMenuItem(
+                        text = {
+                            RuntimeModelMenuText(
+                                title = RemodexRuntimeMetaMapper.modelTitle(option),
+                                showsSpeedIcon = selectedSpeed == RemodexServiceTier.FAST && modelSupportsFastMode,
+                            )
+                        },
+                        selected = isSelected,
+                        onClick = {
+                            menuState.collapse()
+                            onSelectModel(option)
+                        },
+                        trailingIcon = if (isSelected) {
+                            { ComposerMenuCheckmark() }
+                        } else {
+                            null
+                        },
+                    )
+                }
+                if (hasNonFeaturedModels) {
+                    ComposerDropdownMenuItem(
+                        text = { Text("Other models") },
+                        selected = false,
+                        onClick = {
+                            menuState.collapse()
+                            showsAllModelsSheet = true
+                        },
+                    )
+                }
+            }
+
+            if (supportsFastMode) {
+                HorizontalDivider()
+                RuntimeMenuSectionLabel("Speed")
+                ComposerDropdownMenuItem(
+                    text = { Text("Normal") },
+                    selected = selectedSpeed == null,
+                    onClick = {
+                        menuState.collapse()
+                        onSelectSpeed(null)
+                    },
+                    trailingIcon = if (selectedSpeed == null) {
+                        { ComposerMenuCheckmark() }
+                    } else {
+                        null
+                    },
+                )
+                val resolvedSpeedOptions = speedOptions.ifEmpty { RemodexServiceTier.entries }
+                resolvedSpeedOptions.forEach { option ->
+                    val isSelected = selectedSpeed == option
+                    ComposerDropdownMenuItem(
+                        text = { Text(option.label) },
+                        selected = isSelected,
+                        onClick = {
+                            menuState.collapse()
+                            onSelectSpeed(option)
+                        },
+                        trailingIcon = if (isSelected) {
+                            { ComposerMenuCheckmark() }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    if (showsAllModelsSheet) {
+        RuntimeAllModelsSheet(
+            models = modelOptions,
+            selectedModel = selectedModel,
+            onSelectModel = { model ->
+                showsAllModelsSheet = false
+                onSelectModel(model)
+            },
+            onDismiss = { showsAllModelsSheet = false },
+        )
+    }
+}
+
+@Composable
+private fun RuntimeModelMenuText(
+    title: String,
+    showsSpeedIcon: Boolean,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (showsSpeedIcon) {
+            Icon(
+                imageVector = Icons.Outlined.Bolt,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        Text(title)
+    }
+}
+
+@Composable
+private fun RuntimeAllModelsSheet(
+    models: List<RemodexModelOption>,
+    selectedModel: RemodexModelOption?,
+    onSelectModel: (RemodexModelOption) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Popup(
+        alignment = Alignment.BottomCenter,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.20f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .clickable(onClick = {}),
+                color = chrome.panelSurfaceStrong,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                border = BorderStroke(1.dp, chrome.subtleBorder),
+                tonalElevation = 0.dp,
+                shadowElevation = 12.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "Choose model",
+                            modifier = Modifier.align(Alignment.Center),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = chrome.titleText,
+                        )
+                        TextButton(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            onClick = onDismiss,
+                        ) {
+                            Text("Done")
+                        }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 448.dp),
+                    ) {
+                        items(models, key = RemodexModelOption::id) { model ->
+                            val isSelected = selectedModel?.id == model.id
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectModel(model) }
+                                    .padding(horizontal = 2.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.Top,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                RuntimeModelSelectionIndicator(isSelected = isSelected)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Text(
+                                            text = RemodexRuntimeMetaMapper.modelTitle(model),
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                            color = chrome.titleText,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (RemodexRuntimeMetaMapper.supportsFastMode(model)) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Bolt,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(12.dp),
+                                                tint = chrome.secondaryText,
+                                            )
+                                        }
+                                    }
+                                    if (model.description.isNotBlank()) {
+                                        Text(
+                                            text = model.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = chrome.secondaryText,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                            HorizontalDivider(color = chrome.subtleBorder)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RuntimeModelSelectionIndicator(isSelected: Boolean) {
+    val chrome = remodexConversationChrome()
+    Box(
+        modifier = Modifier
+            .padding(top = 2.dp)
+            .size(18.dp)
+            .background(
+                color = if (isSelected) chrome.accent else Color.Transparent,
+                shape = CircleShape,
+            )
+            .border(
+                width = 1.dp,
+                color = if (isSelected) chrome.accent else chrome.tertiaryText,
+                shape = CircleShape,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isSelected) {
+            Icon(
+                imageVector = Icons.Outlined.Check,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = chrome.panelSurfaceStrong,
+            )
+        }
+    }
+}
+
 @Composable
 private fun <T> CompactRuntimeSelector(
     title: String,
@@ -7595,13 +8138,11 @@ private fun ComposerDropdownMenuItem(
         !enabled -> chrome.secondaryText.copy(alpha = 0.72f)
         else -> chrome.titleText
     }
-    val itemBackground = when {
-        selected -> chrome.mutedSurface.copy(alpha = 0.9f)
-        else -> Color.Transparent
-    }
+    val itemBackground = Color.Transparent
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 44.dp)
             .padding(horizontal = 2.dp, vertical = 2.dp)
             .clip(itemShape)
             .background(itemBackground)
@@ -7612,7 +8153,7 @@ private fun ComposerDropdownMenuItem(
                     onClick()
                 },
             )
-            .padding(horizontal = 13.dp, vertical = 9.dp),
+            .padding(horizontal = 13.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {

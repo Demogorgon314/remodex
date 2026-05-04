@@ -2,6 +2,8 @@ package com.emanueledipietro.remodex.data.app
 
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppLanguage
@@ -28,6 +30,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
 import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
@@ -93,6 +96,8 @@ interface RemodexAppRepository {
         threadId: String,
         prompt: String,
         attachments: List<RemodexComposerAttachment>,
+        skillMentions: List<RemodexComposerMentionedSkill> = emptyList(),
+        mentionMentions: List<RemodexComposerMentionedPlugin> = emptyList(),
         planningModeOverride: RemodexPlanningMode? = null,
         queuedDraftContext: RemodexQueuedDraftContext? = null,
         forceQueue: Boolean = false,
@@ -221,6 +226,11 @@ interface RemodexAppRepository {
         threadId: String,
         forceReload: Boolean = false,
     ): List<RemodexSkillMetadata>
+
+    suspend fun listPlugins(
+        threadId: String,
+        forceReload: Boolean = false,
+    ): List<RemodexPluginMetadata>
 
     suspend fun startCodeReview(
         threadId: String,

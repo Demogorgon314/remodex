@@ -30,6 +30,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionLiveStatus
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedFile
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -44,6 +45,7 @@ import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
+import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
@@ -52,6 +54,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
 import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexSlashCommand
 import com.emanueledipietro.remodex.model.RemodexConversationItem
@@ -1406,6 +1409,95 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals(RemodexComposerAutocompletePanel.NONE, viewModel.uiState.value.composer.autocomplete.panel)
+    }
+
+    @Test
+    fun `plugin autocomplete selects structured mention and sends it with prompt`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            pluginResults = listOf(
+                RemodexPluginMetadata(
+                    id = "github@openai",
+                    name = "github",
+                    marketplaceName = "openai",
+                    displayName = "GitHub",
+                    shortDescription = "Inspect pull requests and issues.",
+                    installed = true,
+                    enabled = true,
+                ),
+            )
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(threadSummary(id = "thread-1", title = "Plugins thread")),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.updateComposerInput("@gi")
+        runCurrent()
+
+        assertEquals(RemodexComposerAutocompletePanel.FILES, viewModel.uiState.value.composer.autocomplete.panel)
+        assertTrue(viewModel.uiState.value.composer.autocomplete.isPluginLoading)
+
+        advanceTimeBy(250)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("github"),
+            viewModel.uiState.value.composer.autocomplete.pluginItems.map(RemodexPluginMetadata::name),
+        )
+
+        viewModel.selectPluginAutocomplete(repository.pluginResults.first())
+        advanceUntilIdle()
+
+        assertEquals("@github ", viewModel.uiState.value.composer.draftText)
+        assertEquals("plugin://github@openai", viewModel.uiState.value.composer.mentionedPlugins.single().path)
+
+        viewModel.sendPrompt()
+        advanceUntilIdle()
+
+        assertEquals("plugin://github@openai", repository.sentPromptPluginMentions.single().single().path)
+    }
+
+    @Test
+    fun `selecting model without fast support clears selected speed`() = runTest {
+        val repository = TestRemodexAppRepository().apply {
+            snapshot.value = snapshot.value.copy(
+                threads = listOf(
+                    threadSummary(
+                        id = "thread-1",
+                        title = "Runtime thread",
+                        runtimeConfig = RemodexRuntimeConfig(
+                            availableModels = listOf(
+                                RemodexModelOption(
+                                    id = "gpt-5.5",
+                                    model = "gpt-5.5",
+                                    displayName = "GPT-5.5",
+                                    supportsFastMode = true,
+                                ),
+                                RemodexModelOption(
+                                    id = "gpt-5.3-codex",
+                                    model = "gpt-5.3-codex",
+                                    displayName = "GPT-5.3-Codex",
+                                    supportsFastMode = false,
+                                ),
+                            ),
+                            selectedModelId = "gpt-5.5",
+                            serviceTier = RemodexServiceTier.FAST,
+                        ),
+                    ),
+                ),
+                selectedThreadId = "thread-1",
+            )
+        }
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.selectModel("gpt-5.3-codex")
+        advanceUntilIdle()
+
+        assertEquals(listOf("gpt-5.3-codex"), repository.selectedModelRequests)
+        assertEquals(listOf("thread-1" to null), repository.setServiceTierRequests)
     }
 
     @Test
@@ -3822,13 +3914,16 @@ class AppViewModelTest {
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
+        val sentPromptPluginMentions = mutableListOf<List<RemodexComposerMentionedPlugin>>()
         val sentQueuedDrafts = mutableListOf<Pair<String, String>>()
         val steeredQueuedDrafts = mutableListOf<Pair<String, String>>()
         val poppedQueuedDrafts = mutableListOf<Pair<String, String>>()
         val compactThreadRequests = mutableListOf<String>()
         val cleanBackgroundTerminalsRequests = mutableListOf<String>()
         val sentPromptPlanningModeOverrides = mutableListOf<RemodexPlanningMode?>()
+        val selectedModelRequests = mutableListOf<String?>()
         val setPlanningModeRequests = mutableListOf<Pair<String, RemodexPlanningMode>>()
+        val setServiceTierRequests = mutableListOf<Pair<String, RemodexServiceTier?>>()
         val codeReviewRequests = mutableListOf<Pair<String, RemodexCodeReviewRequest>>()
         val createThreadRequests = mutableListOf<Pair<String?, String?>>()
         val createWorktreeThreadRequests = mutableListOf<Pair<String, String?>>()
@@ -3849,6 +3944,7 @@ class AppViewModelTest {
         val forkThreadIntoProjectPathRequests = mutableListOf<Pair<String, String>>()
         var fileSearchResults: List<RemodexFuzzyFileMatch> = emptyList()
         var skillResults: List<RemodexSkillMetadata> = emptyList()
+        var pluginResults: List<RemodexPluginMetadata> = emptyList()
         var refreshRequests = 0
         var retryConnectionCalls = 0
         var disconnectCalls = 0
@@ -4043,6 +4139,8 @@ class AppViewModelTest {
             threadId: String,
             prompt: String,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
             planningModeOverride: RemodexPlanningMode?,
             queuedDraftContext: RemodexQueuedDraftContext?,
             forceQueue: Boolean,
@@ -4052,6 +4150,7 @@ class AppViewModelTest {
             }
             sendPromptError?.let { throw it }
             sentPrompts += Triple(threadId, prompt, attachments)
+            sentPromptPluginMentions += mentionMentions
             sentPromptPlanningModeOverrides += planningModeOverride
         }
 
@@ -4191,7 +4290,9 @@ class AppViewModelTest {
             )
         }
 
-        override suspend fun setSelectedModelId(modelId: String?) = Unit
+        override suspend fun setSelectedModelId(modelId: String?) {
+            selectedModelRequests += modelId
+        }
 
         override suspend fun setReasoningEffort(
             threadId: String,
@@ -4203,7 +4304,9 @@ class AppViewModelTest {
             accessMode: RemodexAccessMode,
         ) = Unit
 
-        override suspend fun setServiceTier(threadId: String, serviceTier: RemodexServiceTier?) = Unit
+        override suspend fun setServiceTier(threadId: String, serviceTier: RemodexServiceTier?) {
+            setServiceTierRequests += threadId to serviceTier
+        }
 
         override suspend fun setDefaultModelId(modelId: String?) = Unit
 
@@ -4251,6 +4354,11 @@ class AppViewModelTest {
             threadId: String,
             forceReload: Boolean,
         ): List<RemodexSkillMetadata> = skillResults
+
+        override suspend fun listPlugins(
+            threadId: String,
+            forceReload: Boolean,
+        ): List<RemodexPluginMetadata> = pluginResults
 
         override suspend fun startCodeReview(
             threadId: String,

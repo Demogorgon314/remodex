@@ -31,6 +31,7 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexComposerAttachment
 import com.emanueledipietro.remodex.model.RemodexComposerForkDestination
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedFile
+import com.emanueledipietro.remodex.model.RemodexComposerMentionedPlugin
 import com.emanueledipietro.remodex.model.RemodexComposerMentionedSkill
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.ConversationItemKind
@@ -48,6 +49,7 @@ import com.emanueledipietro.remodex.model.RemodexRevertPreviewResult
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeConfig
+import com.emanueledipietro.remodex.model.RemodexPluginMetadata
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -3489,9 +3491,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             sendPromptCalls += 1
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3583,9 +3587,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             sendGate.await()
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3600,9 +3606,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             lastSendPlanningMode = runtimeConfig.planningMode
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3620,9 +3628,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             steeredPrompts += prompt
-            delegate.steerPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.steerPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3638,6 +3648,8 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             if (firstMissingThreadId == null && threadId == "thread-notifications") {
                 firstMissingThreadId = threadId
@@ -3652,6 +3664,8 @@ class DefaultRemodexAppRepositoryTest {
                 prompt = prompt,
                 runtimeConfig = runtimeConfig,
                 attachments = attachments,
+                skillMentions = skillMentions,
+                mentionMentions = mentionMentions,
             )
         }
     }
@@ -3688,9 +3702,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             lastSuccessfulSendThreadId = threadId
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3720,9 +3736,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             lastSendThreadId = threadId
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3763,9 +3781,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             lastSendThreadId = threadId
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
@@ -3991,9 +4011,11 @@ class DefaultRemodexAppRepositoryTest {
             prompt: String,
             runtimeConfig: RemodexRuntimeConfig,
             attachments: List<RemodexComposerAttachment>,
+            skillMentions: List<RemodexComposerMentionedSkill>,
+            mentionMentions: List<RemodexComposerMentionedPlugin>,
         ) {
             sendPromptCalls += 1
-            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments)
+            delegate.sendPrompt(threadId, prompt, runtimeConfig, attachments, skillMentions, mentionMentions)
         }
     }
 
