@@ -147,6 +147,57 @@ jobs:
           set -euo pipefail
           git push origin "HEAD:${BRANCH_NAME}"
 
+      - name: Generate release notes
+        id: release_notes
+        env:
+          TAG: ${{ steps.bump_version.outputs.tag }}
+          COMMIT_SHA: ${{ steps.bump_version.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse "${COMMIT_SHA}^" >/dev/null 2>&1; then
+            LOG_END="${COMMIT_SHA}^"
+          else
+            LOG_END="${COMMIT_SHA}"
+          fi
+
+          PREVIOUS_TAG="$(
+            git tag --merged "${LOG_END}" --sort=-v:refname |
+              grep -E '^v[0-9]' |
+              head -n 1 || true
+          )"
+
+          if [[ -n "${PREVIOUS_TAG}" ]]; then
+            LOG_RANGE="${PREVIOUS_TAG}..${LOG_END}"
+            COMMITS="$(git log --no-merges --pretty=format:'- %s (%h)' "${LOG_RANGE}" || true)"
+          else
+            LOG_RANGE="${LOG_END}"
+            COMMITS="$(git log --no-merges --pretty=format:'- %s (%h)' "${LOG_RANGE}" || true)"
+          fi
+
+          NOTES_PATH="${RUNNER_TEMP}/android-release-notes.md"
+          {
+            echo "## Changes"
+            echo
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              echo "Compared with ${PREVIOUS_TAG}."
+            else
+              echo "Initial Android release notes."
+            fi
+            echo
+            if [[ -n "${COMMITS}" ]]; then
+              printf '%s\n' "${COMMITS}"
+            else
+              echo "- No commits found since the previous release."
+            fi
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              echo
+              echo "**Full changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG}"
+            fi
+          } > "${NOTES_PATH}"
+
+          echo "notes_path=${NOTES_PATH}" >> "${GITHUB_OUTPUT}"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -154,6 +205,7 @@ jobs:
           COMMIT_SHA: ${{ steps.bump_version.outputs.commit_sha }}
           APK_PATH: ${{ steps.assets.outputs.apk_path }}
           SHA256_PATH: ${{ steps.assets.outputs.sha256_path }}
+          NOTES_PATH: ${{ steps.release_notes.outputs.notes_path }}
         run: |
           set -euo pipefail
-          gh release create "${TAG}" "${APK_PATH}" "${SHA256_PATH}" --target "${COMMIT_SHA}" --title "${TAG}" --generate-notes
+          gh release create "${TAG}" "${APK_PATH}" "${SHA256_PATH}" --target "${COMMIT_SHA}" --title "${TAG}" --notes-file "${NOTES_PATH}"
