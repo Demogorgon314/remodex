@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import androidx.room.Room
 import com.emanueledipietro.remodex.data.connection.EncryptedPrefsSecureStore
 import com.emanueledipietro.remodex.data.connection.OkHttpRelayWebSocketFactory
+import com.emanueledipietro.remodex.data.connection.OkHttpPairingCodeResolver
 import com.emanueledipietro.remodex.data.connection.OkHttpTrustedSessionResolver
 import com.emanueledipietro.remodex.data.connection.SecureConnectionCoordinator
 import com.emanueledipietro.remodex.data.preferences.DataStoreAppPreferencesRepository
@@ -48,6 +49,7 @@ class RemodexAppContainer(
     private val secureConnectionCoordinator = SecureConnectionCoordinator(
         store = secureStore,
         trustedSessionResolver = OkHttpTrustedSessionResolver(okHttpClient),
+        pairingCodeResolver = OkHttpPairingCodeResolver(okHttpClient),
         relayWebSocketFactory = OkHttpRelayWebSocketFactory(okHttpClient),
         scope = appScope,
     )

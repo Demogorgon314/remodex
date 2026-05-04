@@ -157,6 +157,7 @@ fun PairingScannerScreen(
                     onScan = { code ->
                         when (val result = validatePairingQrCode(code)) {
                             is PairingQrValidationResult.Success -> onPairWithQrPayload(result.payload)
+                            is PairingQrValidationResult.ShortCode -> scannerError = "Use Pair with Code from the previous screen."
                             is PairingQrValidationResult.ScanError -> scannerError = result.message
                             is PairingQrValidationResult.BridgeUpdateRequired -> {
                                 didCopyBridgeUpdateCommand = false

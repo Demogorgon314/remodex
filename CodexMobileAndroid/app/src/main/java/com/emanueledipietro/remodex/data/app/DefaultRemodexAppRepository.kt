@@ -2527,6 +2527,10 @@ class DefaultRemodexAppRepository(
         secureConnectionCoordinator.retryConnection()
     }
 
+    override suspend fun resolvePairingCode(code: String): PairingQrPayload {
+        return secureConnectionCoordinator.resolvePairingCode(code)
+    }
+
     override suspend fun activateBridgeProfile(profileId: String): Boolean {
         suppressBridgeScopedThreadsUntilNextSync = true
         val didActivate = secureConnectionCoordinator.activateBridgeProfile(profileId)

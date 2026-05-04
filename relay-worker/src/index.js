@@ -1,4 +1,5 @@
 import { HealthStatsDurableObject } from "./health-stats-do.js";
+import { PairingCodeRegistryDurableObject } from "./pairing-code-registry-do.js";
 import { SessionRelayDurableObject } from "./session-relay-do.js";
 import { TrustedRegistryDurableObject } from "./trusted-registry-do.js";
 import { createHTTPError, isWebSocketUpgrade, jsonResponse, normalizeNonEmptyString, readJSONBody } from "./common.js";
@@ -6,6 +7,7 @@ import { logRelayInfo, redactRelayPathname } from "./logging.js";
 
 export {
   HealthStatsDurableObject,
+  PairingCodeRegistryDurableObject,
   SessionRelayDurableObject,
   TrustedRegistryDurableObject,
 };
@@ -39,6 +41,11 @@ async function handleRequest(request, env) {
 
   if (request.method === "POST" && pathname === "/v1/trusted/session/resolve") {
     return routeTrustedResolve(request, env, url);
+  }
+
+  if (request.method === "POST" && pathname === "/v1/pairing/code/resolve") {
+    const stub = env.PAIRING_CODE_REGISTRY_DO.get(env.PAIRING_CODE_REGISTRY_DO.idFromName("global"));
+    return stub.fetch(request);
   }
 
   if (

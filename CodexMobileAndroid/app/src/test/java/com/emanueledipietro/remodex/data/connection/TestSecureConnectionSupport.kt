@@ -167,7 +167,8 @@ class SuccessfulQrBootstrapRelayWebSocketFactory(
         val transcript = SecureCrypto.secureTranscriptBytes(
             sessionId = clientHello.sessionId,
             protocolVersion = remodexSecureProtocolVersion,
-            handshakeMode = SecureHandshakeMode.QR_BOOTSTRAP,
+            handshakeMode = SecureHandshakeMode.entries.firstOrNull { it.wireValue == clientHello.handshakeMode }
+                ?: SecureHandshakeMode.QR_BOOTSTRAP,
             keyEpoch = 1,
             macDeviceId = macDeviceId,
             phoneDeviceId = clientHello.phoneDeviceId,

@@ -317,6 +317,9 @@ export function readMacRegistrationHeaders(headers, sessionId) {
     displayName: readHeaderString(headers.get("x-machine-name")),
     trustedPhoneDeviceId: readHeaderString(headers.get("x-trusted-phone-device-id")),
     trustedPhonePublicKey: readHeaderString(headers.get("x-trusted-phone-public-key")),
+    pairingCode: readHeaderString(headers.get("x-pairing-code")),
+    pairingVersion: readHeaderString(headers.get("x-pairing-version")),
+    pairingExpiresAt: readHeaderString(headers.get("x-pairing-expires-at")),
   }, sessionId);
 }
 
@@ -328,6 +331,7 @@ function normalizeLiveRegistration(value, sessionId) {
 function registrationEffects(previousRegistration, nextRegistration, sessionId) {
   return [
     ...removalEffects(previousRegistration, sessionId, nextRegistration?.macDeviceId),
+    ...pairingCodeRemovalEffects(previousRegistration, nextRegistration, sessionId),
     ...upsertEffects(nextRegistration),
   ];
 }
@@ -345,6 +349,24 @@ function removalEffects(previousRegistration, sessionId, nextMacDeviceId = "") {
     type: "registry_remove",
     macDeviceId: previousRegistration.macDeviceId,
     sessionId,
+  }, {
+    type: "pairing_code_remove",
+    code: previousRegistration.pairingCode,
+    sessionId,
+  }];
+}
+
+function pairingCodeRemovalEffects(previousRegistration, nextRegistration, sessionId) {
+  if (!previousRegistration?.pairingCode) {
+    return [];
+  }
+  if (previousRegistration.pairingCode === nextRegistration?.pairingCode) {
+    return [];
+  }
+  return [{
+    type: "pairing_code_remove",
+    code: previousRegistration.pairingCode,
+    sessionId,
   }];
 }
 
@@ -355,6 +377,9 @@ function upsertEffects(nextRegistration) {
 
   return [{
     type: "registry_upsert",
+    registration: nextRegistration,
+  }, {
+    type: "pairing_code_upsert",
     registration: nextRegistration,
   }];
 }

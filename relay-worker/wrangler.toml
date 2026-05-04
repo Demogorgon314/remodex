@@ -14,6 +14,10 @@ class_name = "TrustedRegistryDurableObject"
 name = "HEALTH_STATS_DO"
 class_name = "HealthStatsDurableObject"
 
+[[durable_objects.bindings]]
+name = "PAIRING_CODE_REGISTRY_DO"
+class_name = "PairingCodeRegistryDurableObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRelayDurableObject", "TrustedRegistryDurableObject"]
@@ -21,3 +25,7 @@ new_sqlite_classes = ["SessionRelayDurableObject", "TrustedRegistryDurableObject
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["HealthStatsDurableObject"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["PairingCodeRegistryDurableObject"]

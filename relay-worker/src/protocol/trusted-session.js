@@ -76,7 +76,23 @@ export function normalizeMacRegistration(registration, sessionId = "") {
     displayName: normalizeNonEmptyString(registration?.displayName),
     trustedPhoneDeviceId: normalizeNonEmptyString(registration?.trustedPhoneDeviceId),
     trustedPhonePublicKey: normalizeNonEmptyString(registration?.trustedPhonePublicKey),
+    pairingCode: normalizeShortPairingCode(registration?.pairingCode),
+    pairingVersion: normalizePositiveInteger(registration?.pairingVersion),
+    pairingExpiresAt: normalizePositiveInteger(registration?.pairingExpiresAt),
   };
+}
+
+export function normalizeShortPairingCode(value) {
+  const normalized = normalizeNonEmptyString(value)
+    .toUpperCase()
+    .replaceAll("-", "")
+    .replaceAll(" ", "");
+  return /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8,12}$/.test(normalized) ? normalized : "";
+}
+
+function normalizePositiveInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : null;
 }
 
 export function base64ToBase64Url(value) {

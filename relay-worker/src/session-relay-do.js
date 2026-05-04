@@ -243,6 +243,12 @@ export class SessionRelayDurableObject extends DurableObject {
         case "registry_remove":
           await this.removeRegistry(effect.macDeviceId, effect.sessionId);
           break;
+        case "pairing_code_upsert":
+          await this.upsertPairingCode(effect.registration);
+          break;
+        case "pairing_code_remove":
+          await this.removePairingCode(effect.code, effect.sessionId);
+          break;
         case "set_alarm":
           await this.ctx.storage.setAlarm(effect.scheduledTime);
           break;
@@ -320,6 +326,37 @@ export class SessionRelayDurableObject extends DurableObject {
         "content-type": "application/json",
       },
       body: JSON.stringify({
+        sessionId,
+      }),
+    });
+  }
+
+  async upsertPairingCode(registration) {
+    const stub = this.env.PAIRING_CODE_REGISTRY_DO.get(
+      this.env.PAIRING_CODE_REGISTRY_DO.idFromName("global")
+    );
+    await stub.fetch("https://pairing-code.internal/internal/upsert", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        registration,
+      }),
+    });
+  }
+
+  async removePairingCode(code, sessionId) {
+    const stub = this.env.PAIRING_CODE_REGISTRY_DO.get(
+      this.env.PAIRING_CODE_REGISTRY_DO.idFromName("global")
+    );
+    await stub.fetch("https://pairing-code.internal/internal/remove", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        code,
         sessionId,
       }),
     });

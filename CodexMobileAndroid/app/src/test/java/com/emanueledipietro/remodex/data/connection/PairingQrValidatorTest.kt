@@ -1,6 +1,7 @@
 package com.emanueledipietro.remodex.data.connection
 
 import java.time.Instant
+import java.util.Base64
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,6 +68,30 @@ class PairingQrValidatorTest {
 
         val message = (result as PairingQrValidationResult.ScanError).message
         assertEquals("QR code is missing the relay URL. Re-generate the code from the bridge.", message)
+    }
+
+    @Test
+    fun shortPairingCodeReturnsShortCode() {
+        val result = validatePairingQrCode("abcd-2345")
+
+        assertEquals(PairingQrValidationResult.ShortCode("ABCD2345"), result)
+    }
+
+    @Test
+    fun pasteFriendlyPairingCodeDecodesJsonPayload() {
+        val payload = pairingQrCode(
+            version = remodexPairingQrVersion,
+            expiresAt = 1_900_000_000_000,
+        )
+        val encoded = Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(payload.toByteArray(Charsets.UTF_8))
+        val result = validatePairingQrCode(
+            code = "RMX1:$encoded",
+            now = Instant.ofEpochSecond(1_800_000_000),
+        )
+
+        assertEquals("session-123", (result as PairingQrValidationResult.Success).payload.sessionId)
     }
 
     private fun pairingQrCode(

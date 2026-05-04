@@ -18,6 +18,22 @@ data class PairingQrPayload(
 
 sealed interface PairingQrValidationResult {
     data class Success(val payload: PairingQrPayload) : PairingQrValidationResult
+    data class ShortCode(val code: String) : PairingQrValidationResult
     data class ScanError(val message: String) : PairingQrValidationResult
     data class BridgeUpdateRequired(val prompt: RemodexBridgeUpdatePrompt) : PairingQrValidationResult
 }
+
+@Serializable
+data class PairingCodeResolveRequest(
+    val code: String,
+)
+
+@Serializable
+data class PairingCodeResolveResponse(
+    val ok: Boolean,
+    val v: Int,
+    val sessionId: String,
+    val macDeviceId: String,
+    val macIdentityPublicKey: String,
+    val expiresAt: Long,
+)

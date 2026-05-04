@@ -22,4 +22,16 @@ class TrustedSessionResolverTest {
         assertNull(trustedSessionResolveUrl("ftp://example.com/relay"))
         assertNull(trustedSessionResolveUrl(""))
     }
+
+    @Test
+    fun `pairing code resolve url normalizes relay endpoint`() {
+        assertEquals(
+            "http://127.0.0.1:7777/v1/pairing/code/resolve",
+            pairingCodeResolveUrl("ws://127.0.0.1:7777/relay"),
+        )
+        assertEquals(
+            "https://example.com/v1/pairing/code/resolve",
+            pairingCodeResolveUrl("wss://example.com/relay"),
+        )
+    }
 }

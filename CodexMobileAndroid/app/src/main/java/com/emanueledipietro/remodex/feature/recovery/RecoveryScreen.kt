@@ -183,6 +183,12 @@ fun RecoveryScreen(
                                     onPairWithQrPayload(result.payload)
                                 }
 
+                                is PairingQrValidationResult.ShortCode -> {
+                                    scanError = "Use Pair with Code from the previous screen."
+                                    bridgeUpdatePrompt = null
+                                    showScanner = false
+                                }
+
                                 is PairingQrValidationResult.ScanError -> {
                                     scanError = result.message
                                     bridgeUpdatePrompt = null

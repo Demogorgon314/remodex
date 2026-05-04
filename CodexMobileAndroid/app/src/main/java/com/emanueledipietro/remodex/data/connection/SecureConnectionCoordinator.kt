@@ -31,6 +31,7 @@ import kotlin.coroutines.resumeWithException
 class SecureConnectionCoordinator(
     private val store: SecureStore,
     private val trustedSessionResolver: TrustedSessionResolver,
+    private val pairingCodeResolver: PairingCodeResolver = UnavailablePairingCodeResolver,
     private val relayWebSocketFactory: RelayWebSocketFactory,
     private val scope: CoroutineScope,
 ) {
@@ -179,6 +180,14 @@ class SecureConnectionCoordinator(
         publishBridgeProfiles()
     }
 
+    suspend fun resolvePairingCode(code: String): PairingQrPayload {
+        val relayUrl = preferredPairingCodeRelayUrl()
+            ?: throw SecureTransportException(
+                "This Android device does not know which relay to ask for that pairing code yet. Scan the QR code instead.",
+            )
+        return pairingCodeResolver.resolve(relayUrl, code)
+    }
+
     fun retryConnection() {
         if (connectionJob?.isActive == true) {
             logConnection(event = "retryConnectionSkipped", extra = "reason=connectionJobActive")
@@ -317,7 +326,7 @@ class SecureConnectionCoordinator(
                         ?: SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
                     bridgeUpdateCommand = null,
                 )
-                resolveTrustedSession(currentPairingState, trustedMac)
+                resolveTrustedSessionOrFallback(currentPairingState, trustedMac)
             } else {
                 updateState(
                     phaseMessage = remodexLocalizedText(
@@ -350,6 +359,34 @@ class SecureConnectionCoordinator(
         }
     }
 
+    private suspend fun resolveTrustedSessionOrFallback(
+        currentPairingState: RelayPairingState,
+        trustedMac: TrustedMacRecord?,
+    ): RelayPairingState {
+        return try {
+            resolveTrustedSession(currentPairingState, trustedMac)
+        } catch (error: TrustedSessionResolveException) {
+            if (error.code == "session_unavailable" && currentPairingState.sessionId.isNotBlank()) {
+                autoReconnectAllowed = true
+                logConnection(
+                    event = "trustedSessionResolveFallbackToSaved",
+                    extra = "macDeviceId=${currentPairingState.macDeviceId}",
+                )
+                updateState(
+                    phaseMessage = "Trusted session lookup is temporarily unavailable. Trying the saved relay session.",
+                    secureState = SecureConnectionState.RECONNECTING,
+                    relayUrl = currentPairingState.relayUrl,
+                    macDeviceId = currentPairingState.macDeviceId,
+                    macFingerprint = SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
+                    bridgeUpdateCommand = null,
+                )
+                currentPairingState
+            } else {
+                throw error
+            }
+        }
+    }
+
     private suspend fun resolveTrustedSession(
         currentPairingState: RelayPairingState,
         trustedMac: TrustedMacRecord?,
@@ -369,16 +406,17 @@ class SecureConnectionCoordinator(
             ),
         )
 
-        val response = trustedSessionResolver.resolve(
-            relayUrl = trustedRelayUrl,
-            request = TrustedSessionResolveRequest(
+        val request = TrustedSessionResolveRequest(
                 macDeviceId = currentPairingState.macDeviceId,
                 phoneDeviceId = phoneIdentityState.phoneDeviceId,
                 phoneIdentityPublicKey = phoneIdentityState.phoneIdentityPublicKey,
                 nonce = nonce,
                 timestamp = timestamp,
                 signature = signature,
-            ),
+            )
+        val response = trustedSessionResolver.resolve(
+            relayUrl = trustedRelayUrl,
+            request = request,
         )
 
         SecureCrypto.rememberResolvedTrustedSession(
@@ -981,6 +1019,21 @@ class SecureConnectionCoordinator(
             macFingerprint = SecureCrypto.fingerprint(currentPairingState.macIdentityPublicKey),
             bridgeUpdateCommand = null,
         )
+    }
+
+    private fun preferredPairingCodeRelayUrl(): String? {
+        pairingState?.relayUrl?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        pairingState?.macDeviceId
+            ?.let(trustedMacRegistry.records::get)
+            ?.relayUrl
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { return it }
+        return trustedMacRegistry.records.values
+            .maxByOrNull { it.lastUsedAtEpochMs ?: it.lastPairedAtEpochMs }
+            ?.relayUrl
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
     }
 
     private fun handleTransportError(

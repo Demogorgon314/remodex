@@ -45,7 +45,7 @@ class SecureConnectionCoordinatorTest {
     }
 
     @Test
-    fun `trusted reconnect resolve failure marks session unavailable`() = runTest {
+    fun `trusted reconnect resolve failure tries saved session before showing offline`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()
         seedTrustedMacState(
@@ -61,15 +61,47 @@ class SecureConnectionCoordinatorTest {
                     message = "Your trusted computer is offline right now.",
                 ),
             ),
-            relayWebSocketFactory = UnexpectedRelayWebSocketFactory(),
+            relayWebSocketFactory = ClosingRelayWebSocketFactory(closeCode = 4002),
             scope = this,
         )
 
         coordinator.retryConnection()
-        awaitSecureState(coordinator, SecureConnectionState.LIVE_SESSION_UNRESOLVED)
+        awaitSecureState(coordinator, SecureConnectionState.TRUSTED_MAC)
 
-        assertEquals(SecureConnectionState.LIVE_SESSION_UNRESOLVED, coordinator.state.value.secureState)
-        assertEquals("Your trusted computer is offline right now.", coordinator.state.value.phaseMessage)
+        assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
+        assertTrue(coordinator.state.value.autoReconnectAllowed)
+    }
+
+    @Test
+    fun `trusted reconnect offline resolve falls back to saved session`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-offline-fallback",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+            sessionId = "saved-session",
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = ThrowingTrustedSessionResolver(
+                TrustedSessionResolveException(
+                    code = "session_unavailable",
+                    message = "Your trusted computer is offline right now.",
+                ),
+            ),
+            relayWebSocketFactory = SuccessfulQrBootstrapRelayWebSocketFactory(
+                macDeviceId = "mac-offline-fallback",
+                macIdentity = macIdentity,
+            ),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+
+        assertEquals(SecureConnectionState.ENCRYPTED, coordinator.state.value.secureState)
+        assertTrue(coordinator.state.value.autoReconnectAllowed)
     }
 
     @Test
@@ -133,7 +165,7 @@ class SecureConnectionCoordinatorTest {
         assertEquals(SecureConnectionState.TRUSTED_MAC, coordinator.state.value.secureState)
         assertTrue(coordinator.state.value.autoReconnectAllowed)
         assertEquals(
-            "已信任电脑的 session 暂时不可用. Remodex 会继续重试. 如果你重启了电脑上的 bridge, 请扫描新的 QR code.",
+            "The trusted computer session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your computer, scan a new QR code.",
             coordinator.state.value.phaseMessage,
         )
     }

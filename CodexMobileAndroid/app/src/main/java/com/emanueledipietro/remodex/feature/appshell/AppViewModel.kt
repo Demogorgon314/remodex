@@ -3037,6 +3037,25 @@ class AppViewModel(
         }
     }
 
+    fun pairWithPairingCode(
+        code: String,
+        onComplete: (String?) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            try {
+                stopAutoReconnectForManualScan()
+                val payload = repository.resolvePairingCode(code)
+                isManualScannerActive = false
+                suppressAutoReconnectUntilManualConnect = false
+                repository.pairWithQrPayload(payload)
+                onComplete(null)
+            } catch (error: Exception) {
+                isManualScannerActive = false
+                onComplete(error.message ?: "Could not resolve that pairing code.")
+            }
+        }
+    }
+
     fun dismissBridgeUpdatePrompt() {
         viewModelScope.launch {
             repository.dismissBridgeUpdatePrompt()

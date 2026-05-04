@@ -9,6 +9,7 @@ import com.emanueledipietro.remodex.data.threads.StreamingAssistantTextState
 import com.emanueledipietro.remodex.data.connection.PairingQrPayload
 import com.emanueledipietro.remodex.data.connection.SecureConnectionSnapshot
 import com.emanueledipietro.remodex.data.connection.SecureConnectionState
+import com.emanueledipietro.remodex.data.connection.createTestPairingPayload
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSet
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
@@ -4522,6 +4523,14 @@ class AppViewModelTest {
                 delay(pairWithQrPayloadDelayMs)
             }
             pairWithQrPayloadRequests += payload
+        }
+
+        override suspend fun resolvePairingCode(code: String): PairingQrPayload {
+            return createTestPairingPayload(
+                macDeviceId = "mac-code",
+                macIdentityPublicKey = "test-public-key",
+                sessionId = code,
+            )
         }
 
         override suspend fun dismissBridgeUpdatePrompt() {

@@ -2,6 +2,7 @@ package com.emanueledipietro.remodex.data.connection
 
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.remodexBridgeUpdateCommand
+import java.util.Base64
 import java.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -9,13 +10,28 @@ import kotlinx.serialization.json.jsonObject
 private val PairingJson = Json {
     ignoreUnknownKeys = true
 }
+private const val PairingCodePrefix = "RMX1:"
+private val ShortPairingCodeRegex = Regex("^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8,12}$")
 
 fun validatePairingQrCode(
     code: String,
     now: Instant = Instant.now(),
 ): PairingQrValidationResult {
+    val trimmedCode = code.trim()
+    val normalizedShortCode = normalizeShortPairingCode(trimmedCode)
+    if (normalizedShortCode != null) {
+        return PairingQrValidationResult.ShortCode(normalizedShortCode)
+    }
+    val normalizedCode = if (trimmedCode.startsWith(PairingCodePrefix)) {
+        decodePasteFriendlyPairingCode(trimmedCode) ?: return PairingQrValidationResult.ScanError(
+            "This pairing code is unreadable. Copy it again from the computer bridge.",
+        )
+    } else {
+        trimmedCode
+    }
+
     val payload = runCatching {
-        PairingJson.decodeFromString<PairingQrPayload>(code)
+        PairingJson.decodeFromString<PairingQrPayload>(normalizedCode)
     }.getOrNull()
 
     if (payload != null) {
@@ -49,7 +65,7 @@ fun validatePairingQrCode(
         return PairingQrValidationResult.Success(payload)
     }
 
-    if (looksLikeRemodexPairingPayload(code)) {
+    if (looksLikeRemodexPairingPayload(normalizedCode)) {
         return PairingQrValidationResult.BridgeUpdateRequired(
             makeScannerBridgeUpdatePrompt(
                 message = "This QR code looks like it came from an older Remodex bridge. Update the npm package on your computer to the latest release before scanning a new QR code.",
@@ -60,6 +76,26 @@ fun validatePairingQrCode(
     return PairingQrValidationResult.ScanError(
         "Not a valid secure pairing code. Make sure you're scanning a QR from the latest Remodex bridge.",
     )
+}
+
+fun normalizeShortPairingCode(code: String): String? {
+    val normalizedCode = code
+        .trim()
+        .uppercase()
+        .replace("-", "")
+        .replace(" ", "")
+    return normalizedCode.takeIf { ShortPairingCodeRegex.matches(it) }
+}
+
+private fun decodePasteFriendlyPairingCode(code: String): String? {
+    val encoded = code
+        .drop(PairingCodePrefix.length)
+        .replace("-", "+")
+        .replace("_", "/")
+    val padded = encoded + "=".repeat((4 - (encoded.length % 4)) % 4)
+    return runCatching {
+        String(Base64.getDecoder().decode(padded), Charsets.UTF_8)
+    }.getOrNull()
 }
 
 private fun looksLikeRemodexPairingPayload(code: String): Boolean {

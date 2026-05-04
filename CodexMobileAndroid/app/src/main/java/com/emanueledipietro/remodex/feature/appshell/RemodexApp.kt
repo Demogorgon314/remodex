@@ -71,6 +71,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -233,6 +234,10 @@ fun RemodexApp(
     var isSidebarOpen by rememberSaveable { mutableStateOf(false) }
     var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }
     var isScannerPresented by rememberSaveable { mutableStateOf(false) }
+    var isPairingCodeDialogPresented by rememberSaveable { mutableStateOf(false) }
+    var pairingCodeInput by rememberSaveable { mutableStateOf("") }
+    var pairingCodeError by rememberSaveable { mutableStateOf<String?>(null) }
+    var isResolvingPairingCode by rememberSaveable { mutableStateOf(false) }
     var didCopyBridgeUpdateCommand by rememberSaveable { mutableStateOf(false) }
     val conversationChrome = remodexConversationChrome()
     val defaultPageColor = MaterialTheme.colorScheme.background
@@ -527,6 +532,11 @@ fun RemodexApp(
                 viewModel.prepareForManualScan()
                 isScannerPresented = true
             },
+            onOpenPairingCode = {
+                viewModel.prepareForManualScan()
+                pairingCodeError = null
+                isPairingCodeDialogPresented = true
+            },
             onRequestVoiceInput = {
                 when (uiState.composer.voice.buttonMode) {
                     ComposerVoiceButtonMode.RECORDING -> viewModel.stopVoiceRecording()
@@ -610,8 +620,106 @@ fun RemodexApp(
             },
         )
     }
+
+    if (isPairingCodeDialogPresented) {
+        PairingCodeDialog(
+            code = pairingCodeInput,
+            errorMessage = pairingCodeError,
+            isResolving = isResolvingPairingCode,
+            onCodeChange = {
+                pairingCodeInput = it
+                pairingCodeError = null
+            },
+            onDismiss = {
+                if (!isResolvingPairingCode) {
+                    isPairingCodeDialogPresented = false
+                    viewModel.finishManualScan()
+                }
+            },
+            onSubmit = {
+                val pendingCode = pairingCodeInput.trim()
+                if (pendingCode.isEmpty()) {
+                    pairingCodeError = "Enter a valid pairing code."
+                } else {
+                    isResolvingPairingCode = true
+                    pairingCodeError = null
+                    viewModel.pairWithPairingCode(pendingCode) { errorMessage ->
+                        isResolvingPairingCode = false
+                        if (errorMessage == null) {
+                            isPairingCodeDialogPresented = false
+                            pairingCodeInput = ""
+                            viewModel.finishManualScan()
+                        } else {
+                            pairingCodeError = errorMessage
+                        }
+                    }
+                }
+            },
+        )
+    }
 }
 
+@Composable
+private fun PairingCodeDialog(
+    code: String,
+    errorMessage: String?,
+    isResolving: Boolean,
+    onCodeChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = onSubmit,
+                enabled = !isResolving,
+            ) {
+                if (isResolving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text("Connect")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isResolving,
+            ) {
+                Text("Cancel")
+            }
+        },
+        title = { Text("Pair with Code") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Enter the pairing code shown by the computer bridge.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = onCodeChange,
+                    enabled = !isResolving,
+                    singleLine = true,
+                    label = { Text("Pairing code") },
+                    isError = errorMessage != null,
+                )
+                errorMessage?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+    )
+}
 private fun performRunCompletionHaptic(
     context: Context,
     view: View,
@@ -757,6 +865,7 @@ private fun RemodexShell(
     onOpenAttachmentPicker: () -> Unit,
     onOpenCameraCapture: () -> Unit,
     onOpenScanner: () -> Unit,
+    onOpenPairingCode: () -> Unit,
     onRequestVoiceInput: () -> Unit,
     onCancelVoiceRecording: () -> Unit,
 ) {
@@ -846,6 +955,7 @@ private fun RemodexShell(
                         onBack = onShellBack,
                         onOpenSettings = { onShellRouteChange(ShellRoute.SETTINGS) },
                         onOpenScanner = onOpenScanner,
+                        onOpenPairingCode = onOpenPairingCode,
                         onOpenArchivedChats = { onShellRouteChange(ShellRoute.ARCHIVED_CHATS) },
                         onOpenAboutRemodex = { onShellRouteChange(ShellRoute.ABOUT_REMODEX) },
                         onNotificationAction = onNotificationAction,
@@ -885,6 +995,7 @@ private fun RemodexShell(
                         onBack = onShellBack,
                         onOpenSettings = { onShellRouteChange(ShellRoute.SETTINGS) },
                         onOpenScanner = onOpenScanner,
+                        onOpenPairingCode = onOpenPairingCode,
                         onOpenArchivedChats = { onShellRouteChange(ShellRoute.ARCHIVED_CHATS) },
                         onOpenAboutRemodex = { onShellRouteChange(ShellRoute.ABOUT_REMODEX) },
                         onNotificationAction = onNotificationAction,
@@ -982,6 +1093,7 @@ private fun MainPane(
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenScanner: () -> Unit,
+    onOpenPairingCode: () -> Unit,
     onOpenArchivedChats: () -> Unit,
     onOpenAboutRemodex: () -> Unit,
     onNotificationAction: () -> Unit,
@@ -1139,6 +1251,7 @@ private fun MainPane(
                                 }
                             },
                             onOpenScanner = onOpenScanner,
+                            onOpenPairingCode = onOpenPairingCode,
                             onForgetPair = viewModel::forgetTrustedMac,
                         )
                     } else {
@@ -2396,6 +2509,7 @@ private fun HomeEmptyState(
     uiState: AppUiState,
     onPrimaryAction: () -> Unit,
     onOpenScanner: () -> Unit,
+    onOpenPairingCode: () -> Unit,
     onForgetPair: () -> Unit,
 ) {
     val presentation = uiState.toHomeEmptyStatePresentation()
@@ -2515,10 +2629,20 @@ private fun HomeEmptyState(
             }
         }
 
-        if (presentation.showsScanNewQrAction) {
+        if (presentation.showsScanNewQrAction || (presentation.trustedMac == null && !uiState.isConnected && !isBusy)) {
             Spacer(modifier = Modifier.size(8.dp))
-            TextButton(onClick = onOpenScanner) {
-                Text("Scan New QR Code")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                if (presentation.showsScanNewQrAction) {
+                    TextButton(onClick = onOpenScanner) {
+                        Text("New QR Code")
+                    }
+                }
+                TextButton(onClick = onOpenPairingCode) {
+                    Text("Pair with Code")
+                }
             }
         }
         if (presentation.showsForgetPairAction) {

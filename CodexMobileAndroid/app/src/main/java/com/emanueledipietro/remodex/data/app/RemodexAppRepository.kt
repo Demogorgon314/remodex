@@ -204,6 +204,8 @@ interface RemodexAppRepository {
 
     suspend fun removeBridgeProfile(profileId: String): String?
 
+    suspend fun resolvePairingCode(code: String): PairingQrPayload
+
     suspend fun refreshGptAccountState()
 
     suspend fun logoutGptAccount()
