@@ -20,6 +20,16 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitFor(predicate, { timeoutMs = 250, intervalMs = 5 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await wait(intervalMs);
+  }
+}
+
 test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
   const macConfig = readBridgeConfig({
     env: {},
@@ -215,7 +225,7 @@ test("thread/start falls back once to the new-thread route when thread id is sti
     params: {},
   }));
 
-  await wait(40);
+  await waitFor(() => refreshCalls.length > 0);
 
   assert.deepEqual(refreshCalls, ["codex://threads/new"]);
   refresher.handleTransportReset();

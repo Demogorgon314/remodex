@@ -15,7 +15,7 @@ const {
 } = require("./codex-desktop-refresher");
 const { createCodexTransport } = require("./codex-transport");
 const { createThreadRolloutActivityWatcher } = require("./rollout-watch");
-const { printQR } = require("./qr");
+const { createShortPairingCode, SHORT_PAIRING_CODE_LENGTH, printQR } = require("./qr");
 const { rememberActiveThread } = require("./session-state");
 const { handleDesktopRequest } = require("./desktop-handler");
 const { handleGitRequest } = require("./git-handler");
@@ -61,6 +61,7 @@ function startBridge({
   config: explicitConfig = null,
   printPairingQr = true,
   onPairingPayload = null,
+  onPairingSession = null,
   onBridgeStatus = null,
 } = {}) {
   const config = explicitConfig || readBridgeConfig();
@@ -353,7 +354,7 @@ function startBridge({
       headers: {
         "x-role": "mac",
         "x-notification-secret": notificationSecret,
-        ...buildMacRegistrationHeaders(deviceState),
+        ...buildMacRegistrationHeaders(deviceState, pairingSession),
       },
     });
     socket = nextSocket;
@@ -417,9 +418,14 @@ function startBridge({
   }
 
   const pairingPayload = secureTransport.createPairingPayload();
+  const pairingSession = {
+    pairingPayload,
+    pairingCode: createShortPairingCode({ length: SHORT_PAIRING_CODE_LENGTH }),
+  };
   onPairingPayload?.(pairingPayload);
+  onPairingSession?.(pairingSession);
   if (printPairingQr) {
-    printQR(pairingPayload);
+    printQR(pairingSession);
   }
   pushServiceClient.logUnavailable();
   connectRelay();
@@ -1085,18 +1091,21 @@ function startBridge({
 
     sendRelayWireMessage(JSON.stringify({
       kind: "relayMacRegistration",
-      registration: buildMacRegistration(nextDeviceState),
+      registration: buildMacRegistration(nextDeviceState, pairingSession),
     }));
   }
 }
 
 // Registers the canonical Mac identity and the one trusted iPhone allowed for auto-resolve.
-function buildMacRegistrationHeaders(deviceState) {
-  const registration = buildMacRegistration(deviceState);
+function buildMacRegistrationHeaders(deviceState, pairingSession) {
+  const registration = buildMacRegistration(deviceState, pairingSession);
   const headers = {
     "x-mac-device-id": registration.macDeviceId,
     "x-mac-identity-public-key": registration.macIdentityPublicKey,
     "x-machine-name": registration.displayName,
+    "x-pairing-code": registration.pairingCode,
+    "x-pairing-version": registration.pairingVersion ? String(registration.pairingVersion) : "",
+    "x-pairing-expires-at": registration.pairingExpiresAt ? String(registration.pairingExpiresAt) : "",
   };
   if (registration.trustedPhoneDeviceId && registration.trustedPhonePublicKey) {
     headers["x-trusted-phone-device-id"] = registration.trustedPhoneDeviceId;
@@ -1105,7 +1114,7 @@ function buildMacRegistrationHeaders(deviceState) {
   return headers;
 }
 
-function buildMacRegistration(deviceState) {
+function buildMacRegistration(deviceState, pairingSession) {
   const trustedPhoneEntry = Object.entries(deviceState?.trustedPhones || {})[0] || null;
   return {
     macDeviceId: normalizeNonEmptyString(deviceState?.macDeviceId),
@@ -1113,6 +1122,11 @@ function buildMacRegistration(deviceState) {
     displayName: normalizeNonEmptyString(os.hostname()),
     trustedPhoneDeviceId: normalizeNonEmptyString(trustedPhoneEntry?.[0]),
     trustedPhonePublicKey: normalizeNonEmptyString(trustedPhoneEntry?.[1]),
+    pairingCode: normalizeNonEmptyString(pairingSession?.pairingCode),
+    pairingVersion: Number.isInteger(pairingSession?.pairingPayload?.v) ? pairingSession.pairingPayload.v : 0,
+    pairingExpiresAt: Number.isFinite(pairingSession?.pairingPayload?.expiresAt)
+      ? pairingSession.pairingPayload.expiresAt
+      : 0,
   };
 }
 

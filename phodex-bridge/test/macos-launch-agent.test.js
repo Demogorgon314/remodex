@@ -12,6 +12,7 @@ const path = require("path");
 const {
   buildLaunchAgentPlist,
   getMacOSBridgeServiceStatus,
+  printMacOSBridgePairingQr,
   resetMacOSBridgePairing,
   resolveLaunchAgentPlistPath,
   runMacOSBridgeService,
@@ -68,6 +69,37 @@ test("stopMacOSBridgeService clears stale pairing and status files", () => {
 
     assert.equal(readPairingSession(), null);
     assert.equal(readBridgeStatus(), null);
+  });
+});
+
+test("writePairingSession preserves the short pairing code when present", () => {
+  withTempDaemonEnv(() => {
+    writePairingSession({
+      pairingPayload: { sessionId: "session-code" },
+      pairingCode: "AB23CD34EF",
+    });
+
+    const pairingSession = readPairingSession();
+
+    assert.equal(pairingSession.pairingPayload.sessionId, "session-code");
+    assert.equal(pairingSession.pairingCode, "AB23CD34EF");
+  });
+});
+
+test("printMacOSBridgePairingQr prints the persisted short pairing code", () => {
+  withTempDaemonEnv(() => {
+    writePairingSession({
+      pairingPayload: {
+        sessionId: "session-code",
+        macDeviceId: "mac-code",
+        expiresAt: Date.now() + 60_000,
+      },
+      pairingCode: "AB23CD34EF",
+    });
+
+    const output = captureConsoleLog(() => printMacOSBridgePairingQr());
+
+    assert.match(output, /AB23CD34EF/);
   });
 });
 
@@ -202,4 +234,18 @@ function withTempDaemonEnv(run) {
     }
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
+}
+
+function captureConsoleLog(run) {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...args) => {
+    lines.push(args.join(" "));
+  };
+  try {
+    run();
+  } finally {
+    console.log = originalLog;
+  }
+  return lines.join("\n");
 }

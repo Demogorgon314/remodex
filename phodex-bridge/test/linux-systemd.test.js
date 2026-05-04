@@ -12,6 +12,7 @@ const path = require("path");
 const {
   buildUserServiceUnit,
   getLinuxBridgeServiceStatus,
+  printLinuxBridgePairingQr,
   resolveUserServiceUnitPath,
   stopLinuxBridgeService,
 } = require("../src/linux-systemd");
@@ -67,6 +68,23 @@ test("stopLinuxBridgeService clears stale pairing and status files", () => {
 
     assert.equal(readPairingSession(), null);
     assert.equal(readBridgeStatus(), null);
+  });
+});
+
+test("printLinuxBridgePairingQr prints the persisted short pairing code", () => {
+  withTempDaemonEnv(() => {
+    writePairingSession({
+      pairingPayload: {
+        sessionId: "session-code",
+        macDeviceId: "mac-code",
+        expiresAt: Date.now() + 60_000,
+      },
+      pairingCode: "AB23CD34EF",
+    });
+
+    const output = captureConsoleLog(() => printLinuxBridgePairingQr());
+
+    assert.match(output, /AB23CD34EF/);
   });
 });
 
@@ -128,4 +146,18 @@ function withTempDaemonEnv(run) {
     }
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
+}
+
+function captureConsoleLog(run) {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...args) => {
+    lines.push(args.join(" "));
+  };
+  try {
+    run();
+  } finally {
+    console.log = originalLog;
+  }
+  return lines.join("\n");
 }

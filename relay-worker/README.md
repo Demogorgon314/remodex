@@ -115,7 +115,7 @@ npx wrangler tail
 
 ## Notes
 
-- This package currently implements `/health`, `/relay/{sessionId}`, and `/v1/trusted/session/resolve`.
+- This package currently implements `/health`, `/relay/{sessionId}`, `/v1/trusted/session/resolve`, and `/v1/pairing/code/resolve`.
 - The optional push-service endpoints are not implemented in this Worker package yet.
 - If Cloudflare rejects a deploy because the compatibility date is in the future, update [`wrangler.toml`](wrangler.toml) to a currently accepted date and redeploy.
 

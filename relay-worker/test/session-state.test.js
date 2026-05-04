@@ -162,3 +162,54 @@ test("session state publishes updated trusted-phone registration changes", () =>
   assert.equal(updated.snapshot.registration.trustedPhoneDeviceId, "phone-5");
   assert.ok(updated.effects.some((effect) => effect.type === "registry_upsert"));
 });
+
+test("session state publishes pairing code registration changes", () => {
+  const connected = connectMac(createSessionSnapshot({ sessionId: "session-pairing" }), {
+    connectionId: "mac-a",
+    registration: {
+      macDeviceId: "mac-pairing",
+      macIdentityPublicKey: "mac-public",
+      pairingCode: "AB23-CD34EF",
+      pairingVersion: "2",
+      pairingExpiresAt: "4102444800000",
+    },
+  });
+
+  assert.equal(connected.snapshot.registration.pairingCode, "AB23CD34EF");
+  assert.equal(connected.snapshot.registration.pairingVersion, 2);
+  assert.equal(connected.snapshot.registration.pairingExpiresAt, 4102444800000);
+  assert.ok(connected.effects.some((effect) => (
+    effect.type === "pairing_code_upsert"
+    && effect.registration.pairingCode === "AB23CD34EF"
+  )));
+});
+
+test("session state removes stale pairing code when mac registration changes code", () => {
+  const connected = connectMac(createSessionSnapshot({ sessionId: "session-pairing-change" }), {
+    connectionId: "mac-a",
+    registration: {
+      macDeviceId: "mac-pairing",
+      macIdentityPublicKey: "mac-public",
+      pairingCode: "AB23CD34EF",
+      pairingVersion: 2,
+      pairingExpiresAt: 4102444800000,
+    },
+  });
+  const updated = updateMacRegistration(connected.snapshot, {
+    macDeviceId: "mac-pairing",
+    macIdentityPublicKey: "mac-public",
+    pairingCode: "ZX34CV56BN",
+    pairingVersion: 2,
+    pairingExpiresAt: 4102444800000,
+  });
+
+  assert.ok(updated.effects.some((effect) => (
+    effect.type === "pairing_code_remove"
+    && effect.code === "AB23CD34EF"
+    && effect.sessionId === "session-pairing-change"
+  )));
+  assert.ok(updated.effects.some((effect) => (
+    effect.type === "pairing_code_upsert"
+    && effect.registration.pairingCode === "ZX34CV56BN"
+  )));
+});

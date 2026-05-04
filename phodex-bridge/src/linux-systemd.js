@@ -51,8 +51,8 @@ function runLinuxBridgeService({ env = process.env, platform = process.platform 
   startBridge({
     config,
     printPairingQr: false,
-    onPairingPayload(pairingPayload) {
-      writePairingSession(pairingPayload, { env });
+    onPairingSession(pairingSession) {
+      writePairingSession(pairingSession, { env });
     },
     onBridgeStatus(status) {
       writeBridgeStatus(status, { env });
@@ -211,7 +211,7 @@ function printLinuxBridgePairingQr({ pairingSession = null, env = process.env, f
     throw new Error("The Linux bridge service did not publish a pairing payload yet.");
   }
 
-  printQR(pairingPayload);
+  printQR(nextPairingSession);
 }
 
 function writeUserServiceUnit({
