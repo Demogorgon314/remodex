@@ -28,6 +28,7 @@ import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
+import com.emanueledipietro.remodex.model.RemodexAppUpdateStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexGptAccountSnapshot
 import com.emanueledipietro.remodex.model.RemodexPluginMetadata
@@ -46,6 +47,7 @@ interface RemodexAppRepository {
     val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot>
     val gptAccountErrorMessage: StateFlow<String?>
     val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus>
+    val appUpdateStatus: StateFlow<RemodexAppUpdateStatus>
     val usageStatus: StateFlow<RemodexUsageStatus>
 
     fun setAppForeground(isForeground: Boolean) = Unit
@@ -207,6 +209,8 @@ interface RemodexAppRepository {
     suspend fun resolvePairingCode(code: String): PairingQrPayload
 
     suspend fun refreshGptAccountState()
+
+    suspend fun checkAppUpdate()
 
     suspend fun logoutGptAccount()
 

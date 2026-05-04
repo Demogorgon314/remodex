@@ -1341,6 +1341,7 @@ private fun MainPane(
                         onSelectDefaultServiceTier = viewModel::setDefaultServiceTier,
                         onRefreshSettingsStatus = viewModel::refreshSettingsStatus,
                         onRefreshUsageStatus = viewModel::refreshUsageStatus,
+                        onCheckAppUpdate = viewModel::checkAppUpdate,
                         onLogoutGptAccount = viewModel::logoutGptAccount,
                         onOpenScanner = onOpenScanner,
                         onOpenPairingCode = onOpenPairingCode,

@@ -15,6 +15,7 @@ import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetSource
 import com.emanueledipietro.remodex.model.RemodexAssistantChangeSetStatus
 import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexAppUpdateStatus
 import com.emanueledipietro.remodex.model.RemodexAssistantFileChange
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexAssistantRevertRiskLevel
@@ -1560,6 +1561,18 @@ class AppViewModelTest {
         assertTrue(repository.sentPrompts.isEmpty())
         assertEquals("", viewModel.uiState.value.composer.draftText)
         assertEquals(1L, viewModel.uiState.value.statusSheetSignal)
+    }
+
+    @Test
+    fun `check app update delegates to repository`() = runTest {
+        val repository = TestRemodexAppRepository()
+        val viewModel = AppViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.checkAppUpdate()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.checkAppUpdateCalls)
     }
 
     @Test
@@ -3906,12 +3919,14 @@ class AppViewModelTest {
         val gptAccountSnapshotFlow = MutableStateFlow(RemodexGptAccountSnapshot())
         val gptAccountErrorMessageFlow = MutableStateFlow<String?>(null)
         val bridgeVersionStatusFlow = MutableStateFlow(RemodexBridgeVersionStatus())
+        val appUpdateStatusFlow = MutableStateFlow(RemodexAppUpdateStatus())
         val usageStatusFlow = MutableStateFlow(RemodexUsageStatus())
         val foregroundStates = mutableListOf<Boolean>()
         val hydrateRequests = mutableListOf<String>()
         val activeThreadSyncRequests = mutableListOf<String>()
         val selectedThreadRequests = mutableListOf<String>()
         val refreshUsageStatusRequests = mutableListOf<String?>()
+        var checkAppUpdateCalls = 0
         val previewRequests = mutableListOf<Pair<String, String>>()
         val applyRequests = mutableListOf<Pair<String, String>>()
         val sentPrompts = mutableListOf<Triple<String, String, List<RemodexComposerAttachment>>>()
@@ -4026,6 +4041,7 @@ class AppViewModelTest {
         override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotFlow
         override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageFlow
         override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusFlow
+        override val appUpdateStatus: StateFlow<RemodexAppUpdateStatus> = appUpdateStatusFlow
         override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusFlow
 
         override fun setAppForeground(isForeground: Boolean) {
@@ -4336,6 +4352,10 @@ class AppViewModelTest {
         override suspend fun removeBridgeProfile(profileId: String): String? = null
 
         override suspend fun refreshGptAccountState() = Unit
+
+        override suspend fun checkAppUpdate() {
+            checkAppUpdateCalls += 1
+        }
 
         override suspend fun logoutGptAccount() = Unit
 

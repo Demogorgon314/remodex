@@ -28,6 +28,8 @@ import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexAppUpdateState
+import com.emanueledipietro.remodex.model.RemodexAppUpdateStatus
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
@@ -120,6 +122,7 @@ class DefaultRemodexAppRepository(
     private val threadCommandService: ThreadCommandService,
     private val threadHydrationService: ThreadHydrationService? = null,
     private val voiceTranscriptionService: RemodexVoiceTranscriptionService = NoopVoiceTranscriptionService,
+    private val appUpdateChecker: AppUpdateChecker? = null,
     private val managedPushRegistrationState: Flow<RemodexNotificationRegistrationState> = flowOf(
         RemodexNotificationRegistrationState(),
     ),
@@ -284,6 +287,9 @@ class DefaultRemodexAppRepository(
     private val gptAccountSnapshotState = MutableStateFlow(remodexInitialGptAccountSnapshot())
     private val gptAccountErrorMessageState = MutableStateFlow<String?>(null)
     private val bridgeVersionStatusState = MutableStateFlow(RemodexBridgeVersionStatus())
+    private val appUpdateStatusState = MutableStateFlow(
+        RemodexAppUpdateStatus(currentVersion = appUpdateChecker?.currentVersion),
+    )
     private val usageStatusState = MutableStateFlow(RemodexUsageStatus())
     private val liveContextWindowUsageByThreadState =
         MutableStateFlow<Map<String, RemodexContextWindowUsage>>(emptyMap())
@@ -300,6 +306,7 @@ class DefaultRemodexAppRepository(
     override val gptAccountSnapshot: StateFlow<RemodexGptAccountSnapshot> = gptAccountSnapshotState
     override val gptAccountErrorMessage: StateFlow<String?> = gptAccountErrorMessageState
     override val bridgeVersionStatus: StateFlow<RemodexBridgeVersionStatus> = bridgeVersionStatusState
+    override val appUpdateStatus: StateFlow<RemodexAppUpdateStatus> = appUpdateStatusState
     override val usageStatus: StateFlow<RemodexUsageStatus> = usageStatusState
 
     init {
@@ -2152,6 +2159,34 @@ class DefaultRemodexAppRepository(
             gptAccountErrorMessageState.value = error.message?.trim().takeUnless(String?::isNullOrEmpty)
                 ?: "Unable to load ChatGPT account status."
             bridgeVersionStatusState.value = RemodexBridgeVersionStatus()
+        }
+    }
+
+    override suspend fun checkAppUpdate() {
+        val checker = appUpdateChecker
+        if (checker == null) {
+            appUpdateStatusState.value = appUpdateStatusState.value.copy(
+                state = RemodexAppUpdateState.FAILED,
+                errorMessage = "App update checks are not configured.",
+            )
+            return
+        }
+
+        appUpdateStatusState.value = appUpdateStatusState.value.copy(
+            state = RemodexAppUpdateState.CHECKING,
+            errorMessage = null,
+        )
+        appUpdateStatusState.value = try {
+            checker.checkForUpdate()
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            appUpdateStatusState.value.copy(
+                state = RemodexAppUpdateState.FAILED,
+                errorMessage = error.message?.trim().takeUnless(String?::isNullOrEmpty)
+                    ?: "Unable to check GitHub Releases right now.",
+            )
         }
     }
 

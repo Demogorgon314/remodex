@@ -90,6 +90,10 @@ class RemodexAppContainer(
             threadCommandService = threadSyncService,
             threadHydrationService = threadSyncService,
             voiceTranscriptionService = voiceTranscriptionService,
+            appUpdateChecker = GitHubReleaseAppUpdateChecker(
+                okHttpClient = okHttpClient,
+                currentVersion = context.currentPackageVersionName(),
+            ),
             managedPushRegistrationState = managedPushRegistrationCoordinator.state,
             scope = appScope,
         )
@@ -109,4 +113,10 @@ class RemodexAppContainer(
         okHttpClient.connectionPool.evictAll()
         okHttpClient.cache?.close()
     }
+}
+
+private fun Context.currentPackageVersionName(): String? {
+    return runCatching {
+        packageManager.getPackageInfo(packageName, 0).versionName
+    }.getOrNull()?.trim()?.takeIf(String::isNotEmpty)
 }

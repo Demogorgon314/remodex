@@ -65,6 +65,7 @@ import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.RemodexAccessMode
 import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexAppUpdateState
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexConnectionPhase
@@ -106,6 +107,7 @@ fun SettingsScreen(
     onSelectDefaultServiceTier: (RemodexServiceTier?) -> Unit,
     onRefreshSettingsStatus: () -> Unit,
     onRefreshUsageStatus: () -> Unit,
+    onCheckAppUpdate: () -> Unit,
     onLogoutGptAccount: () -> Unit,
     onOpenScanner: () -> Unit,
     onOpenPairingCode: () -> Unit,
@@ -415,6 +417,66 @@ fun SettingsScreen(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
+        }
+
+        SettingsCard(title = remodexLocalizedText("App 更新", "App Update")) {
+            val appUpdateStatus = uiState.appUpdateStatus
+            val isCheckingAppUpdate = appUpdateStatus.state == RemodexAppUpdateState.CHECKING
+            SettingsStatusRow(
+                title = remodexLocalizedText("状态", "Status"),
+                statusLabel = appUpdateStatus.statusLabel,
+            )
+            SettingsKeyValueRow(
+                title = remodexLocalizedText("当前版本", "Current version"),
+                value = appUpdateStatus.currentVersion ?: remodexLocalizedText("未知", "Unknown"),
+                monospace = true,
+            )
+            SettingsKeyValueRow(
+                title = remodexLocalizedText("最新版本", "Latest version"),
+                value = appUpdateStatus.latestVersion ?: remodexLocalizedText("未知", "Unknown"),
+                valueColor = if (appUpdateStatus.state == RemodexAppUpdateState.UPDATE_AVAILABLE) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                monospace = true,
+            )
+            Text(
+                text = appUpdateStatus.guidanceText,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (appUpdateStatus.state == RemodexAppUpdateState.UPDATE_AVAILABLE) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            appUpdateStatus.apkAssetName?.let { assetName ->
+                Text(
+                    text = remodexLocalizedText("APK: $assetName", "APK: $assetName"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            SettingsButton(
+                title = if (isCheckingAppUpdate) {
+                    remodexLocalizedText("检查中...", "Checking...")
+                } else {
+                    remodexLocalizedText("检查更新", "Check for updates")
+                },
+                onClick = onCheckAppUpdate,
+                enabled = !isCheckingAppUpdate,
+            )
+            if (
+                appUpdateStatus.state == RemodexAppUpdateState.UPDATE_AVAILABLE &&
+                !appUpdateStatus.releaseUrl.isNullOrBlank()
+            ) {
+                val releaseUrl = appUpdateStatus.releaseUrl
+                SettingsButton(
+                    title = remodexLocalizedText("打开 GitHub Release", "Open GitHub Release"),
+                    onClick = { uriHandler.openUri(releaseUrl.orEmpty()) },
+                )
+            }
         }
 
         SettingsCard(title = remodexLocalizedText("运行默认值", "Runtime defaults")) {
@@ -894,6 +956,7 @@ private fun SettingsButton(
     title: String,
     onClick: () -> Unit,
     role: SettingsButtonRole = SettingsButtonRole.NORMAL,
+    enabled: Boolean = true,
 ) {
     val containerColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
         MaterialTheme.colorScheme.error.copy(alpha = 0.07f)
@@ -923,7 +986,7 @@ private fun SettingsButton(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
+                .clickable(enabled = enabled, onClick = onClick)
                 .padding(horizontal = 18.dp, vertical = 16.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -931,7 +994,7 @@ private fun SettingsButton(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
-                color = contentColor,
+                color = if (enabled) contentColor else contentColor.copy(alpha = 0.55f),
             )
         }
     }

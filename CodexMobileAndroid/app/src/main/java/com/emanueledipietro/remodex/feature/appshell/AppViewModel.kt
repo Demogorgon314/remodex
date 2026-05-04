@@ -26,6 +26,7 @@ import com.emanueledipietro.remodex.model.RemodexApprovalKind
 import com.emanueledipietro.remodex.model.RemodexAppearanceMode
 import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
+import com.emanueledipietro.remodex.model.RemodexAppUpdateStatus
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexBridgeProfilePresentation
 import com.emanueledipietro.remodex.model.RemodexBridgeVersionStatus
@@ -175,6 +176,7 @@ data class AppUiState(
     val gptAccountSnapshot: RemodexGptAccountSnapshot = RemodexGptAccountSnapshot(),
     val gptAccountErrorMessage: String? = null,
     val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
+    val appUpdateStatus: RemodexAppUpdateStatus = RemodexAppUpdateStatus(),
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
     val composer: ComposerUiState = ComposerUiState(),
     val planComposerSession: PlanComposerSessionUiState? = null,
@@ -310,6 +312,7 @@ private data class SettingsRenderState(
     val gptAccountSnapshot: RemodexGptAccountSnapshot = RemodexGptAccountSnapshot(),
     val gptAccountErrorMessage: String? = null,
     val bridgeVersionStatus: RemodexBridgeVersionStatus = RemodexBridgeVersionStatus(),
+    val appUpdateStatus: RemodexAppUpdateStatus = RemodexAppUpdateStatus(),
     val usageStatus: RemodexUsageStatus = RemodexUsageStatus(),
 )
 
@@ -523,12 +526,14 @@ class AppViewModel(
             repository.gptAccountSnapshot,
             repository.gptAccountErrorMessage,
             repository.bridgeVersionStatus,
+            repository.appUpdateStatus,
             repository.usageStatus,
-        ) { gptAccountSnapshot, gptAccountErrorMessage, bridgeVersionStatus, usageStatus ->
+        ) { gptAccountSnapshot, gptAccountErrorMessage, bridgeVersionStatus, appUpdateStatus, usageStatus ->
             SettingsRenderState(
                 gptAccountSnapshot = gptAccountSnapshot,
                 gptAccountErrorMessage = gptAccountErrorMessage,
                 bridgeVersionStatus = bridgeVersionStatus,
+                appUpdateStatus = appUpdateStatus,
                 usageStatus = usageStatus,
             )
         }
@@ -785,6 +790,7 @@ class AppViewModel(
                 gptAccountSnapshot = settingsState.gptAccountSnapshot,
                 gptAccountErrorMessage = settingsState.gptAccountErrorMessage,
                 bridgeVersionStatus = settingsState.bridgeVersionStatus,
+                appUpdateStatus = settingsState.appUpdateStatus,
                 usageStatus = settingsState.usageStatus,
             )
         }
@@ -3010,6 +3016,12 @@ class AppViewModel(
     fun refreshSettingsStatus() {
         refreshGptAccountState()
         refreshUsageStatus()
+    }
+
+    fun checkAppUpdate() {
+        viewModelScope.launch {
+            repository.checkAppUpdate()
+        }
     }
 
     fun refreshGptAccountState() {
