@@ -122,9 +122,10 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
@@ -1484,9 +1485,6 @@ fun ConversationScreen(
     val autocompleteVisible = uiState.composer.autocomplete.panel != RemodexComposerAutocompletePanel.NONE
     val showsThreadRunningUi = thread.isRunning
 
-    var activeGitBranchPickerMode by rememberSaveable(thread.id) {
-        mutableStateOf<GitBranchPickerMode?>(null)
-    }
     var worktreeHandoffSheetExpanded by rememberSaveable(thread.id) { mutableStateOf(false) }
     var worktreeSheetMode by remember(thread.id) { mutableStateOf(WorktreeSheetMode.HANDOFF) }
     var handledWorktreeSuccessSignal by rememberSaveable(thread.id) { mutableStateOf(0L) }
@@ -1676,12 +1674,6 @@ fun ConversationScreen(
         }
         handledWorktreeSuccessSignal = uiState.worktreeOperationSuccessSignal
         worktreeHandoffSheetExpanded = false
-    }
-
-    LaunchedEffect(activeGitBranchPickerMode, showsGitControls) {
-        if (activeGitBranchPickerMode != null && !showsGitControls) {
-            activeGitBranchPickerMode = null
-        }
     }
 
     LaunchedEffect(worktreeHandoffSheetExpanded, isWorktreeOperationAvailable, uiState.isCreatingGitWorktree) {
@@ -2118,11 +2110,15 @@ fun ConversationScreen(
                 onComposerFocusChanged = { isFocused ->
                     composerFocused = isFocused
                 },
-                onOpenGitSheet = { activeGitBranchPickerMode = GitBranchPickerMode.CHECKOUT },
                 onOpenWorktreeHandoff = {
                     worktreeSheetMode = WorktreeSheetMode.HANDOFF
                     worktreeHandoffSheetExpanded = true
                 },
+                selectedGitBaseBranch = uiState.composer.selectedGitBaseBranch,
+                onSelectGitBaseBranch = onSelectGitBaseBranch,
+                onRefreshGitState = onRefreshGitState,
+                onCheckoutGitBranch = onCheckoutGitBranch,
+                onCreateGitBranch = onCreateGitBranch,
                 onUsageStatusPopoverExpandedChange = { usageStatusPopoverExpanded = it },
                 onRefreshUsageStatus = onRefreshUsageStatus,
                 onRequestContinueOnMac = onRequestContinueOnMac,
@@ -2143,12 +2139,6 @@ fun ConversationScreen(
                     WorktreeSheetMode.FORK -> onForkThreadIntoNewWorktree(branchName, baseBranch)
                 }
             },
-            activeGitBranchPickerMode = activeGitBranchPickerMode,
-            onDismissGitBranchPicker = { activeGitBranchPickerMode = null },
-            onSelectGitBaseBranch = onSelectGitBaseBranch,
-            onRefreshGitState = onRefreshGitState,
-            onCheckoutGitBranch = onCheckoutGitBranch,
-            onCreateGitBranch = onCreateGitBranch,
             selectedPlanSheetItem = selectedPlanSheetItem,
             onDismissPlanSheet = { selectedPlanSheetItemId = null },
             statusSheetExpanded = statusSheetExpanded,
@@ -2391,8 +2381,12 @@ private fun ConversationComposerPane(
     onClearReviewSelection: () -> Unit,
     onClearSubagentsSelection: () -> Unit,
     onComposerFocusChanged: (Boolean) -> Unit,
-    onOpenGitSheet: () -> Unit,
     onOpenWorktreeHandoff: () -> Unit,
+    selectedGitBaseBranch: String,
+    onSelectGitBaseBranch: (String) -> Unit,
+    onRefreshGitState: () -> Unit,
+    onCheckoutGitBranch: (String) -> Unit,
+    onCreateGitBranch: (String) -> Unit,
     onUsageStatusPopoverExpandedChange: (Boolean) -> Unit,
     onRefreshUsageStatus: () -> Unit,
     onRequestContinueOnMac: () -> Unit,
@@ -2563,7 +2557,7 @@ private fun ConversationComposerPane(
                         }
                     }
 
-                    if (!composerFocused || (composerSawImeWhileFocused && imeBottomPx == 0)) {
+                    if (!composerFocused) {
                         ComposerSecondaryBar(
                             thread = thread,
                             gitState = uiState.composer.gitState,
@@ -2580,8 +2574,12 @@ private fun ConversationComposerPane(
                             onUsageExpandedChange = onUsageStatusPopoverExpandedChange,
                             onRefreshUsageStatus = onRefreshUsageStatus,
                             onRequestContinueOnMac = onRequestContinueOnMac,
-                            onOpenGitSheet = onOpenGitSheet,
                             onOpenWorktreeHandoff = onOpenWorktreeHandoff,
+                            selectedGitBaseBranch = selectedGitBaseBranch,
+                            onSelectGitBaseBranch = onSelectGitBaseBranch,
+                            onRefreshGitState = onRefreshGitState,
+                            onCheckoutGitBranch = onCheckoutGitBranch,
+                            onCreateGitBranch = onCreateGitBranch,
                         )
                     }
                 }
@@ -2813,12 +2811,6 @@ private fun ConversationScreenSheetOverlays(
     selectedGitBaseBranch: String,
     onDismissWorktreeHandoffSheet: () -> Unit,
     onSubmitWorktreeHandoff: (String, String) -> Unit,
-    activeGitBranchPickerMode: GitBranchPickerMode?,
-    onDismissGitBranchPicker: () -> Unit,
-    onSelectGitBaseBranch: (String) -> Unit,
-    onRefreshGitState: () -> Unit,
-    onCheckoutGitBranch: (String) -> Unit,
-    onCreateGitBranch: (String) -> Unit,
     selectedPlanSheetItem: RemodexConversationItem?,
     onDismissPlanSheet: () -> Unit,
     statusSheetExpanded: Boolean,
@@ -2850,19 +2842,6 @@ private fun ConversationScreenSheetOverlays(
             isSubmitting = isCreatingGitWorktree,
             onDismiss = onDismissWorktreeHandoffSheet,
             onSubmit = onSubmitWorktreeHandoff,
-        )
-    }
-
-    activeGitBranchPickerMode?.let { mode ->
-        GitBranchPickerDialog(
-            mode = mode,
-            gitState = gitState,
-            selectedBaseBranch = selectedGitBaseBranch,
-            onDismiss = onDismissGitBranchPicker,
-            onSelectBaseBranch = onSelectGitBaseBranch,
-            onRefresh = onRefreshGitState,
-            onCheckoutBranch = onCheckoutGitBranch,
-            onCreateBranch = onCreateGitBranch,
         )
     }
 
@@ -4787,8 +4766,12 @@ private fun ComposerSecondaryBar(
     onUsageExpandedChange: (Boolean) -> Unit,
     onRefreshUsageStatus: () -> Unit,
     onRequestContinueOnMac: () -> Unit,
-    onOpenGitSheet: () -> Unit,
     onOpenWorktreeHandoff: () -> Unit,
+    selectedGitBaseBranch: String,
+    onSelectGitBaseBranch: (String) -> Unit,
+    onRefreshGitState: () -> Unit,
+    onCheckoutGitBranch: (String) -> Unit,
+    onCreateGitBranch: (String) -> Unit,
 ) {
     val chrome = remodexConversationChrome()
     val uriHandler = LocalUriHandler.current
@@ -4835,6 +4818,7 @@ private fun ComposerSecondaryBar(
     val isEmptyThread = thread.messages.isEmpty()
     val runtimeMenuState = rememberComposerMenuState(thread.id, "runtime")
     val accessMenuState = rememberComposerMenuState(thread.id, "access")
+    val branchMenuState = rememberComposerMenuState(thread.id, "branch")
     val branchPillMaxWidth = 168.dp
 
     LaunchedEffect(usageExpanded, thread.id) {
@@ -4981,22 +4965,14 @@ private fun ComposerSecondaryBar(
                         hapticOnClick = true,
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Security,
+                            imageVector = if (accessMode.canonical == RemodexAccessMode.FULL_ACCESS) {
+                                Icons.Outlined.ThumbUp
+                            } else {
+                                Icons.Outlined.PanTool
+                            },
                             contentDescription = null,
                             modifier = Modifier.size(12.dp),
-                            tint = if (accessMode.canonical == RemodexAccessMode.FULL_ACCESS) {
-                                Color(0xFFFF9500)
-                            } else {
-                                chrome.secondaryText
-                            },
-                        )
-                        Text(
-                            text = accessMode.canonical.label,
-                            modifier = Modifier.widthIn(max = 112.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = chrome.secondaryText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            tint = chrome.secondaryText,
                         )
                         RuntimeSelectorChevron()
                     }
@@ -5030,49 +5006,67 @@ private fun ComposerSecondaryBar(
                 horizontalArrangement = Arrangement.End,
             ) {
                 if (showsGitBranchSelector) {
-                    SecondaryBarPill(
-                        onClick = onOpenGitSheet,
+                    Box(
                         modifier = Modifier
                             .padding(end = 8.dp)
                             .weight(1f, fill = false)
                             .widthIn(max = branchPillMaxWidth),
-                        enabled = branchSelectorEnabled,
-                        hapticOnClick = true,
                     ) {
-                        RemodexGitBranchGlyph(
-                            color = chrome.secondaryText,
-                            modifier = Modifier.size(12.dp),
+                        SecondaryBarPill(
+                            onClick = { branchMenuState.onTriggerClick() },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = branchSelectorEnabled,
+                            hapticOnClick = true,
+                        ) {
+                            RemodexGitBranchGlyph(
+                                color = chrome.secondaryText,
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Text(
+                                text = branchLabel,
+                                modifier = Modifier.weight(1f, fill = false),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                color = chrome.secondaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            RuntimeSelectorChevron()
+                        }
+                        GitBranchPickerPopover(
+                            expanded = branchMenuState.expanded,
+                            mode = GitBranchPickerMode.CHECKOUT,
+                            gitState = gitState,
+                            selectedBaseBranch = selectedGitBaseBranch,
+                            onDismiss = branchMenuState::onDismissRequest,
+                            onSelectBaseBranch = { branch ->
+                                branchMenuState.collapse()
+                                onSelectGitBaseBranch(branch)
+                            },
+                            onRefresh = onRefreshGitState,
+                            onCheckoutBranch = { branch ->
+                                branchMenuState.collapse()
+                                onCheckoutGitBranch(branch)
+                            },
+                            onCreateBranch = { branch ->
+                                branchMenuState.collapse()
+                                onCreateGitBranch(branch)
+                            },
                         )
-                        Text(
-                            text = branchLabel,
-                            modifier = Modifier.weight(1f, fill = false),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontFamily = FontFamily.Monospace,
-                            color = chrome.secondaryText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        RuntimeSelectorChevron()
                     }
                 }
 
                 Box {
-                    SecondaryBarPill(
+                    SecondaryBarCircleButton(
                         onClick = { onUsageExpandedChange(true) },
                         hapticOnClick = true,
                     ) {
                         ContextWindowStatusRingGlyph(
                             usage = usageStatus.contextWindowUsage,
                             isRefreshing = isRefreshingUsage,
-                            modifier = Modifier.requiredSize(16.dp),
+                            modifier = Modifier.requiredSize(18.dp),
                         )
-                        Text(
-                            text = remodexLocalizedText("剩余额度", "Usage"),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = chrome.secondaryText,
-                            maxLines = 1,
-                        )
-                        RuntimeSelectorChevron()
                     }
                     ComposerStatusPopover(
                         expanded = usageExpanded,
@@ -5157,6 +5151,44 @@ private fun SecondaryBarPill(
 }
 
 @Composable
+private fun SecondaryBarCircleButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    hapticOnClick: Boolean = false,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val performLightHaptic = rememberLightImpactHaptic()
+    Surface(
+        modifier = modifier
+            .requiredSize(36.dp)
+            .clip(CircleShape)
+            .clickable(
+                enabled = enabled,
+                onClick = {
+                    if (hapticOnClick) {
+                        performLightHaptic()
+                    }
+                    onClick()
+                },
+            ),
+        color = chrome.mutedSurface,
+        shape = CircleShape,
+        border = BorderStroke(1.dp, chrome.subtleBorder),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
+    }
+}
+
+@Composable
 private fun ContextWindowStatusRingGlyph(
     usage: RemodexContextWindowUsage?,
     isRefreshing: Boolean,
@@ -5167,8 +5199,8 @@ private fun ContextWindowStatusRingGlyph(
     val progress = usage?.fractionUsed?.coerceIn(0.0, 1.0)?.toFloat()
     val ringColor = when {
         progress == null -> chrome.secondaryText.copy(alpha = 0.55f)
-        progress >= 0.85f -> FileChangeDeletedColor
-        progress >= 0.65f -> Color(0xFFFF9500)
+        progress >= 0.85f -> chrome.titleText
+        progress >= 0.65f -> chrome.secondaryText
         else -> chrome.secondaryText.copy(alpha = 0.68f)
     }
 
@@ -5201,6 +5233,18 @@ private fun ContextWindowStatusRingGlyph(
                         ),
                     )
                 }
+            }
+            if (progress != null) {
+                Text(
+                    text = ((progress * 100f).toInt()).coerceIn(0, 100).toString(),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 6.sp,
+                        lineHeight = 6.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = ringColor,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -8573,7 +8617,8 @@ private fun ModelRuntimeControlsSection(
 }
 
 @Composable
-private fun GitBranchPickerDialog(
+private fun GitBranchPickerPopover(
+    expanded: Boolean,
     mode: GitBranchPickerMode,
     gitState: RemodexGitState,
     selectedBaseBranch: String,
@@ -8584,6 +8629,7 @@ private fun GitBranchPickerDialog(
     onRefresh: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
+    val density = LocalDensity.current
     var searchText by rememberSaveable(mode) { mutableStateOf("") }
     var createBranchDialogExpanded by rememberSaveable(mode) { mutableStateOf(false) }
     var branchDraft by rememberSaveable(mode) { mutableStateOf("") }
@@ -8632,65 +8678,75 @@ private fun GitBranchPickerDialog(
         )
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(28.dp),
-            tonalElevation = 0.dp,
-            shadowElevation = 12.dp,
-            color = MaterialTheme.colorScheme.surface,
+    if (expanded) {
+        Popup(
+            popupPositionProvider = remember(density) {
+                ComposerMenuPositionProvider(
+                    verticalGapPx = with(density) { 6.dp.roundToPx() },
+                    windowMarginPx = with(density) { 10.dp.roundToPx() },
+                )
+            },
+            onDismissRequest = onDismiss,
+            properties = PopupProperties(focusable = true),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 460.dp)
-                    .testTag(GitBranchPickerDialogTag)
-                    .padding(horizontal = 20.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                color = chrome.panelSurfaceStrong,
+                border = BorderStroke(1.dp, chrome.subtleBorder),
             ) {
-                Text(
-                    text = when (mode) {
-                        GitBranchPickerMode.CHECKOUT -> "Current Branch"
-                        GitBranchPickerMode.BASE_BRANCH -> "Base Branch"
-                    },
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = chrome.titleText,
-                )
-                OutlinedTextField(
-                    value = searchText,
-                    onValueChange = { searchText = it },
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag(GitBranchPickerSearchFieldTag),
-                    label = { Text("Search branches") },
-                    singleLine = true,
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Search,
-                            contentDescription = null,
-                        )
-                    },
-                )
-                Surface(
-                    color = chrome.panelSurface,
-                    shape = RemodexConversationShapes.card,
-                    border = BorderStroke(1.dp, chrome.subtleBorder),
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
+                        .widthIn(min = 300.dp, max = 400.dp)
+                        .testTag(GitBranchPickerDialogTag)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    LazyColumn(
+                    Text(
+                        text = when (mode) {
+                            GitBranchPickerMode.CHECKOUT -> "Current Branch"
+                            GitBranchPickerMode.BASE_BRANCH -> "Base Branch"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = chrome.titleText,
+                    )
+                    OutlinedTextField(
+                        value = searchText,
+                        onValueChange = { searchText = it },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 180.dp, max = 300.dp),
-                        contentPadding = PaddingValues(vertical = 8.dp),
-                    ) {
-                        item("section-header") {
-                            Text(
-                                text = "Branches",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = chrome.secondaryText,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            .testTag(GitBranchPickerSearchFieldTag),
+                        label = { Text("Search branches") },
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = null,
                             )
-                        }
+                        },
+                    )
+                    Surface(
+                        color = chrome.panelSurface,
+                        shape = RemodexConversationShapes.card,
+                        border = BorderStroke(1.dp, chrome.subtleBorder),
+                        shadowElevation = 0.dp,
+                        tonalElevation = 0.dp,
+                    ) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 180.dp, max = 300.dp),
+                            contentPadding = PaddingValues(vertical = 8.dp),
+                        ) {
+                            item("section-header") {
+                                Text(
+                                    text = "Branches",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = chrome.secondaryText,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                            }
                         if (defaultBranch != null) {
                             item("default-branch") {
                                 GitBranchPickerOptionButton(
@@ -8787,6 +8843,7 @@ private fun GitBranchPickerDialog(
                                 leadingIcon = Icons.Outlined.Checklist,
                                 enabled = !gitState.isLoading,
                                 onClick = {
+                                    onDismiss()
                                     val normalizedSearchBranch = remodexNormalizedCreatedBranchName(searchText)
                                     branchDraft = if (normalizedSearchBranch.isEmpty()) {
                                         "remodex/"
@@ -8808,6 +8865,7 @@ private fun GitBranchPickerDialog(
                 }
             }
         }
+    }
     }
 
     if (createBranchDialogExpanded) {
