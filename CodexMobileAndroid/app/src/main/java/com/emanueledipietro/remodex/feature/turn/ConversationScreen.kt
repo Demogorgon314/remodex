@@ -5264,7 +5264,7 @@ private fun ComposerStatusPopover(
                 color = chrome.panelSurfaceStrong,
                 shape = RoundedCornerShape(18.dp),
                 border = BorderStroke(1.dp, chrome.subtleBorder),
-                shadowElevation = 8.dp,
+                shadowElevation = 0.dp,
                 tonalElevation = 0.dp,
             ) {
                 Column(
@@ -7674,7 +7674,7 @@ private fun RuntimeAllModelsSheet(
                 shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
                 border = BorderStroke(1.dp, chrome.subtleBorder),
                 tonalElevation = 0.dp,
-                shadowElevation = 12.dp,
+                shadowElevation = 0.dp,
             ) {
                 Column(
                     modifier = Modifier
@@ -8068,7 +8068,7 @@ private fun ComposerDropdownMenu(
                 color = surfaceColor,
                 shape = RoundedCornerShape(22.dp),
                 border = BorderStroke(1.dp, chrome.subtleBorder.copy(alpha = 0.72f)),
-                shadowElevation = 8.dp,
+                shadowElevation = 0.dp,
                 tonalElevation = 0.dp,
             ) {
                 Column(
@@ -8344,7 +8344,7 @@ private fun ConversationMessageContextMenu(
                 color = chrome.panelSurfaceStrong,
                 shape = RoundedCornerShape(18.dp),
                 border = BorderStroke(1.dp, chrome.subtleBorder),
-                shadowElevation = 6.dp,
+                shadowElevation = 0.dp,
                 tonalElevation = 0.dp,
             ) {
                 Column(
