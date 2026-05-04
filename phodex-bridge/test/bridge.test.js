@@ -190,6 +190,69 @@ test("sanitizeThreadHistoryImagesForRelay leaves unrelated RPC payloads unchange
   );
 });
 
+test("sanitizeThreadHistoryImagesForRelay can return only the first user message for title regeneration", () => {
+  const rawMessage = JSON.stringify({
+    id: "rpc-title-seed",
+    result: {
+      thread: {
+        id: "thread-title-seed",
+        title: "Manual title",
+        turns: [
+          {
+            id: "turn-system",
+            items: [
+              {
+                id: "system-1",
+                type: "system_message",
+                text: "System setup",
+              },
+            ],
+          },
+          {
+            id: "turn-first-user",
+            items: [
+              {
+                id: "user-1",
+                type: "user_message",
+                text: "Summarize this first request.",
+              },
+              {
+                id: "assistant-1",
+                type: "agent_message",
+                text: "Sure.",
+              },
+            ],
+          },
+          {
+            id: "turn-later-user",
+            items: [
+              {
+                id: "user-2",
+                type: "user_message",
+                text: "Later request.",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
+
+  const sanitized = JSON.parse(
+    sanitizeThreadHistoryImagesForRelay(rawMessage, "thread/read", {
+      remodexTitleSeedOnly: true,
+    })
+  );
+
+  assert.equal(sanitized.result.thread.remodexTitleSeedOnly, true);
+  assert.equal(sanitized.result.thread.turns.length, 1);
+  assert.equal(sanitized.result.thread.turns[0].id, "turn-first-user");
+  assert.deepEqual(
+    sanitized.result.thread.turns[0].items.map((item) => item.id),
+    ["user-1"]
+  );
+});
+
 test("bridge traffic classification attributes responses back to the original request method", () => {
   const applicationRequestMethodsById = new Map();
   rememberTrafficRequestMethod(

@@ -66,6 +66,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -4149,6 +4150,10 @@ class BridgeThreadSyncServiceTest {
                         "thread-regenerate-title-hydrated",
                         request.params?.jsonObjectOrNull?.firstString("threadId"),
                     )
+                    assertEquals(
+                        true,
+                        request.params?.jsonObjectOrNull?.get("remodexTitleSeedOnly")?.jsonPrimitive?.booleanOrNull,
+                    )
                     buildJsonObject {
                         put(
                             "thread",
@@ -4223,7 +4228,7 @@ class BridgeThreadSyncServiceTest {
                         id = "thread-regenerate-title-hydrated",
                         title = "Manual Title",
                         name = "Manual Title",
-                        preview = "Hydrate this sidebar thread before title generation.",
+                        preview = "",
                         projectPath = "/tmp/thread-regenerate-title-hydrated",
                         lastUpdatedLabel = "Updated just now",
                         lastUpdatedEpochMs = 0L,
@@ -4239,6 +4244,7 @@ class BridgeThreadSyncServiceTest {
 
             val thread = service.threads.value.first { it.id == "thread-regenerate-title-hydrated" }
             assertEquals("Hydrated Sidebar Thread", thread.name)
+            assertTrue(thread.timelineMutations.isEmpty())
             val requestMethods = relayFactory.receivedRequests.map { request -> request.method }
             assertTrue(requestMethods.containsAll(listOf("thread/read", "thread/generateTitle", "thread/name/set")))
         } finally {

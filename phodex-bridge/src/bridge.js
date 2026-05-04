@@ -699,6 +699,7 @@ function startBridge({
     if (relaySanitizedRequestMethods.has(method)) {
       relaySanitizedResponseMethodsById.set(String(requestId), {
         method,
+        params: parsed?.params && typeof parsed.params === "object" ? parsed.params : null,
         createdAt: Date.now(),
       });
     }
@@ -719,7 +720,7 @@ function startBridge({
     }
     relaySanitizedResponseMethodsById.delete(String(responseId));
 
-    return sanitizeThreadHistoryImagesForRelay(rawMessage, trackedRequest.method);
+    return sanitizeThreadHistoryImagesForRelay(rawMessage, trackedRequest.method, trackedRequest.params);
   }
 
   function updatePendingAuthLoginFromCodexMessage(rawMessage) {
@@ -1229,7 +1230,7 @@ function normalizeNonEmptyString(value) {
 
 // Shrinks `thread/read` and `thread/resume` snapshots by eliding bulky history payloads
 // that the iPhone does not render directly (inline images, compaction replacement history).
-function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod) {
+function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod, requestParams = null) {
   if (requestMethod !== "thread/read" && requestMethod !== "thread/resume") {
     return rawMessage;
   }
@@ -1238,6 +1239,13 @@ function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod) {
   const thread = parsed?.result?.thread;
   if (!thread || typeof thread !== "object" || !Array.isArray(thread.turns)) {
     return rawMessage;
+  }
+
+  if (isTitleSeedOnlyThreadRead(requestParams)) {
+    const titleSeedPayload = buildTitleSeedThreadPayloadForRelay(parsed, thread);
+    if (titleSeedPayload != null) {
+      return titleSeedPayload;
+    }
   }
 
   let didSanitize = false;
@@ -1310,6 +1318,69 @@ function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod) {
       },
     },
   });
+}
+
+function isTitleSeedOnlyThreadRead(params) {
+  return params && typeof params === "object" && (
+    params.remodexTitleSeedOnly === true ||
+    params.remodex_title_seed_only === true
+  );
+}
+
+function buildTitleSeedThreadPayloadForRelay(parsed, thread) {
+  for (const turn of thread.turns) {
+    if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+      continue;
+    }
+    const userItem = turn.items.find(isRelayUserMessageItem);
+    if (!userItem) {
+      continue;
+    }
+    return JSON.stringify({
+      ...parsed,
+      result: {
+        ...parsed.result,
+        thread: {
+          ...thread,
+          turns: [
+            {
+              ...turn,
+              items: [userItem],
+            },
+          ],
+          remodexTitleSeedOnly: true,
+          remodexKeptTurnCount: 1,
+        },
+      },
+    });
+  }
+
+  return JSON.stringify({
+    ...parsed,
+    result: {
+      ...parsed.result,
+      thread: {
+        ...thread,
+        turns: [],
+        remodexTitleSeedOnly: true,
+        remodexKeptTurnCount: 0,
+      },
+    },
+  });
+}
+
+function isRelayUserMessageItem(item) {
+  if (!item || typeof item !== "object") {
+    return false;
+  }
+  const normalizedType = normalizeRelayHistoryContentType(item.type);
+  if (normalizedType === "usermessage") {
+    return true;
+  }
+  if (normalizedType !== "message") {
+    return false;
+  }
+  return typeof item.role === "string" && item.role.toLowerCase().includes("user");
 }
 
 // Drops huge replacement-history blobs from compaction items because the phone only needs

@@ -1326,8 +1326,10 @@ class BridgeThreadSyncService(
             return false
         }
         val normalizedThreadId = threadId.trim().takeIf(String::isNotEmpty) ?: return false
-        val snapshot = threadTitleRegenerationSnapshot(normalizedThreadId) ?: return false
-        val seed = threadTitleRegenerationSeed(snapshot) ?: return false
+        val snapshot = currentThreadSnapshot(normalizedThreadId) ?: return false
+        val seed = threadTitleRegenerationSeed(snapshot)
+            ?: readThreadTitleRegenerationSeed(normalizedThreadId)
+            ?: return false
         val generatedTitle = generatedThreadTitleOrNull(
             seed = seed.message,
             threadId = normalizedThreadId,
@@ -1338,24 +1340,17 @@ class BridgeThreadSyncService(
         return currentThreadSnapshot(normalizedThreadId)?.name?.trim() == generatedTitle
     }
 
-    private suspend fun threadTitleRegenerationSnapshot(threadId: String): ThreadSyncSnapshot? {
-        val existingSnapshot = currentThreadSnapshot(threadId) ?: return null
-        if (threadTitleRegenerationSeed(existingSnapshot) != null) {
-            return existingSnapshot
-        }
+    private suspend fun readThreadTitleRegenerationSeed(threadId: String): ThreadTitleSeed? {
         val response = runCatching {
             retryAfterThreadMaterialization {
-                requestThreadRead(threadId)
+                requestThreadReadForTitleSeed(threadId)
             }
-        }.getOrNull() ?: return existingSnapshot
-        return mergeThreadSnapshotResponse(
-            source = "thread/read",
-            threadId = threadId,
-            response = response,
-            existingSnapshot = existingSnapshot,
-            syncState = currentSyncState(threadId),
-            allowHistoryMergeWhileRunning = false,
-        ) ?: existingSnapshot
+        }.getOrNull() ?: return null
+        val threadObject = response.result
+            ?.jsonObjectOrNull
+            ?.firstObject("thread")
+            ?: return null
+        return threadTitleRegenerationSeed(threadId = threadId, threadObject = threadObject)
     }
 
     private suspend fun sendThreadNameSetRpc(
@@ -2592,6 +2587,33 @@ class BridgeThreadSyncService(
                 params = buildJsonObject {
                     put("thread_id", JsonPrimitive(threadId))
                     put("include_turns", JsonPrimitive(true))
+                },
+            )
+        }.getOrThrow()
+    }
+
+    private suspend fun requestThreadReadForTitleSeed(threadId: String): RpcMessage {
+        val camelParams = buildJsonObject {
+            put("threadId", JsonPrimitive(threadId))
+            put("includeTurns", JsonPrimitive(true))
+            put("remodexTitleSeedOnly", JsonPrimitive(true))
+            put("remodexHistoryDirection", JsonPrimitive("oldest"))
+            put("remodexHistoryTurnLimit", JsonPrimitive(1))
+        }
+        return runCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = "thread/read",
+                params = camelParams,
+            )
+        }.recoverCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = "thread/read",
+                params = buildJsonObject {
+                    put("thread_id", JsonPrimitive(threadId))
+                    put("include_turns", JsonPrimitive(true))
+                    put("remodex_title_seed_only", JsonPrimitive(true))
+                    put("remodex_history_direction", JsonPrimitive("oldest"))
+                    put("remodex_history_turn_limit", JsonPrimitive(1))
                 },
             )
         }.getOrThrow()
@@ -11233,14 +11255,46 @@ class BridgeThreadSyncService(
                 item.speaker == ConversationSpeaker.USER &&
                     item.deliveryState != RemodexMessageDeliveryState.PENDING
             }
-            ?: return null
-        val message = firstUserMessage.text.trim().takeIf(String::isNotEmpty)
-            ?: firstUserMessage.attachments.takeIf(List<RemodexConversationAttachment>::isNotEmpty)?.let { "Image request" }
-            ?: return null
+        if (firstUserMessage != null) {
+            val message = firstUserMessage.text.trim().takeIf(String::isNotEmpty)
+                ?: firstUserMessage.attachments.takeIf(List<RemodexConversationAttachment>::isNotEmpty)?.let { "Image request" }
+                ?: return null
+            return ThreadTitleSeed(
+                message = message,
+                attachmentCount = firstUserMessage.attachments.size,
+            )
+        }
+        val preview = snapshot.preview.trim().takeIf(String::isNotEmpty) ?: return null
         return ThreadTitleSeed(
-            message = message,
-            attachmentCount = firstUserMessage.attachments.size,
+            message = preview,
+            attachmentCount = 0,
         )
+    }
+
+    private fun threadTitleRegenerationSeed(
+        threadId: String,
+        threadObject: JsonObject,
+    ): ThreadTitleSeed? {
+        TurnTimelineReducer.reduce(
+            decodeHistorySnapshotData(
+                threadId = threadId,
+                threadObject = threadObject,
+            ).mutations,
+        ).forEach { item ->
+            if (
+                item.speaker == ConversationSpeaker.USER &&
+                item.deliveryState != RemodexMessageDeliveryState.PENDING
+            ) {
+                val message = item.text.trim().takeIf(String::isNotEmpty)
+                    ?: item.attachments.takeIf(List<RemodexConversationAttachment>::isNotEmpty)?.let { "Image request" }
+                    ?: return@forEach
+                return ThreadTitleSeed(
+                    message = message,
+                    attachmentCount = item.attachments.size,
+                )
+            }
+        }
+        return null
     }
 
     private fun fallbackThreadTitle(seed: String): String {
