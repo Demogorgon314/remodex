@@ -6973,7 +6973,7 @@ class BridgeThreadSyncServiceTest {
 
             service.sendPrompt(
                 threadId = "thread-default-mode",
-                prompt = "Implement plan",
+                prompt = "Implement plan.",
                 runtimeConfig = RemodexRuntimeConfig(
                     planningMode = RemodexPlanningMode.AUTO,
                     selectedModelId = "gpt-5.4",

@@ -2352,13 +2352,13 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         viewModel.sendPlanFollowUp(
-            prompt = "Implement plan",
+            prompt = "Implement plan.",
             shouldExitPlanMode = true,
         )
         advanceUntilIdle()
 
         assertEquals(
-            Triple("thread-1", "Implement plan", emptyList<RemodexComposerAttachment>()),
+            Triple("thread-1", "Implement plan.", emptyList<RemodexComposerAttachment>()),
             repository.sentPrompts.last(),
         )
         assertEquals(

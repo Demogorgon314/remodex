@@ -486,7 +486,6 @@ private fun List<RemodexConversationItem>.structuralIdentity(): MessagesStructur
 
 internal data class PlanComposerFlowSnapshot(
     val takeoverPromptItem: RemodexConversationItem? = null,
-    val completedPlanItem: RemodexConversationItem? = null,
 )
 
 internal sealed interface ConversationTimelineEmptyStatePresentation {
@@ -556,6 +555,11 @@ private class ComposerMenuState(
         suppressNextTriggerToggle = false
     }
 }
+
+internal data class ProposedPlanPresentation(
+    val body: String,
+    val summary: String?,
+)
 
 @Composable
 private fun rememberComposerMenuState(vararg keys: Any?): ComposerMenuState {
@@ -671,12 +675,46 @@ private fun RemodexConversationItem.shouldDisplayPinnedPlanAccessory(
     return steps.any { step -> step.status != RemodexPlanStepStatus.COMPLETED }
 }
 
-private fun RemodexConversationItem.isCompletedPlanForComposerFlow(): Boolean {
-    if (kind != ConversationItemKind.PLAN || isStreaming) {
-        return false
+internal fun proposedPlanPresentation(item: RemodexConversationItem): ProposedPlanPresentation? {
+    if (item.kind != ConversationItemKind.PLAN || item.isStreaming) {
+        return null
     }
-    val steps = planState?.steps.orEmpty()
-    return steps.isEmpty() || steps.all { step -> step.status == RemodexPlanStepStatus.COMPLETED }
+    if (!item.planState?.steps.isNullOrEmpty()) {
+        return null
+    }
+    val body = extractProposedPlanBody(item.text) ?: item.text.trim()
+    if (body.isEmpty() || body == "Planning..." || body == "Plan updated.") {
+        return null
+    }
+    return ProposedPlanPresentation(
+        body = body,
+        summary = proposedPlanSummary(body),
+    )
+}
+
+internal fun extractProposedPlanBody(rawText: String): String? {
+    val match = Regex(
+        pattern = """(?is)<proposed_plan>\s*(.*?)\s*</proposed_plan>""",
+    ).find(rawText) ?: return null
+    return match.groupValues.getOrNull(1)?.trim()?.takeIf(String::isNotEmpty)
+}
+
+internal fun strippedProposedPlanText(rawText: String): String {
+    return rawText.replace(
+        Regex(pattern = """(?is)\s*<proposed_plan>\s*.*?\s*</proposed_plan>\s*"""),
+        "\n",
+    ).replace(Regex("""\n{3,}"""), "\n\n").trim()
+}
+
+internal fun proposedPlanSummary(body: String): String? {
+    return body
+        .lineSequence()
+        .map { line ->
+            line
+                .replace(Regex("""^[-*•\d.)\s#]+"""), "")
+                .trim()
+        }
+        .firstOrNull(String::isNotEmpty)
 }
 
 internal fun resolvePlanComposerFlow(
@@ -717,10 +755,7 @@ internal fun resolvePlanComposerFlow(
         return PlanComposerFlowSnapshot()
     }
 
-    val latestPlanItem = flowItems.lastOrNull { item -> item.kind == ConversationItemKind.PLAN }
-    return PlanComposerFlowSnapshot(
-        completedPlanItem = latestPlanItem?.takeIf(RemodexConversationItem::isCompletedPlanForComposerFlow),
-    )
+    return PlanComposerFlowSnapshot()
 }
 
 internal fun planAccessorySnapshot(planItem: RemodexConversationItem): PlanAccessorySnapshot {
@@ -1379,7 +1414,6 @@ fun ConversationScreen(
     onSendPrompt: () -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit = { _, _ -> },
     onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit = { _, _ -> },
-    onDismissPlanComposerSession: () -> Unit = {},
     onStopTurn: () -> Unit,
     onRestoreLatestQueuedDraft: () -> Unit = {},
     onRestoreQueuedDraft: (String) -> Unit = {},
@@ -1523,7 +1557,6 @@ fun ConversationScreen(
     val messagesIdentity = derivedState.messagesIdentity
     val planComposerFlow = derivedState.planComposerFlow
     val planComposerTakeoverRequest = planComposerFlow.takeoverPromptItem?.structuredUserInputRequest
-    val planComposerFollowUpItem = planComposerFlow.completedPlanItem
     val conversationLayout = derivedState.conversationLayout
     val pinnedPlanItem = conversationLayout.pinnedPlanItem
     val timelineItems = derivedState.timelineItems
@@ -1803,8 +1836,8 @@ fun ConversationScreen(
         dismissedPlanPromptRequestKeys = emptySet()
     }
 
-    LaunchedEffect(thread.id, planComposerTakeoverRequest?.requestIdKey, planComposerFollowUpItem?.id) {
-        if (planComposerTakeoverRequest == null && planComposerFollowUpItem == null) {
+    LaunchedEffect(thread.id, planComposerTakeoverRequest?.requestIdKey) {
+        if (planComposerTakeoverRequest == null) {
             return@LaunchedEffect
         }
         focusManager.clearFocus(force = true)
@@ -2012,6 +2045,7 @@ fun ConversationScreen(
                     fileChangeSheetPresentation = presentation
                 },
                 onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                onSubmitPlanFollowUp = onSubmitPlanFollowUp,
                 onOpenPlanDetails = { planItemId ->
                     selectedPlanSheetItemId = planItemId
                 },
@@ -2032,15 +2066,12 @@ fun ConversationScreen(
                 imeBottomPx = imeBottomPx,
                 usageStatusPopoverExpanded = usageStatusPopoverExpanded,
                 planComposerTakeoverRequest = planComposerTakeoverRequest,
-                planComposerFollowUpItem = planComposerFollowUpItem,
                 pinnedPlanItem = pinnedPlanItem,
                 onCloseComposerAutocomplete = onCloseComposerAutocomplete,
                 onSubmitStructuredUserInput = onSubmitStructuredUserInput,
                 onDismissPlanPromptRequest = { requestIdKey ->
                     dismissedPlanPromptRequestKeys = dismissedPlanPromptRequestKeys + requestIdKey
                 },
-                onDismissPlanComposerSession = onDismissPlanComposerSession,
-                onSubmitPlanFollowUp = onSubmitPlanFollowUp,
                 onOpenPlanDetails = { planItemId ->
                     selectedPlanSheetItemId = planItemId
                 },
@@ -2154,6 +2185,7 @@ private fun ConversationTimelinePane(
     onStartAssistantRevertPreview: (String) -> Unit,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit,
     onOpenPlanDetails: (String) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
@@ -2222,6 +2254,7 @@ private fun ConversationTimelinePane(
                         onStartAssistantRevertPreview = onStartAssistantRevertPreview,
                         onOpenFileChangeDetails = onOpenFileChangeDetails,
                         onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                        onSubmitPlanFollowUp = onSubmitPlanFollowUp,
                         onOpenPlanDetails = onOpenPlanDetails,
                         onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
                         onOpenSubagentThread = onOpenSubagentThread,
@@ -2310,13 +2343,10 @@ private fun ConversationComposerPane(
     imeBottomPx: Int,
     usageStatusPopoverExpanded: Boolean,
     planComposerTakeoverRequest: RemodexStructuredUserInputRequest?,
-    planComposerFollowUpItem: RemodexConversationItem?,
     pinnedPlanItem: RemodexConversationItem?,
     onCloseComposerAutocomplete: () -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
     onDismissPlanPromptRequest: (String) -> Unit,
-    onDismissPlanComposerSession: () -> Unit,
-    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit,
     onOpenPlanDetails: (String) -> Unit,
     handleSelectSlashCommand: (RemodexSlashCommand) -> Unit,
     handleForkThread: (RemodexComposerForkDestination) -> Unit,
@@ -2386,14 +2416,6 @@ private fun ConversationComposerPane(
                         onDismiss = {
                             onDismissPlanPromptRequest(planComposerTakeoverRequest.requestIdKey)
                         },
-                    )
-                }
-
-                planComposerFollowUpItem != null -> {
-                    PlanFollowUpComposerCard(
-                        planItem = planComposerFollowUpItem,
-                        onDismiss = onDismissPlanComposerSession,
-                        onSubmit = onSubmitPlanFollowUp,
                     )
                 }
 
@@ -2568,6 +2590,7 @@ private fun LazyListScope.conversationTimelineItems(
     onStartAssistantRevertPreview: (String) -> Unit,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit,
     onOpenPlanDetails: (String) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
@@ -2638,6 +2661,7 @@ private fun LazyListScope.conversationTimelineItems(
                         onStartAssistantRevertPreview = onStartAssistantRevertPreview,
                         onOpenFileChangeDetails = onOpenFileChangeDetails,
                         onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                        onSubmitPlanFollowUp = onSubmitPlanFollowUp,
                         onOpenPlanDetails = onOpenPlanDetails,
                         onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
                         onOpenSubagentThread = onOpenSubagentThread,
@@ -2658,6 +2682,7 @@ private fun LazyListScope.conversationTimelineItems(
                     onStartAssistantRevertPreview = onStartAssistantRevertPreview,
                     onOpenFileChangeDetails = onOpenFileChangeDetails,
                     onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+                    onSubmitPlanFollowUp = onSubmitPlanFollowUp,
                     onOpenPlanDetails = onOpenPlanDetails,
                     onOpenCommandExecutionDetails = onOpenCommandExecutionDetails,
                     onOpenSubagentThread = onOpenSubagentThread,
@@ -2727,6 +2752,7 @@ private fun ConversationTimelineMessageRow(
     onStartAssistantRevertPreview: (String) -> Unit,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit,
     onOpenPlanDetails: (String) -> Unit,
     onOpenCommandExecutionDetails: (String) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
@@ -2748,6 +2774,7 @@ private fun ConversationTimelineMessageRow(
             item = message,
             accessoryState = accessoryState,
             onSubmitStructuredUserInput = onSubmitStructuredUserInput,
+            onSubmitPlanFollowUp = onSubmitPlanFollowUp,
             commandExecutionDetails = commandExecutionDetails,
             onOpenPlanDetails = onOpenPlanDetails,
             onOpenFileChangeDetails = onOpenFileChangeDetails,
@@ -3598,7 +3625,7 @@ private fun PlanAccessoryCard(
     val snapshot = remember(planItem) { planAccessorySnapshot(planItem) }
     val statusTint = when (snapshot.status) {
         PlanAccessoryStatus.PENDING -> chrome.secondaryText
-        PlanAccessoryStatus.IN_PROGRESS -> chrome.accent
+        PlanAccessoryStatus.IN_PROGRESS -> chrome.warning
         PlanAccessoryStatus.COMPLETED -> FileChangeAddedColor
     }
     Surface(
@@ -3650,6 +3677,14 @@ private fun PlanAccessoryCard(
                         style = MaterialTheme.typography.labelMedium,
                         color = chrome.secondaryText,
                     )
+                    Box(
+                        modifier = Modifier
+                            .size(3.dp)
+                            .background(
+                                color = chrome.subtleBorder.copy(alpha = 0.75f),
+                                shape = CircleShape,
+                            ),
+                    )
                     Text(
                         text = snapshot.status.label,
                         style = MaterialTheme.typography.labelMedium,
@@ -3658,9 +3693,9 @@ private fun PlanAccessoryCard(
                     if (snapshot.stepStatuses.isNotEmpty()) {
                         PlanAccessoryStepRail(
                             stepStatuses = snapshot.stepStatuses,
-                            activeColor = chrome.accent,
-                            pendingColor = chrome.secondaryText.copy(alpha = 0.55f),
-                            completedColor = FileChangeAddedColor,
+                            activeColor = statusTint.copy(alpha = 0.72f),
+                            pendingColor = chrome.subtleBorder.copy(alpha = 0.75f),
+                            completedColor = chrome.titleText.copy(alpha = 0.72f),
                         )
                     }
                     if (snapshot.isStreaming) {
@@ -3693,7 +3728,18 @@ private fun PlanAccessoryCard(
 @Composable
 private fun PlanConversationRow(
     item: RemodexConversationItem,
+    onImplementPlan: suspend () -> Unit,
 ) {
+    val proposedPlan = remember(item) { proposedPlanPresentation(item) }
+    if (proposedPlan != null) {
+        ProposedPlanResultCard(
+            proposedPlan = proposedPlan,
+            canImplement = !item.isStreaming,
+            onImplementPlan = onImplementPlan,
+        )
+        return
+    }
+
     val chrome = remodexConversationChrome()
     val context = LocalContext.current
     val snapshot = remember(item) { planAccessorySnapshot(item) }
@@ -3862,6 +3908,134 @@ private fun PlanConversationRow(
 }
 
 @Composable
+private fun ProposedPlanResultCard(
+    proposedPlan: ProposedPlanPresentation,
+    canImplement: Boolean,
+    onImplementPlan: suspend () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    val coroutineScope = rememberCoroutineScope()
+    var isImplementing by rememberSaveable(proposedPlan.body) { mutableStateOf(false) }
+    var hasStartedImplementation by rememberSaveable(proposedPlan.body) { mutableStateOf(false) }
+    var errorMessage by rememberSaveable(proposedPlan.body) { mutableStateOf<String?>(null) }
+    val isLocked = isImplementing || hasStartedImplementation
+    val canSubmit = canImplement && !isLocked && proposedPlan.body.isNotBlank()
+    val actionLabel = when {
+        isImplementing -> "Starting implementation..."
+        hasStartedImplementation -> "Implementation started"
+        else -> "Implement plan"
+    }
+
+    ConversationMessageActionContainer(
+        text = proposedPlan.body,
+        messageRole = ConversationSpeaker.SYSTEM,
+        usesMarkdownSelection = true,
+        allowsSelectText = proposedPlan.body.isNotBlank(),
+    ) { showContextMenuAt ->
+        Surface(
+            color = chrome.panelSurface,
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, chrome.subtleBorder),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Proposed plan",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = chrome.titleText,
+                )
+                ConversationMarkdownText(
+                    text = proposedPlan.body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = chrome.bodyText,
+                    onLongPress = showContextMenuAt,
+                )
+                errorMessage?.takeIf(String::isNotBlank)?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = canSubmit) {
+                            errorMessage = null
+                            isImplementing = true
+                            coroutineScope.launch {
+                                runCatching {
+                                    onImplementPlan()
+                                }.onSuccess {
+                                    hasStartedImplementation = true
+                                }.onFailure { error ->
+                                    errorMessage = error.message ?: "Could not start implementation."
+                                    hasStartedImplementation = false
+                                }
+                                isImplementing = false
+                            }
+                        },
+                    color = if (canSubmit || isLocked) chrome.accent else chrome.mutedSurface,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (canSubmit || isLocked) {
+                            chrome.accent.copy(alpha = 0.24f)
+                        } else {
+                            chrome.subtleBorder
+                        },
+                    ),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (isImplementing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White,
+                            )
+                        } else if (hasStartedImplementation) {
+                            Icon(
+                                imageVector = Icons.Outlined.CheckCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.ChevronRight,
+                                contentDescription = null,
+                                tint = if (canSubmit) Color.White else chrome.tertiaryText,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = actionLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (canSubmit || isLocked) Color.White else chrome.tertiaryText,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlanAccessoryStepRail(
     stepStatuses: List<RemodexPlanStepStatus>,
     activeColor: Color,
@@ -3880,7 +4054,7 @@ private fun PlanAccessoryStepRail(
             }
             Box(
                 modifier = Modifier
-                    .size(width = 10.dp, height = 4.dp)
+                    .size(width = 10.dp, height = 3.dp)
                     .clip(CircleShape)
                     .background(color),
             )
@@ -8341,6 +8515,7 @@ private fun ConversationBubble(
             item = item,
             accessoryState = accessoryState,
             onSubmitStructuredUserInput = { _, _ -> },
+            onSubmitPlanFollowUp = { _, _ -> },
             commandExecutionDetails = item.itemId?.let(commandExecutionDetailsByItemId::get),
             onOpenPlanDetails = {},
             onOpenFileChangeDetails = onOpenFileChangeDetails,
@@ -8676,6 +8851,7 @@ private fun SystemConversationRow(
     item: RemodexConversationItem,
     accessoryState: ConversationBlockAccessoryState?,
     onSubmitStructuredUserInput: suspend (JsonElement, Map<String, List<String>>) -> Unit,
+    onSubmitPlanFollowUp: suspend (String, Boolean) -> Unit,
     commandExecutionDetails: RemodexCommandExecutionDetails?,
     onOpenPlanDetails: (String) -> Unit,
     onOpenFileChangeDetails: (FileChangeSheetPresentation) -> Unit,
@@ -8752,6 +8928,9 @@ private fun SystemConversationRow(
             }
             ConversationItemKind.PLAN -> PlanConversationRow(
                 item = item,
+                onImplementPlan = {
+                    onSubmitPlanFollowUp("Implement plan.", true)
+                },
             )
             ConversationItemKind.CHAT -> DefaultSystemRow(
                 item = item,
@@ -11887,11 +12066,6 @@ private data class SubagentStatusPresentation(
         }
 }
 
-private enum class PlanFollowUpChoice {
-    IMPLEMENT,
-    REVISE,
-}
-
 private const val StructuredOtherAnswerPlaceholder = "No, and tell Codex what to do differently"
 
 private fun resolvedStructuredUserInputAnswer(
@@ -12427,146 +12601,6 @@ private fun PlanStructuredUserInputComposerCard(
                         )
                     } else {
                         Text(if (currentQuestionIndex == questions.lastIndex) "Submit" else "Continue")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlanFollowUpComposerCard(
-    planItem: RemodexConversationItem,
-    onDismiss: () -> Unit,
-    onSubmit: suspend (String, Boolean) -> Unit,
-) {
-    val chrome = remodexConversationChrome()
-    val coroutineScope = rememberCoroutineScope()
-    val planSummary = remember(planItem) { planAccessorySnapshot(planItem).summary }
-    var selectedChoice by rememberSaveable(planItem.id) { mutableStateOf<PlanFollowUpChoice?>(null) }
-    var revisionNotes by rememberSaveable(planItem.id) { mutableStateOf("") }
-    var isSubmitting by rememberSaveable(planItem.id) { mutableStateOf(false) }
-    var submissionError by rememberSaveable(planItem.id) { mutableStateOf<String?>(null) }
-    val canSubmit = when (selectedChoice) {
-        PlanFollowUpChoice.IMPLEMENT -> !isSubmitting
-        PlanFollowUpChoice.REVISE -> !isSubmitting && revisionNotes.trim().isNotEmpty()
-        null -> false
-    }
-
-    Surface(
-        color = chrome.panelSurfaceStrong,
-        shape = RemodexConversationShapes.composer,
-        border = BorderStroke(1.dp, chrome.subtleBorder),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = "Implement this plan?",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = chrome.titleText,
-                )
-                Text(
-                    text = planSummary,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = chrome.secondaryText,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            submissionError?.takeIf(String::isNotBlank)?.let { error ->
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                PlanComposerOptionCard(
-                    index = 1,
-                    title = "Yes, implement this plan",
-                    description = null,
-                    selected = selectedChoice == PlanFollowUpChoice.IMPLEMENT,
-                    enabled = !isSubmitting,
-                    onClick = {
-                        submissionError = null
-                        selectedChoice = PlanFollowUpChoice.IMPLEMENT
-                    },
-                )
-                PlanComposerOptionCard(
-                    index = 2,
-                    title = "No, and tell Codex what to do differently",
-                    description = null,
-                    selected = selectedChoice == PlanFollowUpChoice.REVISE,
-                    enabled = !isSubmitting,
-                    onClick = {
-                        submissionError = null
-                        selectedChoice = PlanFollowUpChoice.REVISE
-                    },
-                )
-                if (selectedChoice == PlanFollowUpChoice.REVISE) {
-                    StructuredAnswerField(
-                        value = revisionNotes,
-                        onValueChange = { updatedValue ->
-                            submissionError = null
-                            revisionNotes = updatedValue
-                        },
-                        enabled = !isSubmitting,
-                        isOther = true,
-                        isSecret = false,
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(
-                    onClick = onDismiss,
-                    enabled = !isSubmitting,
-                ) {
-                    Text("Dismiss")
-                }
-                Button(
-                    enabled = canSubmit,
-                    onClick = {
-                        val prompt = when (selectedChoice) {
-                            PlanFollowUpChoice.IMPLEMENT -> "Implement plan"
-                            PlanFollowUpChoice.REVISE -> revisionNotes.trim()
-                            null -> return@Button
-                        }
-                        val shouldExitPlanMode = selectedChoice == PlanFollowUpChoice.IMPLEMENT
-                        submissionError = null
-                        isSubmitting = true
-                        coroutineScope.launch {
-                            runCatching {
-                                onSubmit(prompt, shouldExitPlanMode)
-                            }.onFailure { error ->
-                                submissionError = error.message ?: "Could not send this follow-up."
-                            }
-                            isSubmitting = false
-                        }
-                    },
-                ) {
-                    if (isSubmitting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    } else {
-                        Text("Submit")
                     }
                 }
             }

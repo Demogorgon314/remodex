@@ -1150,7 +1150,6 @@ private fun MainPane(
                             onSendPrompt = viewModel::sendPrompt,
                             onSubmitStructuredUserInput = viewModel::respondToStructuredUserInput,
                             onSubmitPlanFollowUp = viewModel::sendPlanFollowUp,
-                            onDismissPlanComposerSession = viewModel::dismissPlanComposerSession,
                             onStopTurn = viewModel::stopTurn,
                             onRestoreLatestQueuedDraft = viewModel::restoreLatestQueuedDraftToComposer,
                             onRestoreQueuedDraft = viewModel::restoreQueuedDraftToComposer,

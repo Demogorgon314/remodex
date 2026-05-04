@@ -1598,11 +1598,6 @@ class AppViewModel(
         clearPlanComposerSession(threadId)
     }
 
-    fun dismissPlanComposerSession() {
-        val threadId = uiState.value.selectedThread?.id ?: return
-        clearPlanComposerSession(threadId)
-    }
-
     fun addAttachments(attachments: List<RemodexComposerAttachment>) {
         val threadId = uiState.value.selectedThread?.id ?: return
         composerAttachments.update { attachmentsByThread ->

@@ -2522,7 +2522,7 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.sendPrompt(
             threadId = "thread-android-client",
-            prompt = "Implement plan",
+            prompt = "Implement plan.",
             attachments = emptyList(),
             planningModeOverride = RemodexPlanningMode.AUTO,
         )
@@ -2726,7 +2726,7 @@ class DefaultRemodexAppRepositoryTest {
 
         repository.sendPrompt(
             threadId = "thread-notifications",
-            prompt = "Implement plan",
+            prompt = "Implement plan.",
             attachments = emptyList(),
             planningModeOverride = RemodexPlanningMode.AUTO,
         )

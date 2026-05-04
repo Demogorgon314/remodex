@@ -306,7 +306,6 @@ class ConversationScreenPlanAccessoryTest {
         )
 
         assertEquals("prompt", snapshot.takeoverPromptItem?.id)
-        assertNull(snapshot.completedPlanItem)
     }
 
     @Test
@@ -326,11 +325,10 @@ class ConversationScreenPlanAccessoryTest {
         )
 
         assertNull(snapshot.takeoverPromptItem)
-        assertNull(snapshot.completedPlanItem)
     }
 
     @Test
-    fun `plan composer flow surfaces completed plan only after turn completion`() {
+    fun `plan composer flow leaves completed plans in timeline for inline implementation`() {
         val anchor = assistantMessage(id = "anchor")
         val completedPlan = planItem(
             id = "plan-complete",
@@ -348,7 +346,6 @@ class ConversationScreenPlanAccessoryTest {
         )
 
         assertNull(snapshot.takeoverPromptItem)
-        assertEquals("plan-complete", snapshot.completedPlanItem?.id)
     }
 
     @Test
@@ -370,7 +367,6 @@ class ConversationScreenPlanAccessoryTest {
         )
 
         assertNull(snapshot.takeoverPromptItem)
-        assertNull(snapshot.completedPlanItem)
     }
 
     @Test
@@ -390,8 +386,7 @@ class ConversationScreenPlanAccessoryTest {
             activePlanningMode = RemodexPlanningMode.PLAN,
             hasQueuedFollowUps = true,
         )
-
-        assertNull(snapshot.completedPlanItem)
+        assertNull(snapshot.takeoverPromptItem)
     }
 
     @Test
@@ -411,6 +406,50 @@ class ConversationScreenPlanAccessoryTest {
         assertEquals("Current task", snapshot.summary)
         assertEquals(PlanAccessoryStatus.IN_PROGRESS, snapshot.status)
         assertEquals("1/3", snapshot.progressText)
+    }
+
+    @Test
+    fun `proposed plan presentation extracts official envelope body and summary`() {
+        val item = RemodexConversationItem(
+            id = "plan-result",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.PLAN,
+            text = "Intro\n<proposed_plan>\n# Final plan\n- First change\n- Second change\n</proposed_plan>\nPostscript",
+        )
+
+        val presentation = proposedPlanPresentation(item)
+
+        assertEquals("# Final plan\n- First change\n- Second change", presentation?.body)
+        assertEquals("Final plan", presentation?.summary)
+        assertEquals("Intro\nPostscript", strippedProposedPlanText(item.text))
+    }
+
+    @Test
+    fun `proposed plan presentation uses completed plan item text as authoritative body`() {
+        val item = RemodexConversationItem(
+            id = "plan-result",
+            speaker = ConversationSpeaker.SYSTEM,
+            kind = ConversationItemKind.PLAN,
+            text = "# Final plan\n- First change",
+        )
+
+        val presentation = proposedPlanPresentation(item)
+
+        assertEquals("# Final plan\n- First change", presentation?.body)
+        assertEquals("Final plan", presentation?.summary)
+    }
+
+    @Test
+    fun `proposed plan presentation ignores checklist progress plans`() {
+        val item = planItem(
+            id = "plan-progress",
+            explanation = "Plan update",
+            steps = listOf(
+                RemodexPlanStep(id = "1", step = "Still planning", status = RemodexPlanStepStatus.IN_PROGRESS),
+            ),
+        )
+
+        assertNull(proposedPlanPresentation(item))
     }
 
     @Test
