@@ -171,6 +171,36 @@ class SecureConnectionCoordinatorTest {
     }
 
     @Test
+    fun `trusted reconnect cancellation does not mark pairing as repair required`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        seedTrustedMacState(
+            store = store,
+            macDeviceId = "mac-cancelled-reconnect",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = StaticTrustedSessionResolver(
+                TrustedSessionResolveResponse(
+                    ok = true,
+                    macDeviceId = "mac-cancelled-reconnect",
+                    macIdentityPublicKey = macIdentity.publicKeyBase64,
+                    displayName = "Desk Mac",
+                    sessionId = "session-cancelled-reconnect",
+                ),
+            ),
+            relayWebSocketFactory = CancellingRelayWebSocketFactory(),
+            scope = this,
+        )
+
+        coordinator.retryConnection()
+        advanceUntilIdle()
+
+        assertFalse(coordinator.state.value.secureState == SecureConnectionState.REPAIR_REQUIRED)
+    }
+
+    @Test
     fun `trusted reconnect permanent close disables auto reconnect and keeps saved pair presentation`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

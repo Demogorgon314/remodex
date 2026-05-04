@@ -347,6 +347,8 @@ class SecureConnectionCoordinator(
             handleResolveError(currentPairingState, error)
         } catch (error: SecureTransportException) {
             handleTransportError(currentPairingState, error)
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             updateState(
                 phaseMessage = error.message ?: "The secure Android connection failed before the bridge finished the handshake.",

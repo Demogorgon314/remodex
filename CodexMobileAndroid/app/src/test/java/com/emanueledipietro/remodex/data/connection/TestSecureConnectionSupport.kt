@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
+import java.util.concurrent.CancellationException
 
 data class TestMacIdentity(
     val privateKeyBase64: String,
@@ -254,6 +255,16 @@ class ClosingRelayWebSocketFactory(
                 return true
             }
         }
+    }
+}
+
+class CancellingRelayWebSocketFactory : RelayWebSocketFactory {
+    override fun open(
+        url: String,
+        headers: Map<String, String>,
+        events: Channel<RelayWireEvent>,
+    ): RelayWebSocket {
+        throw CancellationException("Reconnect was cancelled.")
     }
 }
 
