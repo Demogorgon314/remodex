@@ -11,7 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
-const { __test, gitStatus } = require("../src/git-handler");
+const { __test, gitStatus, handleGitRequest } = require("../src/git-handler");
 
 function git(cwd, ...args) {
   return execFileSync("git", args, {
@@ -64,6 +64,95 @@ test("normalizeBranchListEntry strips linked-worktree markers from branch labels
     isCheckedOutElsewhere: false,
     name: "feature/mobile",
   });
+});
+
+test("threadNameSet accepts mobile thread rename aliases", () => {
+  const result = __test.threadNameSet({
+    thread_id: "thread-1",
+    title: "Fix Thread Naming",
+  });
+
+  assert.deepEqual(result, {
+    threadId: "thread-1",
+    thread_id: "thread-1",
+    name: "Fix Thread Naming",
+    title: "Fix Thread Naming",
+  });
+});
+
+test("handleGitRequest owns thread rename and emits the rename hook", async () => {
+  const responses = [];
+  const notifications = [];
+  const handled = handleGitRequest(
+    JSON.stringify({
+      id: "rename-1",
+      method: "thread/name/set",
+      params: {
+        threadId: "thread-1",
+        title: "Polish loading states",
+      },
+    }),
+    (response) => responses.push(JSON.parse(response)),
+    {
+      onThreadNameSet: (result) => notifications.push(result),
+    }
+  );
+
+  assert.equal(handled, true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(responses, [
+    {
+      id: "rename-1",
+      result: {
+        threadId: "thread-1",
+        thread_id: "thread-1",
+        name: "Polish loading states",
+        title: "Polish loading states",
+      },
+    },
+  ]);
+  assert.deepEqual(notifications, [responses[0].result]);
+});
+
+test("threadGenerateTitle delegates to codex and sanitizes the generated title", async () => {
+  const calls = [];
+  __test.setRunStructuredCodexJsonForTest(async (request) => {
+    calls.push(request);
+    return { title: "\"fix thread naming after first turn!\"" };
+  });
+
+  try {
+    const result = await __test.threadGenerateTitle({
+      message: "Fix thread naming after first turn and do not overwrite manual renames.",
+      attachmentCount: 2,
+      model: "gpt-5.5",
+      cwd: process.cwd(),
+    });
+
+    assert.deepEqual(result, { title: "Fix thread naming after" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].model, "gpt-5.5");
+    assert.equal(calls[0].skipGitRepoCheck, true);
+    assert.equal(calls[0].sandboxMode, "read-only");
+    assert.match(calls[0].prompt, /Attachments: 2 images/);
+  } finally {
+    __test.resetRunStructuredCodexJsonForTest();
+  }
+});
+
+test("threadGenerateTitle falls back to first-message title when codex omits a title", async () => {
+  __test.setRunStructuredCodexJsonForTest(async () => ({}));
+
+  try {
+    const result = await __test.threadGenerateTitle({
+      message: "ship android parity quickly",
+    });
+
+    assert.deepEqual(result, { title: "Ship android parity quickly" });
+  } finally {
+    __test.resetRunStructuredCodexJsonForTest();
+  }
 });
 
 test("gitBranches marks branches that are checked out in another worktree", async () => {

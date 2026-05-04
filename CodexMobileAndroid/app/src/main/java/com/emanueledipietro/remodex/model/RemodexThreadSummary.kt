@@ -88,8 +88,17 @@ data class RemodexThreadSummary(
 
     private val agentDisplayLabel: String?
         get() {
-            val cleanedNickname = agentNickname?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val cleanedNickname = agentNickname?.trim()?.takeIf { it.isNotEmpty() }
             val cleanedRole = agentRole?.trim()?.takeIf { it.isNotEmpty() }
+            if (cleanedNickname == null) {
+                return cleanedRole?.replaceFirstChar { character ->
+                    if (character.isLowerCase()) {
+                        character.titlecase()
+                    } else {
+                        character.toString()
+                    }
+                }
+            }
             return buildString {
                 append(cleanedNickname)
                 if (cleanedRole != null) {

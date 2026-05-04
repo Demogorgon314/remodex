@@ -38,6 +38,17 @@ class RemodexThreadSummaryTest {
     }
 
     @Test
+    fun `display title uses role-only subagent label like ios`() {
+        val thread = threadSummary(
+            title = "New Thread",
+            preview = "",
+            agentRole = "explorer",
+        )
+
+        assertEquals("Explorer", thread.displayTitle)
+    }
+
+    @Test
     fun `display title falls back to ios default for brand new empty threads`() {
         val thread = threadSummary(
             title = "",

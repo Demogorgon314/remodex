@@ -4,7 +4,7 @@
 // Exports: handleGitRequest
 // Depends on: child_process, fs, os, path, crypto
 
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -13,7 +13,16 @@ const { promisify } = require("util");
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
+const GIT_DRAFT_TIMEOUT_MS = 120_000;
 const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const DEFAULT_GIT_WRITER_MODEL = "gpt-5.4-mini";
+
+let runStructuredCodexJsonImpl = runStructuredCodexJson;
+
+function resolveGitWriterModel(rawModel) {
+  const trimmed = typeof rawModel === "string" ? rawModel.trim() : "";
+  return trimmed || DEFAULT_GIT_WRITER_MODEL;
+}
 
 /**
  * Intercepts git/* JSON-RPC methods and executes git commands locally.
@@ -21,7 +30,7 @@ const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
  * @param {(response: string) => void} sendResponse - Callback to send response back
  * @returns {boolean} true if message was handled, false if it should pass through
  */
-function handleGitRequest(rawMessage, sendResponse) {
+function handleGitRequest(rawMessage, sendResponse, options = {}) {
   let parsed;
   try {
     parsed = JSON.parse(rawMessage);
@@ -30,16 +39,19 @@ function handleGitRequest(rawMessage, sendResponse) {
   }
 
   const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
-  if (!method.startsWith("git/")) {
+  if (!method.startsWith("git/") && !["thread/generateTitle", "thread/name/set"].includes(method)) {
     return false;
   }
 
   const id = parsed.id;
   const params = parsed.params || {};
 
-  handleGitMethod(method, params)
+  handleGitMethod(method, params, options)
     .then((result) => {
       sendResponse(JSON.stringify({ id, result }));
+      if (method === "thread/name/set") {
+        options.onThreadNameSet?.(result);
+      }
     })
     .catch((err) => {
       const errorCode = err.errorCode || "git_error";
@@ -59,7 +71,14 @@ function handleGitRequest(rawMessage, sendResponse) {
   return true;
 }
 
-async function handleGitMethod(method, params) {
+async function handleGitMethod(method, params, options = {}) {
+  if (method === "thread/generateTitle") {
+    return threadGenerateTitle(params, options);
+  }
+  if (method === "thread/name/set") {
+    return threadNameSet(params);
+  }
+
   const cwd = await resolveGitCwd(params);
 
   switch (method) {
@@ -101,6 +120,60 @@ async function handleGitMethod(method, params) {
       return gitBranchesWithStatus(cwd);
     default:
       throw gitError("unknown_method", `Unknown git method: ${method}`);
+  }
+}
+
+// Owns mobile thread renames locally so they do not fall through to unsupported Codex RPC.
+function threadNameSet(params) {
+  const threadId = normalizeNonEmptyLine(params.threadId || params.thread_id || params.conversationId || params.conversation_id);
+  const name = normalizeNonEmptyLine(params.name || params.threadName || params.thread_name || params.title);
+  if (!threadId) {
+    throw gitError("missing_thread_id", "A thread ID is required to rename a thread.");
+  }
+  if (!name) {
+    throw gitError("missing_thread_name", "A thread name is required.");
+  }
+
+  return { threadId, thread_id: threadId, name, title: name };
+}
+
+async function threadGenerateTitle(params, options = {}) {
+  const model = resolveGitWriterModel(params.model);
+  const message = normalizeNonEmptyMultilineString(params.message || params.prompt);
+  if (!message) {
+    throw gitError("missing_thread_title_message", "A first message is required to generate a thread title.");
+  }
+
+  try {
+    const cwd = resolveThreadTitleCwd(params.cwd || params.workingDirectory);
+    const prompt = buildThreadTitlePrompt({
+      message,
+      attachmentCount: normalizeNonNegativeInteger(params.attachmentCount),
+    });
+    const schema = {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    };
+    const draft = await runStructuredCodexJsonImpl({
+      cwd,
+      model,
+      prompt,
+      schema,
+      codexAppPath: options.codexAppPath,
+      skipGitRepoCheck: true,
+      sandboxMode: "read-only",
+    });
+
+    return normalizeThreadTitleDraft(draft, message);
+  } catch (error) {
+    if (error?.errorCode) {
+      throw error;
+    }
+    throw wrapDraftGenerationError(error, "thread_title");
   }
 }
 
@@ -1451,6 +1524,311 @@ function gitError(errorCode, userMessage) {
   return err;
 }
 
+function buildThreadTitlePrompt(context) {
+  const attachmentLine = context.attachmentCount > 0
+    ? `Attachments: ${context.attachmentCount} image${context.attachmentCount === 1 ? "" : "s"}`
+    : "Attachments: none";
+
+  return [
+    "Write a short chat thread title from the user's first message.",
+    "Return JSON only that matches the provided schema.",
+    "Rules:",
+    "- `title` must be 2 to 4 words, maximum 4 words.",
+    "- Use a concise noun or verb phrase that captures the task.",
+    "- Do not use markdown, quotes, emoji, or final punctuation.",
+    "- Do not mention AI, Codex, prompt instructions, or that the title was generated.",
+    "",
+    attachmentLine,
+    "",
+    "First message:",
+    messageForPrompt(context.message),
+  ].join("\n");
+}
+
+function messageForPrompt(message) {
+  const trimmed = normalizeNonEmptyMultilineString(message);
+  if (trimmed.length <= 4_000) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 4_000).trimEnd()}\n[Message truncated for title generation.]`;
+}
+
+function normalizeThreadTitleDraft(draft, fallbackMessage) {
+  const title = sanitizeGeneratedThreadTitle(draft?.title || buildPromptThreadTitleFallback(fallbackMessage));
+  return { title };
+}
+
+function buildPromptThreadTitleFallback(message) {
+  const words = tokenizeThreadTitleWords(message);
+  if (words.length === 0) {
+    return "New Thread";
+  }
+  return titleCaseThreadTitle(words.slice(0, 4).join(" "));
+}
+
+function sanitizeGeneratedThreadTitle(rawTitle) {
+  const words = tokenizeThreadTitleWords(rawTitle);
+  const title = words.slice(0, 4).join(" ");
+  return titleCaseThreadTitle(title || "New Thread").slice(0, 50).trim() || "New Thread";
+}
+
+function tokenizeThreadTitleWords(value) {
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  return value
+    .replace(/[`*_~#[\](){}<>]/g, " ")
+    .replace(/[.!?;:,，。！？；：]+$/g, "")
+    .replace(/["'“”‘’]/g, "")
+    .split(/\s+/)
+    .map((word) => word.trim().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter(Boolean);
+}
+
+function titleCaseThreadTitle(value) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function normalizeNonEmptyLine(rawValue) {
+  if (typeof rawValue !== "string") {
+    return "";
+  }
+
+  return rawValue
+    .split("\n")[0]
+    .trim();
+}
+
+function normalizeNonEmptyMultilineString(rawValue) {
+  if (typeof rawValue !== "string") {
+    return "";
+  }
+
+  const trimmed = rawValue.trim();
+  return trimmed || "";
+}
+
+function wrapDraftGenerationError(error, kind) {
+  if (kind === "thread_title") {
+    const detail = normalizeDraftErrorDetail(error);
+    return gitError(
+      "thread_title_generation_failed",
+      detail ? `Could not generate a thread title. ${detail}` : "Could not generate a thread title."
+    );
+  }
+
+  return gitError("draft_generation_failed", "Could not generate a draft.");
+}
+
+function normalizeDraftErrorDetail(error) {
+  const rawMessage = typeof error?.userMessage === "string"
+    ? error.userMessage
+    : typeof error?.message === "string"
+      ? error.message
+      : "";
+  const trimmed = rawMessage.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const singleLine = trimmed.split("\n").map((line) => line.trim()).filter(Boolean).pop() || trimmed;
+  return singleLine.endsWith(".") ? singleLine : `${singleLine}.`;
+}
+
+function normalizeNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function resolveThreadTitleCwd(rawCwd) {
+  const normalized = normalizeExistingPath(typeof rawCwd === "string" ? rawCwd : "");
+  if (normalized && isExistingDirectory(normalized)) {
+    return normalized;
+  }
+  return process.cwd();
+}
+
+async function runStructuredCodexJson({
+  cwd,
+  model,
+  prompt,
+  schema,
+  codexAppPath,
+  skipGitRepoCheck = false,
+  sandboxMode = null,
+}) {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-git-ai-"));
+  const schemaPath = path.join(tempDirectory, "schema.json");
+  const outputPath = path.join(tempDirectory, "output.json");
+  const commands = resolveCodexExecCommands(codexAppPath);
+
+  fs.writeFileSync(schemaPath, JSON.stringify(schema), "utf8");
+
+  try {
+    let lastError = null;
+
+    for (const command of commands) {
+      try {
+        return await spawnCodexExecJson({
+          command,
+          cwd,
+          model,
+          prompt,
+          schemaPath,
+          outputPath,
+          skipGitRepoCheck,
+          sandboxMode,
+        });
+      } catch (error) {
+        lastError = error;
+        if (!shouldRetryCodexExecWithNextCommand(error)) {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError || new Error("Codex CLI is not available on this Mac.");
+  } finally {
+    fs.rmSync(tempDirectory, { recursive: true, force: true });
+  }
+}
+
+function resolveCodexExecCommands(codexAppPath) {
+  const commands = ["codex"];
+  const bundledCommand = resolveBundledCodexCommand(codexAppPath);
+  if (bundledCommand && !commands.includes(bundledCommand)) {
+    commands.push(bundledCommand);
+  }
+  return commands;
+}
+
+function resolveBundledCodexCommand(codexAppPath) {
+  const trimmedAppPath = typeof codexAppPath === "string" ? codexAppPath.trim() : "";
+  if (!trimmedAppPath) {
+    return "";
+  }
+
+  const candidate = path.join(trimmedAppPath, "Contents", "Resources", "codex");
+  return isLaunchableFile(candidate) ? candidate : "";
+}
+
+function isLaunchableFile(candidatePath) {
+  try {
+    return fs.statSync(candidatePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function shouldRetryCodexExecWithNextCommand(error) {
+  return error?.code === "ENOENT";
+}
+
+function spawnCodexExecJson({
+  command,
+  cwd,
+  model,
+  prompt,
+  schemaPath,
+  outputPath,
+  skipGitRepoCheck = false,
+  sandboxMode = null,
+}) {
+  const args = [
+    "exec",
+    "--ephemeral",
+    "-C",
+    cwd,
+    "-m",
+    model,
+  ];
+  if (skipGitRepoCheck) {
+    args.push("--skip-git-repo-check");
+  }
+  if (sandboxMode) {
+    args.push("-s", sandboxMode);
+  }
+  args.push("--output-schema", schemaPath, "-o", outputPath, "-");
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, GIT_DRAFT_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+
+      if (timedOut) {
+        reject(new Error("Codex CLI timed out while generating the draft."));
+        return;
+      }
+
+      if (code !== 0) {
+        reject(createCodexExecFailure(code, signal, stdout, stderr));
+        return;
+      }
+
+      try {
+        const outputText = fs.readFileSync(outputPath, "utf8").trim();
+        if (!outputText) {
+          throw new Error("Codex CLI returned an empty structured response.");
+        }
+        resolve(JSON.parse(outputText));
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    child.stdin.end(prompt);
+  });
+}
+
+function createCodexExecFailure(code, signal, stdout, stderr) {
+  const detail = [stderr, stdout]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .flatMap((value) => value.split("\n"))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .pop();
+
+  const suffix = detail ? ` ${detail}` : "";
+  const error = new Error(
+    signal
+      ? `Codex CLI was interrupted while generating the draft.${suffix}`
+      : `Codex CLI exited with code ${code} while generating the draft.${suffix}`
+  );
+  error.code = code;
+  error.signal = signal;
+  return error;
+}
+
 // Resolves git commands to a concrete local directory.
 async function resolveGitCwd(params) {
   const requestedCwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory]);
@@ -1525,6 +1903,16 @@ module.exports = {
   handleGitRequest,
   gitStatus,
   __test: {
+    threadNameSet,
+    threadGenerateTitle,
+    buildPromptThreadTitleFallback,
+    sanitizeGeneratedThreadTitle,
+    setRunStructuredCodexJsonForTest(fn) {
+      runStructuredCodexJsonImpl = typeof fn === "function" ? fn : runStructuredCodexJson;
+    },
+    resetRunStructuredCodexJsonForTest() {
+      runStructuredCodexJsonImpl = runStructuredCodexJson;
+    },
     gitBranches,
     gitCreateBranch,
     gitCreateWorktree,

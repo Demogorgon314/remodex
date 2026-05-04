@@ -3840,6 +3840,203 @@ class BridgeThreadSyncServiceTest {
     }
 
     @Test
+    fun `send prompt generates automatic thread title after first turn like ios`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-auto-title",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/list" to { message ->
+                    buildJsonObject {
+                        if (message.params?.jsonObjectOrNull?.firstString("archived") == "true") {
+                            put("data", buildJsonArray { })
+                            return@buildJsonObject
+                        }
+                        put(
+                            "data",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("id", JsonPrimitive("thread-auto-title"))
+                                        put("title", JsonPrimitive("New Thread"))
+                                        put("cwd", JsonPrimitive("/tmp/project-auto-title"))
+                                        put("updatedAt", JsonPrimitive(1_713_222_440))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-auto-title"))
+                                put("title", JsonPrimitive("New Thread"))
+                                put("cwd", JsonPrimitive("/tmp/project-auto-title"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to {
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-auto-title"))
+                    }
+                },
+                "thread/generateTitle" to { request ->
+                    val params = request.params?.jsonObjectOrNull
+                    assertEquals(
+                        "Fix the sidebar thread naming after the first message",
+                        params?.firstString("message"),
+                    )
+                    assertEquals("/tmp/project-auto-title", params?.firstString("cwd"))
+                    buildJsonObject {
+                        put("title", JsonPrimitive("Fix Thread Naming"))
+                    }
+                },
+                "thread/name/set" to {
+                    buildJsonObject { }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            service.refreshThreads()
+            advanceUntilIdle()
+
+            service.sendPrompt(
+                threadId = "thread-auto-title",
+                prompt = "Fix the sidebar thread naming after the first message",
+                runtimeConfig = RemodexRuntimeConfig(selectedModelId = "gpt-5.5"),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            val requestMethods = relayFactory.receivedRequests.mapNotNull { it.method }
+            assertTrue(
+                requestMethods.containsAll(listOf("turn/start", "thread/generateTitle", "thread/name/set")),
+            )
+            val renameNames = relayFactory.receivedRequests
+                .filter { request -> request.method == "thread/name/set" }
+                .mapNotNull { request -> request.params?.jsonObjectOrNull?.firstString("name") }
+            assertTrue(renameNames.contains("Fix the sidebar thread"))
+            assertTrue(renameNames.contains("Fix Thread Naming"))
+            val thread = service.threads.value.first { it.id == "thread-auto-title" }
+            assertEquals("Fix Thread Naming", thread.name)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
+    fun `send prompt does not auto title an already named thread`() = runTest {
+        val store = InMemorySecureStore()
+        val macIdentity = createTestMacIdentity()
+        val payload = createTestPairingPayload(
+            macDeviceId = "mac-auto-title-named",
+            macIdentityPublicKey = macIdentity.publicKeyBase64,
+        )
+        val relayFactory = ScriptedRpcRelayWebSocketFactory(
+            macDeviceId = payload.macDeviceId,
+            macIdentity = macIdentity,
+            requestHandlers = mapOf(
+                "initialize" to { buildJsonObject { } },
+                "thread/read" to {
+                    buildJsonObject {
+                        put(
+                            "thread",
+                            buildJsonObject {
+                                put("id", JsonPrimitive("thread-named"))
+                                put("title", JsonPrimitive("Manual Title"))
+                                put("name", JsonPrimitive("Manual Title"))
+                                put("turns", buildJsonArray { })
+                            },
+                        )
+                    }
+                },
+                "turn/start" to {
+                    buildJsonObject {
+                        put("turnId", JsonPrimitive("turn-named"))
+                    }
+                },
+                "thread/generateTitle" to {
+                    fail("thread/generateTitle should not be called for an already named thread")
+                    buildJsonObject { }
+                },
+            ),
+        )
+        val coordinator = SecureConnectionCoordinator(
+            store = store,
+            trustedSessionResolver = UnusedTrustedSessionResolver,
+            relayWebSocketFactory = relayFactory,
+            scope = this,
+        )
+        val service = BridgeThreadSyncService(
+            secureConnectionCoordinator = coordinator,
+            scope = backgroundScope,
+        )
+
+        try {
+            coordinator.rememberRelayPairing(payload)
+            coordinator.retryConnection()
+            awaitSecureState(coordinator, SecureConnectionState.ENCRYPTED)
+            seedThreads(
+                service = service,
+                snapshots = listOf(
+                    ThreadSyncSnapshot(
+                        id = "thread-named",
+                        title = "Manual Title",
+                        name = "Manual Title",
+                        preview = "",
+                        projectPath = "/tmp/thread-named",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 0L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            )
+
+            service.sendPrompt(
+                threadId = "thread-named",
+                prompt = "This should not rename the thread.",
+                runtimeConfig = RemodexRuntimeConfig(),
+                attachments = emptyList(),
+            )
+            advanceUntilIdle()
+
+            assertFalse(relayFactory.receivedRequests.any { request -> request.method == "thread/generateTitle" })
+            assertEquals("Manual Title", service.threads.value.first { it.id == "thread-named" }.name)
+        } finally {
+            coordinator.disconnect()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun `bridge thread sync service loads real threads and hydrates history`() = runTest {
         val store = InMemorySecureStore()
         val macIdentity = createTestMacIdentity()

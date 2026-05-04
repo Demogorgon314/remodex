@@ -702,6 +702,7 @@ class BridgeThreadSyncService(
     private val latestTurnTerminalStateByThread = mutableMapOf<String, RemodexTurnTerminalState>()
     private val latestTerminalTurnIdByThread = mutableMapOf<String, String>()
     private val stoppedTurnIdsByThread = mutableMapOf<String, Set<String>>()
+    private val localThreadNameById = mutableMapOf<String, String>()
     private val pendingThreadReadRunningClearConfirmation = mutableSetOf<String>()
     private val pendingAmbiguousTerminalThreadReadJobs = mutableMapOf<String, Job>()
     private val resumedThreadIds = mutableSetOf<String>()
@@ -1311,12 +1312,20 @@ class BridgeThreadSyncService(
                 name = trimmedName,
             )
         }
+        localThreadNameById[threadId] = trimmedName
+        sendThreadNameSetRpc(threadId = threadId, name = trimmedName)
+    }
+
+    private suspend fun sendThreadNameSetRpc(
+        threadId: String,
+        name: String,
+    ) {
         runCatching {
             secureConnectionCoordinator.sendRequest(
                 method = "thread/name/set",
                 params = buildJsonObject {
                     put("thread_id", JsonPrimitive(threadId))
-                    put("name", JsonPrimitive(trimmedName))
+                    put("name", JsonPrimitive(name))
                 },
             )
         }
@@ -1374,6 +1383,7 @@ class BridgeThreadSyncService(
         }
         activeTurnIdByThread.remove(threadId)
         resumedThreadIds.remove(threadId)
+        localThreadNameById.remove(threadId)
         synchronized(threadSnapshotStateLock) {
             backingThreads.value = backingThreads.value.filterNot { snapshot -> snapshot.id == threadId }
         }
@@ -1396,6 +1406,11 @@ class BridgeThreadSyncService(
             return
         }
         val hadRunningState = threadHasKnownRunningState(threadId)
+        val automaticTitleSeed = automaticThreadTitleSeedIfNeeded(
+            userInput = trimmedPrompt,
+            attachments = attachments,
+            threadId = threadId,
+        )
 
         optimisticAppendUserMessage(
             threadId = threadId,
@@ -1480,6 +1495,12 @@ class BridgeThreadSyncService(
         } else {
             markThreadAsRunningFallback(threadId)
         }
+        scheduleAutomaticThreadTitleGenerationIfNeeded(
+            seed = automaticTitleSeed,
+            threadId = threadId,
+            attachments = attachments,
+            runtimeConfig = runtimeConfig,
+        )
         refreshThreads()
         hydrateThread(threadId)
     }
@@ -3709,6 +3730,7 @@ class BridgeThreadSyncService(
 
         when {
             !normalizedThreadName.isNullOrBlank() -> {
+                localThreadNameById[threadId] = normalizedThreadName
                 updateThread(threadId) { snapshot ->
                     snapshot.copy(
                         title = normalizedThreadName,
@@ -3718,6 +3740,7 @@ class BridgeThreadSyncService(
             }
 
             hasExplicitRenameField -> {
+                localThreadNameById.remove(threadId)
                 updateThread(threadId) { snapshot ->
                     snapshot.copy(
                         title = RemodexThreadSummary.defaultDisplayTitle,
@@ -9585,6 +9608,7 @@ class BridgeThreadSyncService(
             ?: existing?.title
             ?: "Conversation"
         val name = threadObject.firstString("name")
+            ?: localThreadNameById[id]
             ?: existing?.name
         val preview = threadObject.firstString("preview")
             ?: existing?.preview
@@ -11004,6 +11028,226 @@ class BridgeThreadSyncService(
                 buildCollaborationModePayload(runtimeConfig)?.let { put("collaborationMode", it) }
             }
         }
+    }
+
+    private suspend fun scheduleAutomaticThreadTitleGenerationIfNeeded(
+        seed: String?,
+        threadId: String,
+        attachments: List<RemodexComposerAttachment>,
+        runtimeConfig: RemodexRuntimeConfig,
+    ) {
+        val normalizedSeed = seed?.trim()?.takeIf(String::isNotEmpty) ?: return
+        val fallbackTitle = fallbackThreadTitle(normalizedSeed)
+        val allowedTitles = setOf(
+            RemodexThreadSummary.defaultDisplayTitle,
+            "Conversation",
+            fallbackTitle,
+        )
+        applyAutomaticThreadTitle(
+            threadId = threadId,
+            title = fallbackTitle,
+            replacing = allowedTitles,
+        )
+        scope.launch {
+            val generatedTitle = generatedThreadTitleOrNull(
+                seed = normalizedSeed,
+                threadId = threadId,
+                attachmentCount = attachments.size,
+                runtimeConfig = runtimeConfig,
+            ) ?: return@launch
+            applyAutomaticThreadTitle(
+                threadId = threadId,
+                title = generatedTitle,
+                replacing = allowedTitles,
+            )
+        }
+    }
+
+    private suspend fun generatedThreadTitleOrNull(
+        seed: String,
+        threadId: String,
+        attachmentCount: Int,
+        runtimeConfig: RemodexRuntimeConfig,
+    ): String? {
+        val response = runCatching {
+            secureConnectionCoordinator.sendRequest(
+                method = "thread/generateTitle",
+                params = buildJsonObject {
+                    put("message", JsonPrimitive(seed))
+                    put("attachmentCount", JsonPrimitive(attachmentCount))
+                    gitWriterModelIdentifier(runtimeConfig)?.let { model ->
+                        put("model", JsonPrimitive(model))
+                    }
+                    backingThreads.value
+                        .firstOrNull { snapshot -> snapshot.id == threadId }
+                        ?.projectPath
+                        ?.trim()
+                        ?.takeIf(String::isNotEmpty)
+                        ?.let { cwd -> put("cwd", JsonPrimitive(cwd)) }
+                },
+            )
+        }.getOrNull() ?: return null
+        return response.result
+            ?.jsonObjectOrNull
+            ?.firstString("title")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+    }
+
+    private suspend fun applyAutomaticThreadTitle(
+        threadId: String,
+        title: String,
+        replacing: Set<String>,
+    ): Boolean {
+        val normalizedTitle = title.trim().takeIf(String::isNotEmpty) ?: return false
+        var didApply = false
+        synchronized(threadSnapshotStateLock) {
+            val allowedTitles = replacing.mapNotNull { candidate ->
+                candidate.trim().takeIf(String::isNotEmpty)?.lowercase(Locale.ROOT)
+            }.toSet()
+            backingThreads.value = backingThreads.value.map { snapshot ->
+                if (snapshot.id != threadId || !canReplaceThreadTitle(snapshot, allowedTitles)) {
+                    snapshot
+                } else {
+                    didApply = true
+                    snapshot.copy(
+                        title = normalizedTitle,
+                        name = normalizedTitle,
+                    ).withResolvedLiveThreadState(threadId = threadId)
+                }
+            }
+        }
+        if (didApply) {
+            localThreadNameById[threadId] = normalizedTitle
+            sendThreadNameSetRpc(threadId = threadId, name = normalizedTitle)
+        }
+        return didApply
+    }
+
+    private fun canReplaceThreadTitle(
+        snapshot: ThreadSyncSnapshot,
+        allowedTitles: Set<String>,
+    ): Boolean {
+        val currentName = snapshot.name?.trim()?.takeIf(String::isNotEmpty)
+        val currentTitle = snapshot.title.trim().takeIf(String::isNotEmpty)
+        val currentDisplayTitle = snapshotDisplayTitle(snapshot).trim().takeIf(String::isNotEmpty)
+
+        return isAllowedAutomaticTitleValue(currentName, allowedTitles, allowGeneric = false) &&
+            isAllowedAutomaticTitleValue(currentTitle, allowedTitles, allowGeneric = true) &&
+            (
+                currentDisplayTitle == null ||
+                    currentDisplayTitle == RemodexThreadSummary.defaultDisplayTitle ||
+                    currentDisplayTitle == snapshot.preview.trim() ||
+                    normalizedTitleIn(currentDisplayTitle, allowedTitles)
+                )
+    }
+
+    private fun isAllowedAutomaticTitleValue(
+        value: String?,
+        allowedTitles: Set<String>,
+        allowGeneric: Boolean,
+    ): Boolean {
+        if (value == null) {
+            return true
+        }
+        return normalizedTitleIn(value, allowedTitles) ||
+            (allowGeneric && RemodexThreadSummary.isGenericPlaceholderTitle(value))
+    }
+
+    private fun normalizedTitleIn(
+        value: String,
+        allowedTitles: Set<String>,
+    ): Boolean = value.trim().lowercase(Locale.ROOT) in allowedTitles
+
+    private fun automaticThreadTitleSeedIfNeeded(
+        userInput: String,
+        attachments: List<RemodexComposerAttachment>,
+        threadId: String,
+    ): String? {
+        val snapshot = backingThreads.value.firstOrNull { candidate -> candidate.id == threadId } ?: return null
+        val hasManualOrServerName = snapshot.name?.trim()?.isNotEmpty() == true
+        if (hasManualOrServerName ||
+            !RemodexThreadSummary.isGenericPlaceholderTitle(snapshot.title) &&
+            snapshotDisplayTitle(snapshot) != RemodexThreadSummary.defaultDisplayTitle ||
+            hasExistingUserChatMessage(snapshot)
+        ) {
+            return null
+        }
+
+        return userInput.trim().takeIf(String::isNotEmpty)
+            ?: attachments.takeIf(List<RemodexComposerAttachment>::isNotEmpty)?.let { "Image request" }
+    }
+
+    private fun hasExistingUserChatMessage(snapshot: ThreadSyncSnapshot): Boolean {
+        return projectedTimelineItems(snapshot).any { item ->
+            item.speaker == ConversationSpeaker.USER &&
+                item.deliveryState != RemodexMessageDeliveryState.PENDING
+        }
+    }
+
+    private fun fallbackThreadTitle(seed: String): String {
+        val title = seed
+            .split(Regex("\\s+"))
+            .map { word -> word.trim().trim { character -> !character.isLetterOrDigit() } }
+            .filter(String::isNotEmpty)
+            .take(4)
+            .joinToString(" ")
+        if (title.isBlank()) {
+            return RemodexThreadSummary.defaultDisplayTitle
+        }
+        return title.replaceFirstChar { character ->
+            if (character.isLowerCase()) {
+                character.titlecase()
+            } else {
+                character.toString()
+            }
+        }
+    }
+
+    private fun gitWriterModelIdentifier(runtimeConfig: RemodexRuntimeConfig): String? {
+        val models = availableModels.value
+        if (models.isEmpty()) {
+            return runtimeConfig.selectedModelId?.trim()?.takeIf(String::isNotEmpty)
+        }
+
+        val selected = models.firstOrNull { option ->
+            option.id == "gpt-5.4-mini" || option.model == "gpt-5.4-mini"
+        } ?: runtimeConfig.selectedModelId
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { selectedModelId ->
+                models.firstOrNull { option -> option.id == selectedModelId || option.model == selectedModelId }
+            }
+            ?: models.firstOrNull()
+
+        return selected?.model?.trim()?.takeIf(String::isNotEmpty)
+            ?: selected?.id?.trim()?.takeIf(String::isNotEmpty)
+    }
+
+    private fun snapshotDisplayTitle(snapshot: ThreadSyncSnapshot): String {
+        return RemodexThreadSummary(
+            id = snapshot.id,
+            title = snapshot.title,
+            name = snapshot.name,
+            preview = snapshot.preview,
+            projectPath = snapshot.projectPath,
+            lastUpdatedLabel = snapshot.lastUpdatedLabel,
+            lastUpdatedEpochMs = snapshot.lastUpdatedEpochMs,
+            isRunning = snapshot.isRunning,
+            isWaitingOnApproval = snapshot.isWaitingOnApproval,
+            syncState = snapshot.syncState,
+            parentThreadId = snapshot.parentThreadId,
+            agentNickname = snapshot.agentNickname,
+            agentRole = snapshot.agentRole,
+            activeTurnId = snapshot.activeTurnId,
+            latestTurnTerminalState = snapshot.latestTurnTerminalState,
+            stoppedTurnIds = snapshot.stoppedTurnIds,
+            queuedDrafts = 0,
+            runtimeLabel = snapshot.runtimeConfig.runtimeLabel,
+            runtimeConfig = snapshot.runtimeConfig,
+            messages = emptyList(),
+            assistantChangeSets = snapshot.assistantChangeSets,
+        ).displayTitle
     }
 
     private fun buildTurnSteerParams(

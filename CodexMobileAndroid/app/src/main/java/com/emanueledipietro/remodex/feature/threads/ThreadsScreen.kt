@@ -1404,7 +1404,7 @@ private fun ThreadRenameDialog(
         confirmButton = {
             TextButton(
                 onClick = { onRename(trimmedDraft) },
-                enabled = trimmedDraft.isNotEmpty() && trimmedDraft != state.currentTitle.trim(),
+                enabled = trimmedDraft.isNotEmpty(),
             ) {
                 Text("Rename")
             }
