@@ -1343,6 +1343,7 @@ private fun MainPane(
                         onRefreshUsageStatus = viewModel::refreshUsageStatus,
                         onLogoutGptAccount = viewModel::logoutGptAccount,
                         onOpenScanner = onOpenScanner,
+                        onOpenPairingCode = onOpenPairingCode,
                         onDisconnect = viewModel::disconnect,
                         onRetryConnection = viewModel::retryConnection,
                         onForgetTrustedMac = viewModel::forgetTrustedMac,

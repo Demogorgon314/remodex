@@ -108,6 +108,7 @@ fun SettingsScreen(
     onRefreshUsageStatus: () -> Unit,
     onLogoutGptAccount: () -> Unit,
     onOpenScanner: () -> Unit,
+    onOpenPairingCode: () -> Unit,
     onDisconnect: () -> Unit,
     onRetryConnection: () -> Unit,
     onForgetTrustedMac: () -> Unit,
@@ -591,6 +592,10 @@ fun SettingsScreen(
                         onClick = onOpenScanner,
                     )
                     SettingsButton(
+                        title = remodexLocalizedText("输入配对码", "Pair with Code"),
+                        onClick = onOpenPairingCode,
+                    )
+                    SettingsButton(
                         title = remodexLocalizedText("断开连接", "Disconnect"),
                         role = SettingsButtonRole.DESTRUCTIVE,
                         onClick = onDisconnect,
@@ -607,6 +612,10 @@ fun SettingsScreen(
                         onClick = onOpenScanner,
                     )
                     SettingsButton(
+                        title = remodexLocalizedText("输入配对码", "Pair with Code"),
+                        onClick = onOpenPairingCode,
+                    )
+                    SettingsButton(
                         title = remodexLocalizedText("忘记配对", "Forget Pair"),
                         role = SettingsButtonRole.DESTRUCTIVE,
                         onClick = { isShowingForgetPairConfirm = true },
@@ -617,6 +626,10 @@ fun SettingsScreen(
                     SettingsButton(
                         title = remodexLocalizedText("扫描 QR code", "Scan QR Code"),
                         onClick = onOpenScanner,
+                    )
+                    SettingsButton(
+                        title = remodexLocalizedText("输入配对码", "Pair with Code"),
+                        onClick = onOpenPairingCode,
                     )
                 }
             }
