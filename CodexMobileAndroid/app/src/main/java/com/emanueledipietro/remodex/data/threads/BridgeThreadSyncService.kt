@@ -38,6 +38,7 @@ import com.emanueledipietro.remodex.model.RemodexCommandExecutionSource
 import com.emanueledipietro.remodex.model.RemodexComposerReviewTarget
 import com.emanueledipietro.remodex.model.RemodexContextWindowUsage
 import com.emanueledipietro.remodex.model.RemodexConversationAttachment
+import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitChangedFile
@@ -140,6 +141,8 @@ internal fun shouldMergeThreadReadHistory(
 
 private const val RawHistoryFileChangeSummarySearchDepth = 4
 private const val RawHistoryFileChangeSummarySampleLimit = 3
+private const val ThreadHistoryInitialTurnPageSize = 10
+private const val ThreadHistoryOlderTurnPageSize = 5
 
 internal data class ThreadHistoryFileChangeSummary(
     val totalItems: Int,
@@ -673,6 +676,11 @@ class BridgeThreadSyncService(
         val attachmentCount: Int,
     )
 
+    private data class ThreadTurnsPage(
+        val turns: JsonArray,
+        val nextCursor: JsonElement?,
+    )
+
     private val postTurnCatchupDelaysMs = listOf(1_000L, 2_000L)
     private val stopTurnRetryDelaysMs = listOf(200L, 200L)
     private val threadMaterializationRetryDelaysMs = listOf(250L, 500L, 1_000L)
@@ -714,6 +722,11 @@ class BridgeThreadSyncService(
     private val pendingThreadReadRunningClearConfirmation = mutableSetOf<String>()
     private val pendingAmbiguousTerminalThreadReadJobs = mutableMapOf<String, Job>()
     private val resumedThreadIds = mutableSetOf<String>()
+    private val olderHistoryCursorByThread = mutableMapOf<String, JsonElement>()
+    private val loadingOlderHistoryThreadIds = mutableSetOf<String>()
+    private val olderHistoryErrorByThread = mutableMapOf<String, String>()
+    private val initialTurnsLoadedThreadIds = mutableSetOf<String>()
+    private val authoritativeHistoryStartThreadIds = mutableSetOf<String>()
     @Volatile
     private var activeThreadIdHint: String? = null
     private var initializedAttempt: Int? = null
@@ -725,6 +738,7 @@ class BridgeThreadSyncService(
     private var hasPresentedManagedWorktreeBridgeUpdatePrompt = false
     private var supportsTurnCollaborationMode = true
     private var supportsPersistExtendedHistory = true
+    private var supportsTurnPagination = true
 
     override val availableModels: StateFlow<List<RemodexModelOption>> = backingAvailableModels
     override val threads: StateFlow<List<ThreadSyncSnapshot>> = backingThreads
@@ -906,6 +920,36 @@ class BridgeThreadSyncService(
         }
 
         val existingSnapshot = currentThreadSnapshot(threadId)
+        if (supportsTurnPagination) {
+            val paginatedSnapshot = runCatching {
+                retryAfterThreadMaterialization {
+                    val page = requestThreadTurnsPage(
+                        threadId = threadId,
+                        limit = ThreadHistoryInitialTurnPageSize,
+                        cursor = null,
+                    )
+                    mergeThreadTurnsPage(
+                        source = "thread/turns/list",
+                        threadId = threadId,
+                        page = page,
+                        existingSnapshot = existingSnapshot,
+                        syncState = currentSyncState(threadId),
+                        replaceHistory = true,
+                    )
+                }
+            }.onFailure { error ->
+                if (isUnsupportedTurnPaginationError(error)) {
+                    supportsTurnPagination = false
+                    olderHistoryCursorByThread.clear()
+                    initialTurnsLoadedThreadIds.clear()
+                    authoritativeHistoryStartThreadIds.clear()
+                }
+            }.getOrNull()
+            if (paginatedSnapshot != null) {
+                return
+            }
+        }
+
         val response = runCatching {
             retryAfterThreadMaterialization {
                 requestThreadRead(threadId)
@@ -922,6 +966,47 @@ class BridgeThreadSyncService(
             syncState = currentSyncState(threadId),
             allowHistoryMergeWhileRunning = false,
         )
+    }
+
+    override suspend fun loadOlderThreadHistoryPage(threadId: String) {
+        val normalizedThreadId = threadId.trim().takeIf(String::isNotEmpty) ?: return
+        if (!isConnected() || !supportsTurnPagination || normalizedThreadId in loadingOlderHistoryThreadIds) {
+            return
+        }
+        val cursor = olderHistoryCursorByThread[normalizedThreadId] ?: return
+        loadingOlderHistoryThreadIds.add(normalizedThreadId)
+        olderHistoryErrorByThread.remove(normalizedThreadId)
+        refreshThreadPaginationState(normalizedThreadId)
+        try {
+            val page = requestThreadTurnsPage(
+                threadId = normalizedThreadId,
+                limit = ThreadHistoryOlderTurnPageSize,
+                cursor = cursor,
+            )
+            mergeThreadTurnsPage(
+                source = "thread/turns/list:older",
+                threadId = normalizedThreadId,
+                page = page,
+                existingSnapshot = currentThreadSnapshot(normalizedThreadId),
+                syncState = currentSyncState(normalizedThreadId),
+                replaceHistory = false,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) {
+                throw error
+            }
+            if (isUnsupportedTurnPaginationError(error)) {
+                supportsTurnPagination = false
+                olderHistoryCursorByThread.remove(normalizedThreadId)
+                authoritativeHistoryStartThreadIds.add(normalizedThreadId)
+            } else {
+                olderHistoryErrorByThread[normalizedThreadId] = "Couldn't load earlier messages. Tap to retry."
+            }
+            refreshThreadPaginationState(normalizedThreadId)
+        } finally {
+            loadingOlderHistoryThreadIds.remove(normalizedThreadId)
+            refreshThreadPaginationState(normalizedThreadId)
+        }
     }
 
     override suspend fun resumeThread(
@@ -1216,6 +1301,153 @@ class BridgeThreadSyncService(
             )
         }
         return createdSnapshot
+    }
+
+    private fun mergeThreadTurnsPage(
+        source: String,
+        threadId: String,
+        page: ThreadTurnsPage,
+        existingSnapshot: ThreadSyncSnapshot?,
+        syncState: RemodexThreadSyncState,
+        replaceHistory: Boolean,
+    ): ThreadSyncSnapshot? {
+        initialTurnsLoadedThreadIds.add(threadId)
+        olderHistoryErrorByThread.remove(threadId)
+        if (page.nextCursor != null && page.nextCursor != JsonNull) {
+            olderHistoryCursorByThread[threadId] = page.nextCursor
+            authoritativeHistoryStartThreadIds.remove(threadId)
+        } else {
+            olderHistoryCursorByThread.remove(threadId)
+            authoritativeHistoryStartThreadIds.add(threadId)
+        }
+
+        val threadObject = buildThreadObjectForTurnsPage(
+            threadId = threadId,
+            turns = JsonArray(page.turns.reversed()),
+            existingSnapshot = existingSnapshot,
+        )
+        indexTurnIds(threadId = threadId, threadObject = threadObject)
+        val decodedHistorySnapshot = decodeHistorySnapshotData(
+            threadId = threadId,
+            threadObject = threadObject,
+        )
+        val decodedHistoryItems = TurnTimelineReducer.reduce(decodedHistorySnapshot.mutations)
+        val decodedHistoryAssistantChangeSets = decodedHistorySnapshot.assistantChangeSets
+
+        fun mergedSnapshot(baseSnapshot: ThreadSyncSnapshot?): ThreadSyncSnapshot? {
+            val threadIsRunning = threadHasKnownRunningState(threadId)
+            val existingItems = baseSnapshot?.let(::reducedTimelineItems).orEmpty()
+            val incomingItems = if (replaceHistory) {
+                decodedHistoryItems
+            } else {
+                adjustOlderHistoryOrder(
+                    existing = existingItems,
+                    older = decodedHistoryItems.filterNot { item -> item.matchesAnyHistoryItem(existingItems) },
+                )
+            }
+            val mergedHistoryItems = if (replaceHistory) {
+                ThreadHistoryReconciler.mergeHistoryItems(
+                    existing = existingItems,
+                    history = incomingItems,
+                    threadIsActive = threadIsRunning,
+                    threadIsRunning = threadIsRunning,
+                )
+            } else if (incomingItems.isEmpty()) {
+                existingItems
+            } else {
+                ThreadHistoryReconciler.mergeHistoryItems(
+                    existing = existingItems,
+                    history = incomingItems,
+                    threadIsActive = threadIsRunning,
+                    threadIsRunning = threadIsRunning,
+                )
+            }
+            return parseThreadSnapshot(
+                threadObject = threadObject,
+                syncState = syncState,
+                existing = baseSnapshot,
+            )?.copy(
+                timelineMutations = mergedHistoryItems.map(TimelineMutation::Upsert),
+                timelineItems = mergedHistoryItems,
+                assistantChangeSets = mergeAssistantChangeSets(
+                    existing = baseSnapshot?.assistantChangeSets.orEmpty(),
+                    incoming = decodedHistoryAssistantChangeSets,
+                ),
+                isRunning = threadIsRunning,
+            )
+        }
+
+        var refreshedSnapshot: ThreadSyncSnapshot? = null
+        updateThread(threadId) { latestSnapshot ->
+            val merged = mergedSnapshot(latestSnapshot) ?: latestSnapshot
+            refreshedSnapshot = merged
+            merged
+        }
+        if (refreshedSnapshot != null) {
+            return refreshedSnapshot
+        }
+
+        val createdSnapshot = mergedSnapshot(currentThreadSnapshot(threadId) ?: existingSnapshot) ?: return null
+        upsertThreadSnapshot(createdSnapshot)
+        return createdSnapshot
+    }
+
+    private fun buildThreadObjectForTurnsPage(
+        threadId: String,
+        turns: JsonArray,
+        existingSnapshot: ThreadSyncSnapshot?,
+    ): JsonObject = buildJsonObject {
+        put("id", JsonPrimitive(threadId))
+        existingSnapshot?.title?.takeIf(String::isNotBlank)?.let { put("title", JsonPrimitive(it)) }
+        existingSnapshot?.name?.takeIf(String::isNotBlank)?.let { put("name", JsonPrimitive(it)) }
+        existingSnapshot?.preview?.takeIf(String::isNotBlank)?.let { put("preview", JsonPrimitive(it)) }
+        existingSnapshot?.projectPath?.takeIf(String::isNotBlank)?.let { put("cwd", JsonPrimitive(it)) }
+        existingSnapshot?.lastUpdatedEpochMs?.takeIf { it > 0L }?.let { put("updatedAt", JsonPrimitive(it / 1000.0)) }
+        existingSnapshot?.runtimeConfig?.selectedModelId?.takeIf(String::isNotBlank)?.let { put("model", JsonPrimitive(it)) }
+        put("turns", turns)
+    }
+
+    private fun adjustOlderHistoryOrder(
+        existing: List<RemodexConversationItem>,
+        older: List<RemodexConversationItem>,
+    ): List<RemodexConversationItem> {
+        if (older.isEmpty()) {
+            return older
+        }
+        val startOrder = (existing.minOfOrNull(RemodexConversationItem::orderIndex) ?: 0L) - older.size
+        return older.mapIndexed { index, item ->
+            item.copy(orderIndex = startOrder + index)
+        }
+    }
+
+    private fun RemodexConversationItem.matchesAnyHistoryItem(
+        items: List<RemodexConversationItem>,
+    ): Boolean {
+        return items.any { existing ->
+            when {
+                itemId != null && existing.itemId == itemId -> true
+                id.isNotBlank() && existing.id == id -> true
+                turnId != null && existing.turnId == turnId && speaker == existing.speaker && kind == existing.kind && text == existing.text -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun refreshThreadPaginationState(threadId: String) {
+        mutateThreadSnapshot(threadId) { snapshot ->
+            snapshot.withThreadHistoryPaginationState()
+        }
+    }
+
+    private fun ThreadSyncSnapshot.withThreadHistoryPaginationState(): ThreadSyncSnapshot {
+        return copy(
+            hasRemoteOlderHistory = supportsTurnPagination &&
+                id !in authoritativeHistoryStartThreadIds &&
+                olderHistoryCursorByThread.containsKey(id),
+            isLoadingOlderHistory = id in loadingOlderHistoryThreadIds,
+            olderHistoryLoadErrorMessage = olderHistoryErrorByThread[id],
+            initialTurnsLoaded = id in initialTurnsLoadedThreadIds,
+        )
     }
 
     override suspend fun appendLocalSystemMessage(
@@ -2661,6 +2893,34 @@ class BridgeThreadSyncService(
                 },
             )
         }.getOrThrow()
+    }
+
+    private suspend fun requestThreadTurnsPage(
+        threadId: String,
+        limit: Int,
+        cursor: JsonElement?,
+    ): ThreadTurnsPage {
+        val response = secureConnectionCoordinator.sendRequest(
+            method = "thread/turns/list",
+            params = buildJsonObject {
+                put("threadId", JsonPrimitive(threadId))
+                put("limit", JsonPrimitive(limit))
+                put("sortDirection", JsonPrimitive("desc"))
+                if (cursor != null && cursor != JsonNull) {
+                    put("cursor", cursor)
+                }
+            },
+            timeoutMs = 30_000L,
+        )
+        val resultObject = response.result?.jsonObjectOrNull ?: return ThreadTurnsPage(
+            turns = JsonArray(emptyList()),
+            nextCursor = null,
+        )
+        return ThreadTurnsPage(
+            turns = resultObject.firstArray("data", "items", "turns") ?: JsonArray(emptyList()),
+            nextCursor = resultObject.firstValue("nextCursor", "next_cursor")
+                ?.takeUnless { value -> value == JsonNull || value.stringOrNull?.isBlank() == true },
+        )
     }
 
     private suspend fun requestThreadReadForTitleSeed(threadId: String): RpcMessage {
@@ -9826,7 +10086,7 @@ class BridgeThreadSyncService(
             timelineMutations = existing?.timelineMutations.orEmpty(),
             timelineItems = existing?.timelineItems.orEmpty(),
             assistantChangeSets = existing?.assistantChangeSets.orEmpty(),
-        )
+        ).withThreadHistoryPaginationState()
     }
 
     private fun decodeHistorySnapshotData(
@@ -11822,6 +12082,15 @@ class BridgeThreadSyncService(
 
     private fun isConnected(): Boolean {
         return secureConnectionCoordinator.isEncryptedSessionReady()
+    }
+
+    private fun isUnsupportedTurnPaginationError(error: Throwable): Boolean {
+        val message = error.message.orEmpty().lowercase(Locale.ROOT)
+        return (error as? RpcError)?.code == -32601 ||
+            "method not found" in message ||
+            "unknown method" in message ||
+            "not implemented" in message ||
+            "unsupported" in message
     }
 
     private fun shouldLogReviewDebug(

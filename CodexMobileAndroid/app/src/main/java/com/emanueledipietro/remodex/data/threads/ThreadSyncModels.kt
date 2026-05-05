@@ -68,6 +68,10 @@ data class ThreadSyncSnapshot(
     val timelineMutations: List<TimelineMutation>,
     val timelineItems: List<RemodexConversationItem> = emptyList(),
     val assistantChangeSets: List<RemodexAssistantChangeSet> = emptyList(),
+    val hasRemoteOlderHistory: Boolean = false,
+    val isLoadingOlderHistory: Boolean = false,
+    val olderHistoryLoadErrorMessage: String? = null,
+    val initialTurnsLoaded: Boolean = false,
 )
 
 class StreamingAssistantTextHandle internal constructor(
@@ -307,6 +311,8 @@ interface ThreadHydrationService {
     suspend fun refreshThreads()
 
     suspend fun hydrateThread(threadId: String)
+
+    suspend fun loadOlderThreadHistoryPage(threadId: String) = Unit
 }
 
 interface ThreadResumeService {

@@ -1136,6 +1136,10 @@ fun ThreadSyncSnapshot.toCachedThreadRecord(): CachedThreadRecord {
         stoppedTurnIds = stoppedTurnIds,
         runtimeConfig = runtimeConfig,
         timelineItems = TurnTimelineReducer.project(rawTimelineItems),
+        hasRemoteOlderHistory = hasRemoteOlderHistory,
+        isLoadingOlderHistory = isLoadingOlderHistory,
+        olderHistoryLoadErrorMessage = olderHistoryLoadErrorMessage,
+        initialTurnsLoaded = initialTurnsLoaded,
     )
 }
 

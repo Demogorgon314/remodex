@@ -1363,6 +1363,11 @@ class DefaultRemodexAppRepository(
         hydrateThreadAndRecoverLiveSession(threadId)
     }
 
+    override suspend fun loadOlderThreadHistoryPage(threadId: String) {
+        val normalizedThreadId = threadId.trim().takeIf(String::isNotEmpty) ?: return
+        hydrationService()?.loadOlderThreadHistoryPage(normalizedThreadId)
+    }
+
     override suspend fun syncActiveThread(threadId: String) {
         if (!hasActiveSecureTransport()) {
             return
@@ -3712,6 +3717,10 @@ private fun RemodexThreadSummary.toCachedThreadRecord(): CachedThreadRecord {
         runtimeConfig = runtimeConfig,
         timelineItems = messages,
         assistantChangeSets = assistantChangeSets,
+        hasRemoteOlderHistory = hasRemoteOlderHistory,
+        isLoadingOlderHistory = isLoadingOlderHistory,
+        olderHistoryLoadErrorMessage = olderHistoryLoadErrorMessage,
+        initialTurnsLoaded = initialTurnsLoaded,
     )
 }
 
@@ -3738,6 +3747,10 @@ private fun ThreadSyncSnapshot.toCachedThreadRecord(
         runtimeConfig = runtimeConfig,
         timelineItems = timelineItems,
         assistantChangeSets = assistantChangeSets,
+        hasRemoteOlderHistory = hasRemoteOlderHistory,
+        isLoadingOlderHistory = isLoadingOlderHistory,
+        olderHistoryLoadErrorMessage = olderHistoryLoadErrorMessage,
+        initialTurnsLoaded = initialTurnsLoaded,
     )
 }
 
@@ -3855,6 +3868,10 @@ private fun RemodexThreadSummary.matchesThreadListSummary(
         queuedDraftItems == source.queuedDraftItems &&
         runtimeLabel == source.runtimeLabel &&
         runtimeConfig == source.runtimeConfig &&
+        hasRemoteOlderHistory == source.hasRemoteOlderHistory &&
+        isLoadingOlderHistory == source.isLoadingOlderHistory &&
+        olderHistoryLoadErrorMessage == source.olderHistoryLoadErrorMessage &&
+        initialTurnsLoaded == source.initialTurnsLoaded &&
         messages.isEmpty() &&
         assistantChangeSets.isEmpty()
 }
@@ -3916,6 +3933,10 @@ internal fun CachedThreadRecord.toBaseThreadSummary(): RemodexThreadSummary {
         runtimeConfig = runtimeConfig,
         messages = timelineItems,
         assistantChangeSets = assistantChangeSets,
+        hasRemoteOlderHistory = hasRemoteOlderHistory,
+        isLoadingOlderHistory = isLoadingOlderHistory,
+        olderHistoryLoadErrorMessage = olderHistoryLoadErrorMessage,
+        initialTurnsLoaded = initialTurnsLoaded,
     )
 }
 

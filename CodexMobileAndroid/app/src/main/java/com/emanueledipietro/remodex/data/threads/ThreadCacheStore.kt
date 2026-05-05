@@ -27,6 +27,10 @@ data class CachedThreadRecord(
     val runtimeConfig: RemodexRuntimeConfig,
     val timelineItems: List<RemodexConversationItem>,
     val assistantChangeSets: List<RemodexAssistantChangeSet> = emptyList(),
+    val hasRemoteOlderHistory: Boolean = false,
+    val isLoadingOlderHistory: Boolean = false,
+    val olderHistoryLoadErrorMessage: String? = null,
+    val initialTurnsLoaded: Boolean = false,
 )
 
 interface ThreadCacheStore {

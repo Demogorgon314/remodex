@@ -1472,6 +1472,7 @@ fun ConversationScreen(
     onForkThread: (RemodexComposerForkDestination) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
+    onLoadRemoteEarlierMessages: (String) -> Unit = {},
     onStartAssistantRevertPreview: (String) -> Unit,
     onConfirmAssistantRevert: () -> Unit,
     onDismissAssistantRevertSheet: () -> Unit,
@@ -1517,6 +1518,8 @@ fun ConversationScreen(
     var userScrollCooldownUntilMs by rememberSaveable(thread.id) { mutableStateOf<Long?>(null) }
     var isUserScrollCooldownActive by rememberSaveable(thread.id) { mutableStateOf(false) }
     var visibleTailCount by rememberSaveable(thread.id) { mutableStateOf(ConversationTimelinePageSize) }
+    var previousRemoteHistoryTimelineSize by rememberSaveable(thread.id) { mutableStateOf(0) }
+    var previousRemoteHistoryLoading by rememberSaveable(thread.id) { mutableStateOf(false) }
     var animatedLoadEarlierMessageIds by remember(thread.id) { mutableStateOf(emptySet<String>()) }
     var loadEarlierAnimationGeneration by remember(thread.id) { mutableStateOf(0) }
     var composerSawImeWhileFocused by rememberSaveable(thread.id) { mutableStateOf(false) }
@@ -1576,7 +1579,11 @@ fun ConversationScreen(
         )
     }
     val visibleTimelineItems = visibleTimelineWindow.items
-    val hasEarlierTimelineItems = visibleTimelineWindow.hasEarlierMessages
+    val hasLocallyProjectedEarlierTimelineItems = visibleTimelineWindow.hasEarlierMessages
+    val hasRemoteEarlierTimelineItems = thread.hasRemoteOlderHistory ||
+        thread.isLoadingOlderHistory ||
+        thread.olderHistoryLoadErrorMessage != null
+    val hasEarlierTimelineItems = hasLocallyProjectedEarlierTimelineItems || hasRemoteEarlierTimelineItems
     val emptyTimelineStatePresentation = derivedState.emptyTimelineStatePresentation
     val selectedPlanSheetItem = derivedState.selectedPlanSheetItem
     val blockAccessories = derivedState.blockAccessories
@@ -1656,6 +1663,22 @@ fun ConversationScreen(
         onRefreshGitState()
     }
 
+    LaunchedEffect(thread.id, timelineItems.size, thread.isLoadingOlderHistory) {
+        if (
+            previousRemoteHistoryLoading &&
+            !thread.isLoadingOlderHistory &&
+            timelineItems.size > previousRemoteHistoryTimelineSize
+        ) {
+            val revealedCount = timelineItems.size - previousRemoteHistoryTimelineSize
+            visibleTailCount = minOf(
+                timelineItems.size,
+                visibleTailCount + revealedCount,
+            )
+        }
+        previousRemoteHistoryTimelineSize = timelineItems.size
+        previousRemoteHistoryLoading = thread.isLoadingOlderHistory
+    }
+
     LaunchedEffect(thread.id, uiState.repoRefreshSignal) {
         if (uiState.repoRefreshSignal == null) {
             return@LaunchedEffect
@@ -1714,11 +1737,21 @@ fun ConversationScreen(
     val handleLoadEarlierMessages = remember(
         timelineItemsIdentity,
         visibleTailCount,
-        hasEarlierTimelineItems,
+        hasLocallyProjectedEarlierTimelineItems,
+        hasRemoteEarlierTimelineItems,
+        thread.id,
+        thread.isLoadingOlderHistory,
+        onLoadRemoteEarlierMessages,
         coroutineScope,
     ) {
         loadEarlier@{
             if (!hasEarlierTimelineItems) {
+                return@loadEarlier
+            }
+            if (!hasLocallyProjectedEarlierTimelineItems && hasRemoteEarlierTimelineItems) {
+                if (!thread.isLoadingOlderHistory) {
+                    onLoadRemoteEarlierMessages(thread.id)
+                }
                 return@loadEarlier
             }
             val nextVisibleTailCount = minOf(
@@ -2019,6 +2052,12 @@ fun ConversationScreen(
                 timelineState = timelineState,
                 timelineItems = visibleTimelineItems,
                 hasEarlierMessages = hasEarlierTimelineItems,
+                loadEarlierMessage = thread.olderHistoryLoadErrorMessage ?: if (thread.isLoadingOlderHistory) {
+                    "Loading earlier messages..."
+                } else {
+                    "Load earlier messages"
+                },
+                isLoadingEarlierMessages = thread.isLoadingOlderHistory,
                 animatedLoadEarlierMessageIds = animatedLoadEarlierMessageIds,
                 blockAccessories = blockAccessories,
                 showsEmptyTimelineState = showsEmptyTimelineState,
@@ -2170,6 +2209,8 @@ private fun ConversationTimelinePane(
     timelineState: LazyListState,
     timelineItems: List<RemodexConversationItem>,
     hasEarlierMessages: Boolean,
+    loadEarlierMessage: String,
+    isLoadingEarlierMessages: Boolean,
     animatedLoadEarlierMessageIds: Set<String>,
     blockAccessories: Map<String, ConversationBlockAccessoryState>,
     showsEmptyTimelineState: Boolean,
@@ -2243,6 +2284,8 @@ private fun ConversationTimelinePane(
                     conversationTimelineItems(
                         timelineItems = timelineItems,
                         hasEarlierMessages = hasEarlierMessages,
+                        loadEarlierMessage = loadEarlierMessage,
+                        isLoadingEarlierMessages = isLoadingEarlierMessages,
                         animatedLoadEarlierMessageIds = animatedLoadEarlierMessageIds,
                         streamingAssistantTextsByMessageId = uiState.streamingAssistantTextsByMessageId,
                         blockAccessories = blockAccessories,
@@ -2609,6 +2652,8 @@ private fun LazyListScope.conversationTimelineItems(
     onOpenCommandExecutionDetails: (String) -> Unit,
     onOpenSubagentThread: (String) -> Unit,
     onHydrateSubagentThread: (String) -> Unit,
+    loadEarlierMessage: String,
+    isLoadingEarlierMessages: Boolean,
     onLoadEarlierMessages: () -> Unit,
 ) {
     val assistantResponseMetricsFooterText = assistantResponseMetrics
@@ -2625,6 +2670,8 @@ private fun LazyListScope.conversationTimelineItems(
         if (hasEarlierMessages) {
             item(key = ConversationLoadEarlierMessagesKey) {
                 ConversationLoadEarlierMessagesButton(
+                    label = loadEarlierMessage,
+                    isLoading = isLoadingEarlierMessages,
                     onClick = onLoadEarlierMessages,
                 )
             }
@@ -3020,6 +3067,8 @@ private fun ConversationCircleButton(
 
 @Composable
 private fun ConversationLoadEarlierMessagesButton(
+    label: String,
+    isLoading: Boolean,
     onClick: () -> Unit,
 ) {
     val chrome = remodexConversationChrome()
@@ -3031,6 +3080,7 @@ private fun ConversationLoadEarlierMessagesButton(
                 role = Role.Button
             }
             .clickable(
+                enabled = !isLoading,
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick,
@@ -3038,11 +3088,23 @@ private fun ConversationLoadEarlierMessagesButton(
             .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = "Load earlier messages",
-            style = MaterialTheme.typography.bodySmall,
-            color = chrome.secondaryText,
-        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.5.dp,
+                    color = chrome.secondaryText,
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = chrome.secondaryText,
+            )
+        }
     }
 }
 

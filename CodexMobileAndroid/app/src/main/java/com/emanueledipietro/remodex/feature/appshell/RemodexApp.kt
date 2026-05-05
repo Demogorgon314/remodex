@@ -1352,6 +1352,7 @@ private fun MainPane(
                             onForkThread = viewModel::forkThread,
                             onOpenSubagentThread = viewModel::selectThread,
                             onHydrateSubagentThread = viewModel::hydrateThreadMetadata,
+                            onLoadRemoteEarlierMessages = viewModel::loadOlderThreadHistoryPage,
                             onStartAssistantRevertPreview = viewModel::startAssistantRevertPreview,
                             onConfirmAssistantRevert = viewModel::confirmAssistantRevert,
                             onDismissAssistantRevertSheet = viewModel::dismissAssistantRevertSheet,

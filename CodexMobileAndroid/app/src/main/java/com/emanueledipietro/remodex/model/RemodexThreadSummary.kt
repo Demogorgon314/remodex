@@ -28,6 +28,10 @@ data class RemodexThreadSummary(
     val runtimeConfig: RemodexRuntimeConfig = RemodexRuntimeConfig(),
     val messages: List<RemodexConversationItem>,
     val assistantChangeSets: List<RemodexAssistantChangeSet> = emptyList(),
+    val hasRemoteOlderHistory: Boolean = false,
+    val isLoadingOlderHistory: Boolean = false,
+    val olderHistoryLoadErrorMessage: String? = null,
+    val initialTurnsLoaded: Boolean = false,
 ) {
     companion object {
         const val defaultDisplayTitle: String = "New Thread"

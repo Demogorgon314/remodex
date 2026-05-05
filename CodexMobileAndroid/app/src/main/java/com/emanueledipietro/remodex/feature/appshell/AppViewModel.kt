@@ -1003,6 +1003,13 @@ class AppViewModel(
         launchThreadHydration(threadId)
     }
 
+    fun loadOlderThreadHistoryPage(threadId: String) {
+        val normalizedThreadId = threadId.trim().takeIf(String::isNotEmpty) ?: return
+        viewModelScope.launch {
+            repository.loadOlderThreadHistoryPage(normalizedThreadId)
+        }
+    }
+
     fun createThread(
         preferredProjectPath: String? = null,
         onCreated: ((String?) -> Unit)? = null,
