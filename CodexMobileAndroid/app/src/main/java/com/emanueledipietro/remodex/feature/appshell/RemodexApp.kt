@@ -943,6 +943,10 @@ private fun RemodexShell(
                                 }
                             }
                         },
+                        onFetchProjectQuickLocations = viewModel::fetchProjectQuickLocations,
+                        onListProjectDirectory = viewModel::listProjectDirectory,
+                        onSearchProjectDirectories = viewModel::searchProjectDirectories,
+                        onCreateProjectDirectory = viewModel::createProjectDirectory,
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
                         onRegenerateThreadTitle = { threadId, onComplete ->
@@ -1080,6 +1084,10 @@ private fun RemodexShell(
                                 }
                             }
                         },
+                        onFetchProjectQuickLocations = viewModel::fetchProjectQuickLocations,
+                        onListProjectDirectory = viewModel::listProjectDirectory,
+                        onSearchProjectDirectories = viewModel::searchProjectDirectories,
+                        onCreateProjectDirectory = viewModel::createProjectDirectory,
                         onSetProjectGroupCollapsed = viewModel::setProjectGroupCollapsed,
                         onRenameThread = viewModel::renameThread,
                         onRegenerateThreadTitle = { threadId, onComplete ->

@@ -40,6 +40,9 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeMetaMapper
 import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexPluginMetadata
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryEntry
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryListing
+import com.emanueledipietro.remodex.model.RemodexProjectLocation
 import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
@@ -851,12 +854,68 @@ class FakeThreadSyncService(
         )
     }
 
+    override suspend fun loadGitBranchesForProject(projectPath: String): RemodexGitBranches {
+        return RemodexGitBranches(
+            branches = listOf("main", "develop"),
+            currentBranch = "main",
+            defaultBranch = "main",
+            localCheckoutPath = projectPath.trim().takeIf(String::isNotEmpty),
+        )
+    }
+
     override suspend fun removeManagedWorktree(projectPath: String) {
         val normalizedProjectPath = projectPath.trim()
         if (normalizedProjectPath.isEmpty()) {
             return
         }
         removeManagedWorktreeRequests += normalizedProjectPath
+    }
+
+    override suspend fun fetchProjectQuickLocations(): List<RemodexProjectLocation> {
+        return listOf(
+            RemodexProjectLocation(
+                id = "developer",
+                label = "Developer",
+                path = "/Users/emanueledipietro/Developer",
+            ),
+            RemodexProjectLocation(
+                id = "home",
+                label = "Home",
+                path = "/Users/emanueledipietro",
+            ),
+        )
+    }
+
+    override suspend fun listProjectDirectory(path: String): RemodexProjectDirectoryListing {
+        val normalizedPath = path.trim().ifEmpty { "/Users/emanueledipietro/Developer" }
+        return RemodexProjectDirectoryListing(
+            path = normalizedPath,
+            parentPath = normalizedPath.substringBeforeLast('/', missingDelimiterValue = "").takeIf(String::isNotEmpty),
+            entries = listOf(
+                RemodexProjectDirectoryEntry(name = "remodex", path = "$normalizedPath/remodex"),
+                RemodexProjectDirectoryEntry(name = "phodex-bridge", path = "$normalizedPath/phodex-bridge"),
+            ),
+        )
+    }
+
+    override suspend fun searchProjectDirectories(
+        rootPath: String,
+        query: String,
+    ): List<RemodexProjectDirectoryEntry> {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) {
+            return emptyList()
+        }
+        return listProjectDirectory(rootPath).entries.filter { entry ->
+            entry.name.contains(normalizedQuery, ignoreCase = true)
+        }
+    }
+
+    override suspend fun createProjectDirectory(
+        parentPath: String,
+        name: String,
+    ): String {
+        return "${parentPath.trim().trimEnd('/')}/${name.trim()}"
     }
 
     override suspend fun commitGitChanges(

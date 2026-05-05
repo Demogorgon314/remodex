@@ -17,6 +17,7 @@ import com.emanueledipietro.remodex.model.RemodexConversationAttachment
 import com.emanueledipietro.remodex.model.RemodexConversationItem
 import com.emanueledipietro.remodex.model.RemodexFuzzyFileMatch
 import com.emanueledipietro.remodex.model.RemodexGitCommit
+import com.emanueledipietro.remodex.model.RemodexGitBranches
 import com.emanueledipietro.remodex.model.RemodexGitRepoDiff
 import com.emanueledipietro.remodex.model.RemodexGitRepoSync
 import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
@@ -24,6 +25,9 @@ import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitManagedWorktreeResult
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryEntry
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryListing
+import com.emanueledipietro.remodex.model.RemodexProjectLocation
 import com.emanueledipietro.remodex.model.RemodexMessageDeliveryState
 import com.emanueledipietro.remodex.model.RemodexBridgeUpdatePrompt
 import com.emanueledipietro.remodex.model.RemodexModelOption
@@ -247,9 +251,26 @@ interface ThreadCommandService {
         throw UnsupportedOperationException("Managed worktree creation is not available.")
     }
 
+    suspend fun loadGitBranchesForProject(projectPath: String): RemodexGitBranches = RemodexGitBranches()
+
     suspend fun removeManagedWorktree(projectPath: String) {
         throw UnsupportedOperationException("Managed worktree cleanup is not available.")
     }
+
+    suspend fun fetchProjectQuickLocations(): List<RemodexProjectLocation> = emptyList()
+
+    suspend fun listProjectDirectory(path: String): RemodexProjectDirectoryListing =
+        RemodexProjectDirectoryListing(path = path, parentPath = null)
+
+    suspend fun searchProjectDirectories(
+        rootPath: String,
+        query: String,
+    ): List<RemodexProjectDirectoryEntry> = emptyList()
+
+    suspend fun createProjectDirectory(
+        parentPath: String,
+        name: String,
+    ): String = parentPath
 
     suspend fun commitGitChanges(
         threadId: String,

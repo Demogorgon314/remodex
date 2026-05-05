@@ -21,6 +21,7 @@ const { handleDesktopRequest } = require("./desktop-handler");
 const { handleGitRequest } = require("./git-handler");
 const { handleThreadContextRequest } = require("./thread-context-handler");
 const { handleWorkspaceRequest } = require("./workspace-handler");
+const { handleProjectRequest } = require("./project-handler");
 const { createNotificationsHandler } = require("./notifications-handler");
 const {
   createVoiceHandler,
@@ -51,7 +52,8 @@ const {
 
 const execFileAsync = promisify(execFile);
 const RELAY_WATCHDOG_PING_INTERVAL_MS = 10_000;
-const RELAY_WATCHDOG_STALE_AFTER_MS = 25_000;
+// Keep the watchdog above the relay heartbeat cadence so quiet healthy sockets survive idle gaps.
+const RELAY_WATCHDOG_STALE_AFTER_MS = 70_000;
 const BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS = 5_000;
 const STALE_RELAY_STATUS_MESSAGE = "Relay heartbeat stalled; reconnect pending.";
 const RELAY_HISTORY_IMAGE_REFERENCE_URL = "remodex://history-image-elided";
@@ -512,6 +514,9 @@ function startBridge({
       return;
     }
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
+      return;
+    }
+    if (handleProjectRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
     if (notificationsHandler.handleNotificationsRequest(rawMessage, sendApplicationResponse)) {

@@ -46,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.AccountTree
@@ -64,6 +65,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +83,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -117,6 +120,7 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -126,9 +130,15 @@ import androidx.compose.ui.window.PopupProperties
 import com.emanueledipietro.remodex.R
 import com.emanueledipietro.remodex.feature.appshell.AppUiState
 import com.emanueledipietro.remodex.model.isCodexManagedWorktreeProject
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryEntry
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryListing
+import com.emanueledipietro.remodex.model.RemodexProjectLocation
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.ui.theme.remodexConversationChrome
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val ProjectPreviewCount = 10
 private const val SidebarFooterTestTag = "sidebar_footer"
@@ -200,6 +210,10 @@ fun ThreadsScreen(
     onRetryConnection: () -> Unit,
     onCreateThread: (String?) -> Unit,
     onCreateWorktreeThread: (String) -> Unit,
+    onFetchProjectQuickLocations: suspend () -> List<RemodexProjectLocation>,
+    onListProjectDirectory: suspend (String) -> RemodexProjectDirectoryListing,
+    onSearchProjectDirectories: suspend (String, String) -> List<RemodexProjectDirectoryEntry>,
+    onCreateProjectDirectory: suspend (String, String) -> String,
     onSetProjectGroupCollapsed: (String, Boolean) -> Unit,
     onRenameThread: (String, String) -> Unit,
     onRegenerateThreadTitle: (String, (Boolean) -> Unit) -> Unit,
@@ -216,6 +230,7 @@ fun ThreadsScreen(
     var searchText by rememberSaveable { mutableStateOf("") }
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
     var isNewChatSheetPresented by rememberSaveable { mutableStateOf(false) }
+    var isLocalFolderBrowserPresented by rememberSaveable { mutableStateOf(false) }
     var renamePromptState by remember {
         mutableStateOf(ThreadRenamePromptState())
     }
@@ -464,6 +479,10 @@ fun ThreadsScreen(
             isCreatingThread = uiState.isCreatingThread,
             supportsManagedWorktreeCreation = uiState.supportsManagedWorktreeCreation,
             onDismiss = { isNewChatSheetPresented = false },
+            onBrowseLocalFolder = {
+                isNewChatSheetPresented = false
+                isLocalFolderBrowserPresented = true
+            },
             onCreateThread = { projectPath ->
                 if (!uiState.canCreateThread || uiState.isCreatingThread) {
                     return@SidebarNewChatSheet
@@ -478,6 +497,23 @@ fun ThreadsScreen(
                 isNewChatSheetPresented = false
                 onCreateWorktreeThread(projectPath)
             },
+        )
+    }
+
+    if (isLocalFolderBrowserPresented) {
+        SidebarLocalFolderBrowserSheet(
+            onDismiss = { isLocalFolderBrowserPresented = false },
+            onSelectFolder = { projectPath ->
+                if (!uiState.canCreateThread || uiState.isCreatingThread) {
+                    return@SidebarLocalFolderBrowserSheet
+                }
+                isLocalFolderBrowserPresented = false
+                onCreateThread(projectPath)
+            },
+            onFetchProjectQuickLocations = onFetchProjectQuickLocations,
+            onListProjectDirectory = onListProjectDirectory,
+            onSearchProjectDirectories = onSearchProjectDirectories,
+            onCreateProjectDirectory = onCreateProjectDirectory,
         )
     }
 
@@ -634,6 +670,7 @@ private fun SidebarNewChatSheet(
     isCreatingThread: Boolean,
     supportsManagedWorktreeCreation: Boolean,
     onDismiss: () -> Unit,
+    onBrowseLocalFolder: () -> Unit,
     onCreateThread: (String?) -> Unit,
     onCreateWorktreeThread: (String) -> Unit,
 ) {
@@ -710,11 +747,27 @@ private fun SidebarNewChatSheet(
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                     ) {
                         item {
-                            Text(
-                                text = "Choose a project for this chat.",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = chrome.secondaryText,
-                            )
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = "Choose a project for this chat",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = chrome.secondaryText,
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = chrome.panelSurface,
+                                ) {
+                                    SidebarNewChatActionRow(
+                                        iconSystemName = "folder.badge.plus",
+                                        title = "Add Local Folder",
+                                        subtitle = "Browse or create a folder on your computer.",
+                                        enabled = canCreateThread && !isCreatingThread,
+                                        onClick = onBrowseLocalFolder,
+                                    )
+                                }
+                            }
                         }
 
                         if (projectGroups.isNotEmpty()) {
@@ -734,9 +787,10 @@ private fun SidebarNewChatSheet(
                                     ) {
                                         Column {
                                             projectGroups.forEachIndexed { index, group ->
-                                                SidebarNewChatProjectRow(
-                                                    label = group.label,
+                                                SidebarNewChatActionRow(
                                                     iconSystemName = group.iconSystemName,
+                                                    title = group.label,
+                                                    subtitle = null,
                                                     enabled = canCreateThread && !isCreatingThread,
                                                     onClick = { onCreateThread(group.projectPath) },
                                                 )
@@ -769,8 +823,10 @@ private fun SidebarNewChatSheet(
                                         ) {
                                             Column {
                                                 projectGroups.forEachIndexed { index, group ->
-                                                    SidebarNewChatWorktreeProjectRow(
-                                                        label = group.label,
+                                                    SidebarNewChatActionRow(
+                                                        iconSystemName = "arrow.triangle.branch",
+                                                        title = group.label,
+                                                        subtitle = "Detached worktree from the default branch.",
                                                         enabled = canCreateThread && !isCreatingThread,
                                                         onClick = { group.projectPath?.let(onCreateWorktreeThread) },
                                                     )
@@ -810,6 +866,628 @@ private fun SidebarNewChatSheet(
 }
 
 @Composable
+private fun SidebarLocalFolderBrowserSheet(
+    onDismiss: () -> Unit,
+    onSelectFolder: (String) -> Unit,
+    onFetchProjectQuickLocations: suspend () -> List<RemodexProjectLocation>,
+    onListProjectDirectory: suspend (String) -> RemodexProjectDirectoryListing,
+    onSearchProjectDirectories: suspend (String, String) -> List<RemodexProjectDirectoryEntry>,
+    onCreateProjectDirectory: suspend (String, String) -> String,
+) {
+    val chrome = remodexConversationChrome()
+    val coroutineScope = rememberCoroutineScope()
+    var quickLocations by remember { mutableStateOf<List<RemodexProjectLocation>>(emptyList()) }
+    var currentPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var parentPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var entries by remember { mutableStateOf<List<RemodexProjectDirectoryEntry>>(emptyList()) }
+    var searchText by rememberSaveable { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<RemodexProjectDirectoryEntry>>(emptyList()) }
+    var newFolderName by rememberSaveable { mutableStateOf("") }
+    var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var searchErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var isLoading by rememberSaveable { mutableStateOf(false) }
+    var isSearching by rememberSaveable { mutableStateOf(false) }
+    var isCreatingFolder by rememberSaveable { mutableStateOf(false) }
+    var isShowingNewFolderPrompt by rememberSaveable { mutableStateOf(false) }
+    var activeLoadRequestId by remember { mutableStateOf(0) }
+
+    fun loadDirectory(path: String) {
+        val requestId = activeLoadRequestId + 1
+        activeLoadRequestId = requestId
+        searchText = ""
+        searchResults = emptyList()
+        searchErrorMessage = null
+        coroutineScope.launch {
+            isLoading = true
+            errorMessage = null
+            runCatching { onListProjectDirectory(path) }
+                .onSuccess { listing ->
+                    if (activeLoadRequestId != requestId) {
+                        return@onSuccess
+                    }
+                    currentPath = listing.path
+                    parentPath = listing.parentPath
+                    entries = listing.entries
+                }
+                .onFailure { error ->
+                    if (activeLoadRequestId == requestId) {
+                        errorMessage = error.message ?: "Could not load folders."
+                    }
+                }
+            if (activeLoadRequestId == requestId) {
+                isLoading = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        isLoading = true
+        runCatching { onFetchProjectQuickLocations() }
+            .onSuccess { locations ->
+                quickLocations = locations
+                val startPath = locations.firstOrNull { it.id == "developer" }?.path
+                    ?: locations.firstOrNull()?.path
+                if (startPath != null) {
+                    isLoading = false
+                    loadDirectory(startPath)
+                } else {
+                    errorMessage = "No local folders are available from this computer."
+                    isLoading = false
+                }
+            }
+            .onFailure { error ->
+                errorMessage = error.message ?: "Could not load folders."
+                isLoading = false
+            }
+    }
+
+    LaunchedEffect(searchText, currentPath) {
+        val rootPath = currentPath
+        val query = searchText.trim()
+        if (rootPath.isNullOrBlank() || query.isEmpty()) {
+            searchResults = emptyList()
+            searchErrorMessage = null
+            isSearching = false
+            return@LaunchedEffect
+        }
+        isSearching = true
+        searchErrorMessage = null
+        delay(250)
+        runCatching { onSearchProjectDirectories(rootPath, query) }
+            .onSuccess { results -> searchResults = results }
+            .onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                searchResults = emptyList()
+                searchErrorMessage = error.message ?: "Could not search folders."
+            }
+        isSearching = false
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.12f))
+                .padding(top = 12.dp),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.96f)
+                    .align(Alignment.BottomCenter),
+                shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+                color = chrome.panelSurfaceStrong,
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(width = 44.dp, height = 4.dp),
+                            shape = CircleShape,
+                            color = chrome.tertiaryText.copy(alpha = 0.35f),
+                        ) {}
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    ) {
+                        TextButton(
+                            modifier = Modifier.align(Alignment.CenterStart),
+                            onClick = onDismiss,
+                        ) {
+                            Text("Close", color = chrome.secondaryText)
+                        }
+                        Row(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            IconButton(
+                                enabled = currentPath != null && !isCreatingFolder,
+                                onClick = {
+                                    newFolderName = ""
+                                    isShowingNewFolderPrompt = true
+                                },
+                            ) {
+                                SidebarSymbolIcon(
+                                    symbolName = "folder.badge.plus",
+                                    tint = if (currentPath != null && !isCreatingFolder) {
+                                        chrome.secondaryText
+                                    } else {
+                                        chrome.tertiaryText
+                                    },
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Add Local Folder",
+                            modifier = Modifier.align(Alignment.Center),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = chrome.titleText,
+                        )
+                    }
+                    SidebarLocalFolderSearchBar(
+                        query = searchText,
+                        onQueryChange = { searchText = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 8.dp),
+                    )
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        errorMessage?.let { message ->
+                            item {
+                                SidebarLocalFolderSection {
+                                    SidebarLocalFolderTextRow(
+                                        text = message,
+                                        isError = true,
+                                    )
+                                }
+                            }
+                        }
+                        if (quickLocations.isNotEmpty()) {
+                            item {
+                                SidebarLocalFolderSection(title = "Locations") {
+                                    quickLocations.forEachIndexed { index, location ->
+                                        SidebarLocalFolderEntryRow(
+                                            iconSystemName = "folder",
+                                            title = location.label,
+                                            subtitle = location.path,
+                                            onClick = { loadDirectory(location.path) },
+                                        )
+                                        SidebarLocalFolderDivider(visible = index < quickLocations.lastIndex)
+                                    }
+                                }
+                            }
+                        }
+                        item {
+                            val query = searchText.trim()
+                            SidebarLocalFolderSection(
+                                title = if (query.isEmpty()) "Folders" else "Matching Folders",
+                            ) {
+                                if (query.isEmpty()) {
+                                    SidebarLocalFolderBrowserRows(
+                                        parentPath = parentPath,
+                                        entries = entries,
+                                        isLoading = isLoading,
+                                        onOpenFolder = ::loadDirectory,
+                                    )
+                                } else {
+                                    SidebarLocalFolderSearchRows(
+                                        searchResults = searchResults,
+                                        searchErrorMessage = searchErrorMessage,
+                                        isSearching = isSearching,
+                                        onOpenFolder = ::loadDirectory,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    SidebarLocalFolderBottomActionBar(
+                        currentPath = currentPath,
+                        isEnabled = currentPath != null,
+                        onUseFolder = { currentPath?.let(onSelectFolder) },
+                    )
+                }
+            }
+        }
+    }
+
+    if (isShowingNewFolderPrompt) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isCreatingFolder) {
+                    isShowingNewFolderPrompt = false
+                }
+            },
+            title = { Text("New Folder") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Create this folder on your computer and start a chat there.")
+                    OutlinedTextField(
+                        value = newFolderName,
+                        onValueChange = { newFolderName = it },
+                        label = { Text("Folder name") },
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isCreatingFolder &&
+                        !currentPath.isNullOrBlank() &&
+                        newFolderName.trim().isNotEmpty(),
+                    onClick = {
+                        val parent = currentPath ?: return@TextButton
+                        val folderName = newFolderName.trim()
+                        isShowingNewFolderPrompt = false
+                        coroutineScope.launch {
+                            isCreatingFolder = true
+                            runCatching { onCreateProjectDirectory(parent, folderName) }
+                                .onSuccess { createdPath -> onSelectFolder(createdPath) }
+                                .onFailure { error ->
+                                    errorMessage = error.message ?: "Could not create folder."
+                                }
+                            isCreatingFolder = false
+                        }
+                    },
+                ) {
+                    if (isCreatingFolder) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Create")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isCreatingFolder,
+                    onClick = { isShowingNewFolderPrompt = false },
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = chrome.mutedSurface,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 11.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Search,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = chrome.tertiaryText,
+            )
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = chrome.titleText),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                decorationBox = { innerTextField ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) {
+                            Text(
+                                text = "Search folders",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = chrome.tertiaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+            )
+            if (query.isNotEmpty()) {
+                IconButton(
+                    modifier = Modifier.size(24.dp),
+                    onClick = { onQueryChange("") },
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Cancel,
+                        contentDescription = "Clear search",
+                        modifier = Modifier.size(16.dp),
+                        tint = chrome.tertiaryText,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderSection(
+    title: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        title?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelMedium,
+                color = chrome.secondaryText,
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = chrome.panelSurface,
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderBrowserRows(
+    parentPath: String?,
+    entries: List<RemodexProjectDirectoryEntry>,
+    isLoading: Boolean,
+    onOpenFolder: (String) -> Unit,
+) {
+    parentPath?.let { parent ->
+        SidebarLocalFolderEntryRow(
+            iconSystemName = "arrow.uturn.left",
+            title = "Parent Folder",
+            subtitle = parent,
+            onClick = { onOpenFolder(parent) },
+        )
+        SidebarLocalFolderDivider(visible = true)
+    }
+    when {
+        isLoading -> SidebarLocalFolderStatusRow("Loading")
+        entries.isEmpty() -> SidebarLocalFolderTextRow("No child folders here.")
+        else -> entries.forEachIndexed { index, entry ->
+            SidebarLocalFolderEntryRow(
+                iconSystemName = if (entry.isSymlink) "folder.badge.gearshape" else "folder",
+                title = entry.name,
+                subtitle = entry.path,
+                onClick = { onOpenFolder(entry.path) },
+            )
+            SidebarLocalFolderDivider(visible = index < entries.lastIndex)
+        }
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderSearchRows(
+    searchResults: List<RemodexProjectDirectoryEntry>,
+    searchErrorMessage: String?,
+    isSearching: Boolean,
+    onOpenFolder: (String) -> Unit,
+) {
+    when {
+        isSearching -> SidebarLocalFolderStatusRow("Searching folders...")
+        searchErrorMessage != null -> SidebarLocalFolderTextRow(
+            text = searchErrorMessage,
+            isError = true,
+        )
+        searchResults.isEmpty() -> SidebarLocalFolderTextRow("No matching folders under this folder.")
+        else -> searchResults.forEachIndexed { index, entry ->
+            SidebarLocalFolderEntryRow(
+                iconSystemName = if (entry.isSymlink) "folder.badge.gearshape" else "folder",
+                title = entry.name,
+                subtitle = entry.path,
+                onClick = { onOpenFolder(entry.path) },
+            )
+            SidebarLocalFolderDivider(visible = index < searchResults.lastIndex)
+        }
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderDivider(visible: Boolean) {
+    if (!visible) {
+        return
+    }
+    val chrome = remodexConversationChrome()
+    HorizontalDivider(
+        color = chrome.subtleBorder,
+        modifier = Modifier.padding(start = 48.dp, end = 0.dp),
+    )
+}
+
+@Composable
+private fun SidebarLocalFolderStatusRow(text: String) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = chrome.secondaryText,
+        )
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderTextRow(
+    text: String,
+    isError: Boolean = false,
+) {
+    val chrome = remodexConversationChrome()
+    Text(
+        text = text,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (isError) MaterialTheme.colorScheme.error else chrome.secondaryText,
+    )
+}
+
+@Composable
+private fun SidebarLocalFolderEntryRow(
+    iconSystemName: String,
+    title: String,
+    subtitle: String,
+    onClick: (() -> Unit)?,
+) {
+    val chrome = remodexConversationChrome()
+    val rowModifier = if (onClick != null) {
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                role = Role.Button,
+                onClick = onClick,
+            )
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Row(
+        modifier = rowModifier
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier.width(22.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            SidebarSymbolIcon(
+                symbolName = iconSystemName,
+                tint = chrome.secondaryText,
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                ),
+                color = chrome.secondaryText,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (onClick != null) {
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(16.dp),
+                tint = chrome.tertiaryText,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SidebarLocalFolderBottomActionBar(
+    currentPath: String?,
+    isEnabled: Boolean,
+    onUseFolder: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = chrome.panelSurfaceStrong,
+    ) {
+        Column {
+            HorizontalDivider(color = chrome.subtleBorder)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    modifier = Modifier.width(22.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    SidebarSymbolIcon(
+                        symbolName = "folder.fill",
+                        tint = if (currentPath == null) chrome.tertiaryText else chrome.secondaryText,
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = currentPath?.let(::localFolderDisplayName) ?: "No folder selected",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (currentPath == null) chrome.secondaryText else chrome.titleText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = currentPath ?: "Choose a folder to start a chat.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = chrome.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Button(
+                    enabled = isEnabled,
+                    onClick = onUseFolder,
+                ) {
+                    Text("Use Folder")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SidebarNewChatProjectRow(
     label: String,
     iconSystemName: String,
@@ -838,6 +1516,68 @@ private fun SidebarNewChatProjectRow(
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+private fun SidebarNewChatActionRow(
+    iconSystemName: String,
+    title: String,
+    subtitle: String?,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val chrome = remodexConversationChrome()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.4f)
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = if (subtitle == null) Alignment.CenterVertically else Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier.width(22.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            SidebarSymbolIcon(
+                symbolName = iconSystemName,
+                tint = chrome.secondaryText,
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = chrome.titleText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            subtitle?.let { value ->
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = chrome.secondaryText,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Icon(
+            imageVector = Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = chrome.tertiaryText,
         )
     }
 }
@@ -894,43 +1634,16 @@ private fun SidebarNewChatCloudCard(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(20.dp),
         color = chrome.panelSurface,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .alpha(if (enabled) 1f else 0.4f)
-                .combinedClickable(
-                    enabled = enabled,
-                    role = Role.Button,
-                    onClick = onClick,
-                )
-                .padding(horizontal = 18.dp, vertical = 18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                imageVector = sidebarSymbolImageVector("cloud"),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Column(
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = "Cloud",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = "Start a chat without a local working directory.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = chrome.secondaryText,
-                )
-            }
-        }
+        SidebarNewChatActionRow(
+            iconSystemName = "cloud",
+            title = "Cloud",
+            subtitle = "Start a chat without a working directory.",
+            enabled = enabled,
+            onClick = onClick,
+        )
     }
 }
 
@@ -1890,12 +2603,64 @@ private fun SidebarSymbolIcon(
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
 ) {
+    if (symbolName == "folder.badge.plus") {
+        SidebarFolderBadgeIcon(
+            tint = tint,
+            badgeIcon = Icons.Outlined.Add,
+            modifier = modifier,
+            contentDescription = contentDescription,
+        )
+        return
+    }
+    if (symbolName == "folder.badge.gearshape") {
+        SidebarFolderBadgeIcon(
+            tint = tint,
+            badgeIcon = Icons.Filled.Settings,
+            modifier = modifier,
+            contentDescription = contentDescription,
+        )
+        return
+    }
     Icon(
         imageVector = sidebarSymbolImageVector(symbolName),
         contentDescription = contentDescription,
         tint = tint,
         modifier = modifier,
     )
+}
+
+@Composable
+private fun SidebarFolderBadgeIcon(
+    tint: Color,
+    badgeIcon: ImageVector,
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null,
+) {
+    Box(
+        modifier = modifier.size(22.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Folder,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(19.dp),
+        )
+        Surface(
+            modifier = Modifier
+                .size(10.dp)
+                .align(Alignment.BottomEnd),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Icon(
+                imageVector = badgeIcon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.padding(1.dp),
+            )
+        }
+    }
 }
 
 private fun sidebarSymbolImageVector(symbolName: String): ImageVector {
@@ -1906,8 +2671,20 @@ private fun sidebarSymbolImageVector(symbolName: String): ImageVector {
         "magnifyingglass" -> Icons.Outlined.Search
         "gearshape.fill" -> Icons.Filled.Settings
         "cloud" -> Icons.Outlined.Cloud
+        "folder.badge.plus" -> Icons.Outlined.Add
+        "folder" -> Icons.Outlined.Folder
+        "folder.fill" -> Icons.Outlined.Folder
+        "folder.badge.gearshape" -> Icons.Outlined.Folder
+        "arrow.uturn.left" -> Icons.AutoMirrored.Outlined.ArrowBack
         else -> Icons.Outlined.Folder
     }
+}
+
+private fun localFolderDisplayName(path: String): String {
+    val normalized = path.trimEnd('/', '\\')
+    val lastSeparatorIndex = maxOf(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+    val name = if (lastSeparatorIndex >= 0) normalized.substring(lastSeparatorIndex + 1) else normalized
+    return name.ifBlank { path }
 }
 
 private fun rootThreads(threads: List<RemodexThreadSummary>): List<RemodexThreadSummary> {

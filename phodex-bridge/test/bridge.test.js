@@ -37,6 +37,21 @@ test("hasRelayConnectionGoneStale returns false for fresh or missing activity ti
   assert.equal(hasRelayConnectionGoneStale(Number.NaN), false);
 });
 
+test("hasRelayConnectionGoneStale default threshold tolerates a full quiet minute", () => {
+  assert.equal(
+    hasRelayConnectionGoneStale(1_000, {
+      now: 61_000,
+    }),
+    false
+  );
+  assert.equal(
+    hasRelayConnectionGoneStale(1_000, {
+      now: 72_000,
+    }),
+    true
+  );
+});
+
 test("buildHeartbeatBridgeStatus downgrades stale connected snapshots", () => {
   assert.deepEqual(
     buildHeartbeatBridgeStatus(

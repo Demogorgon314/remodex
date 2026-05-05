@@ -57,6 +57,9 @@ import com.emanueledipietro.remodex.model.RemodexPlanStep
 import com.emanueledipietro.remodex.model.RemodexPlanStepStatus
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryEntry
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryListing
+import com.emanueledipietro.remodex.model.RemodexProjectLocation
 import com.emanueledipietro.remodex.model.RemodexReasoningEffortOption
 import com.emanueledipietro.remodex.model.RemodexRequestedPermissions
 import com.emanueledipietro.remodex.model.RemodexRevertApplyResult
@@ -2264,11 +2267,79 @@ class BridgeThreadSyncService(
         )
     }
 
+    override suspend fun loadGitBranchesForProject(projectPath: String): RemodexGitBranches {
+        val resultObject = runGitRequestForProjectPath(
+            projectPath = projectPath,
+            method = "git/branchesWithStatus",
+        ).result?.jsonObjectOrNull ?: return RemodexGitBranches()
+        return decodeGitBranches(resultObject)
+    }
+
     override suspend fun removeManagedWorktree(projectPath: String) {
         runGitRequestForProjectPath(
             projectPath = projectPath,
             method = "git/removeWorktree",
         )
+    }
+
+    override suspend fun fetchProjectQuickLocations(): List<RemodexProjectLocation> {
+        val locations = secureConnectionCoordinator.sendRequest(
+            method = "project/quickLocations",
+            params = buildJsonObject {},
+        ).result
+            ?.jsonObjectOrNull
+            ?.firstArray("locations")
+            .orEmpty()
+        return locations.mapNotNull(::decodeProjectLocation)
+    }
+
+    override suspend fun listProjectDirectory(path: String): RemodexProjectDirectoryListing {
+        val resultObject = secureConnectionCoordinator.sendRequest(
+            method = "project/listDirectory",
+            params = buildJsonObject {
+                put("path", JsonPrimitive(path))
+                put("limit", JsonPrimitive(200))
+            },
+        ).result?.jsonObjectOrNull
+            ?: throw IllegalStateException("project/listDirectory response missing entries.")
+        return RemodexProjectDirectoryListing(
+            path = resultObject.firstString("path").orEmpty(),
+            parentPath = resultObject.firstString("parentPath"),
+            entries = resultObject.firstArray("entries").orEmpty().mapNotNull(::decodeProjectDirectoryEntry),
+        )
+    }
+
+    override suspend fun searchProjectDirectories(
+        rootPath: String,
+        query: String,
+    ): List<RemodexProjectDirectoryEntry> {
+        val entries = secureConnectionCoordinator.sendRequest(
+            method = "project/searchDirectories",
+            params = buildJsonObject {
+                put("path", JsonPrimitive(rootPath))
+                put("query", JsonPrimitive(query))
+                put("limit", JsonPrimitive(80))
+            },
+        ).result
+            ?.jsonObjectOrNull
+            ?.firstArray("entries")
+            .orEmpty()
+        return entries.mapNotNull(::decodeProjectDirectoryEntry)
+    }
+
+    override suspend fun createProjectDirectory(
+        parentPath: String,
+        name: String,
+    ): String {
+        val resultObject = secureConnectionCoordinator.sendRequest(
+            method = "project/createDirectory",
+            params = buildJsonObject {
+                put("parentPath", JsonPrimitive(parentPath))
+                put("name", JsonPrimitive(name))
+            },
+        ).result?.jsonObjectOrNull
+            ?: throw IllegalStateException("project/createDirectory response missing path.")
+        return resultObject.firstString("path").orEmpty()
     }
 
     override suspend fun commitGitChanges(
@@ -2770,6 +2841,25 @@ class BridgeThreadSyncService(
             localCheckoutPath = resultObject.firstString("localCheckoutPath"),
             currentBranch = resultObject.firstString("current"),
             defaultBranch = resultObject.firstString("default"),
+        )
+    }
+
+    private fun decodeProjectLocation(value: JsonElement): RemodexProjectLocation? {
+        val locationObject = value.jsonObjectOrNull ?: return null
+        val id = locationObject.firstString("id")?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
+        val label = locationObject.firstString("label")?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
+        val path = locationObject.firstString("path")?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
+        return RemodexProjectLocation(id = id, label = label, path = path)
+    }
+
+    private fun decodeProjectDirectoryEntry(value: JsonElement): RemodexProjectDirectoryEntry? {
+        val entryObject = value.jsonObjectOrNull ?: return null
+        val name = entryObject.firstString("name")?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
+        val path = entryObject.firstString("path")?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
+        return RemodexProjectDirectoryEntry(
+            name = name,
+            path = path,
+            isSymlink = entryObject.firstBoolean("isSymlink") ?: false,
         )
     }
 

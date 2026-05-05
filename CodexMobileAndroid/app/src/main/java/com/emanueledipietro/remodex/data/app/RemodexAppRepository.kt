@@ -26,6 +26,9 @@ import com.emanueledipietro.remodex.model.RemodexGitRemoteUrl
 import com.emanueledipietro.remodex.model.RemodexGitState
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeChangeTransferMode
 import com.emanueledipietro.remodex.model.RemodexGitWorktreeResult
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryEntry
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryListing
+import com.emanueledipietro.remodex.model.RemodexProjectLocation
 import com.emanueledipietro.remodex.model.RemodexCommandExecutionDetails
 import com.emanueledipietro.remodex.model.RemodexAssistantResponseMetrics
 import com.emanueledipietro.remodex.model.RemodexAppUpdateStatus
@@ -78,6 +81,21 @@ interface RemodexAppRepository {
     ) {
         createThread(preferredProjectPath = preferredProjectPath, inheritRuntimeFromThreadId = inheritRuntimeFromThreadId)
     }
+
+    suspend fun fetchProjectQuickLocations(): List<RemodexProjectLocation> = emptyList()
+
+    suspend fun listProjectDirectory(path: String): RemodexProjectDirectoryListing =
+        RemodexProjectDirectoryListing(path = path, parentPath = null)
+
+    suspend fun searchProjectDirectories(
+        rootPath: String,
+        query: String,
+    ): List<RemodexProjectDirectoryEntry> = emptyList()
+
+    suspend fun createProjectDirectory(
+        parentPath: String,
+        name: String,
+    ): String = parentPath
 
     suspend fun renameThread(
         threadId: String,

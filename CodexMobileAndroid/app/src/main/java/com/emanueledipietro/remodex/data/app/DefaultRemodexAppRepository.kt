@@ -58,6 +58,9 @@ import com.emanueledipietro.remodex.model.RemodexModelOption
 import com.emanueledipietro.remodex.model.RemodexPlanningMode
 import com.emanueledipietro.remodex.model.RemodexPermissionGrantScope
 import com.emanueledipietro.remodex.model.RemodexPluginMetadata
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryEntry
+import com.emanueledipietro.remodex.model.RemodexProjectDirectoryListing
+import com.emanueledipietro.remodex.model.RemodexProjectLocation
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexQueuedDraftContext
 import com.emanueledipietro.remodex.model.RemodexGptAccountStatus
@@ -1476,15 +1479,62 @@ class DefaultRemodexAppRepository(
         inheritRuntimeFromThreadId: String?,
     ) {
         val normalizedProjectPath = preferredProjectPath.trim().takeIf(String::isNotEmpty) ?: return
+        val baseBranch = threadCommandService.loadGitBranchesForProject(normalizedProjectPath)
+            .defaultBranch
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: throw IllegalStateException("Could not determine a base branch for the new worktree chat.")
         val worktree = threadCommandService.createManagedWorktree(
             projectPath = normalizedProjectPath,
+            baseBranch = baseBranch,
             changeTransfer = RemodexGitWorktreeChangeTransferMode.NONE,
         )
-        createThread(
-            preferredProjectPath = worktree.worktreePath,
-            inheritRuntimeFromThreadId = inheritRuntimeFromThreadId,
-        )
+        try {
+            val runtimeDefaults = effectiveRuntimeDefaultsForNewThread(inheritRuntimeFromThreadId)
+            val createdThread = threadCommandService.createThread(
+                preferredProjectPath = worktree.worktreePath,
+                runtimeDefaults = runtimeDefaults,
+            )
+                ?: throw IllegalStateException("Could not create worktree chat.")
+            persistAssociatedManagedWorktreePathForThread(
+                threadId = createdThread.id,
+                projectPath = createdThread.projectPath,
+            )
+            inheritRuntimeFromThreadId?.let { sourceThreadId ->
+                inheritRuntimeOverride(
+                    sourceThreadId = sourceThreadId,
+                    destinationThreadId = createdThread.id,
+                )
+            }
+            refreshBaseThreadsLocallyFromSnapshots(
+                snapshots = listOf(createdThread),
+                preferredSelectedThreadIdOverride = createdThread.id,
+            )
+        } catch (error: Throwable) {
+            if (!worktree.alreadyExisted) {
+                runCatching { threadCommandService.removeManagedWorktree(worktree.worktreePath) }
+            }
+            throw error
+        }
     }
+
+    override suspend fun fetchProjectQuickLocations(): List<RemodexProjectLocation> =
+        threadCommandService.fetchProjectQuickLocations()
+
+    override suspend fun listProjectDirectory(path: String): RemodexProjectDirectoryListing =
+        threadCommandService.listProjectDirectory(path)
+
+    override suspend fun searchProjectDirectories(
+        rootPath: String,
+        query: String,
+    ): List<RemodexProjectDirectoryEntry> =
+        threadCommandService.searchProjectDirectories(rootPath = rootPath, query = query)
+
+    override suspend fun createProjectDirectory(
+        parentPath: String,
+        name: String,
+    ): String =
+        threadCommandService.createProjectDirectory(parentPath = parentPath, name = name)
 
     override suspend fun renameThread(
         threadId: String,

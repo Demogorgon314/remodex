@@ -1045,6 +1045,20 @@ class AppViewModel(
         }
     }
 
+    suspend fun fetchProjectQuickLocations() = repository.fetchProjectQuickLocations()
+
+    suspend fun listProjectDirectory(path: String) = repository.listProjectDirectory(path)
+
+    suspend fun searchProjectDirectories(
+        rootPath: String,
+        query: String,
+    ) = repository.searchProjectDirectories(rootPath = rootPath, query = query)
+
+    suspend fun createProjectDirectory(
+        parentPath: String,
+        name: String,
+    ) = repository.createProjectDirectory(parentPath = parentPath, name = name)
+
     private fun launchThreadCreation(
         onCreated: ((String?) -> Unit)? = null,
         failureMessage: String,
