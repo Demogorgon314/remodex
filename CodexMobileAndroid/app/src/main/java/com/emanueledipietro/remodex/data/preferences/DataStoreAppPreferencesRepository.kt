@@ -30,6 +30,7 @@ private val CollapsedProjectGroupIdsJsonKey = stringPreferencesKey("collapsed_pr
 private val CollapsedProjectGroupIdsByProfileJsonKey = stringPreferencesKey("collapsed_project_group_ids_by_profile_json")
 private val DeletedThreadIdsJsonKey = stringPreferencesKey("deleted_thread_ids_json")
 private val DeletedThreadIdsByProfileJsonKey = stringPreferencesKey("deleted_thread_ids_by_profile_json")
+private val RenamedThreadNamesByProfileJsonKey = stringPreferencesKey("renamed_thread_names_by_profile_json")
 private val AssociatedManagedWorktreePathsByProfileJsonKey =
     stringPreferencesKey("associated_managed_worktree_paths_by_profile_json")
 private val QueuedDraftsJsonKey = stringPreferencesKey("queued_drafts_json")
@@ -142,6 +143,36 @@ class DataStoreAppPreferencesRepository(
                 profileId = activeBridgeProfileId.value,
                 values = current,
             )
+        }
+    }
+
+    override suspend fun setThreadName(
+        threadId: String,
+        name: String?,
+    ) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            val profileId = normalizeProfileId(activeBridgeProfileId.value) ?: return@edit
+            val normalizedThreadId = threadId.trim()
+            if (normalizedThreadId.isEmpty()) {
+                return@edit
+            }
+            val current = preferences[RenamedThreadNamesByProfileJsonKey]
+                ?.let { raw -> json.decodeFromString<ProfileStringMapEnvelope>(raw).profiles }
+                ?.toMutableMap()
+                ?: mutableMapOf()
+            val perProfile = current[profileId]?.toMutableMap() ?: mutableMapOf()
+            val normalizedName = name?.trim().orEmpty()
+            if (normalizedName.isEmpty()) {
+                perProfile.remove(normalizedThreadId)
+            } else {
+                perProfile[normalizedThreadId] = normalizedName
+            }
+            if (perProfile.isEmpty()) {
+                current.remove(profileId)
+            } else {
+                current[profileId] = perProfile
+            }
+            preferences[RenamedThreadNamesByProfileJsonKey] = json.encodeToString(ProfileStringMapEnvelope(current))
         }
     }
 
@@ -314,6 +345,13 @@ class DataStoreAppPreferencesRepository(
         ) { raw ->
             json.decodeFromString<ProfileStringMapEnvelope>(raw).profiles
         }
+        val renamedThreadNames = profileNestedMapValue(
+            rawValue = preferences[RenamedThreadNamesByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = { emptyMap() },
+        ) { raw ->
+            json.decodeFromString<ProfileStringMapEnvelope>(raw).profiles
+        }
         val collapsedProjectGroupIds = profileMapValue(
             rawValue = preferences[CollapsedProjectGroupIdsByProfileJsonKey],
             profileId = normalizedProfileId,
@@ -367,6 +405,7 @@ class DataStoreAppPreferencesRepository(
             selectedThreadId = selectedThreadId,
             collapsedProjectGroupIds = collapsedProjectGroupIds,
             deletedThreadIds = deletedThreadIds,
+            renamedThreadNamesByThread = renamedThreadNames,
             associatedManagedWorktreePathsByThread = associatedManagedWorktreePaths,
             queuedDraftsByThread = queuedDrafts,
             runtimeOverridesByThread = runtimeOverrides,

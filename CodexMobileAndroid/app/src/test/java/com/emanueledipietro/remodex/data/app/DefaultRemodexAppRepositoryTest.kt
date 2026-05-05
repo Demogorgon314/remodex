@@ -1913,6 +1913,131 @@ class DefaultRemodexAppRepositoryTest {
     }
 
     @Test
+    fun `sync preserves cached generated thread name when live snapshot reports placeholder name`() = runTest {
+        val cacheStore = InMemoryThreadCacheStore(
+            initialThreads = listOf(
+                CachedThreadRecord(
+                    id = "generated-title-thread",
+                    title = "Generated Android Title",
+                    name = "Generated Android Title",
+                    preview = "Cached generated title",
+                    projectPath = "/tmp/remodex",
+                    lastUpdatedLabel = "Updated just now",
+                    lastUpdatedEpochMs = 1_000L,
+                    isRunning = false,
+                    runtimeConfig = RemodexRuntimeConfig(),
+                    timelineItems = emptyList(),
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = FakeThreadSyncService(
+                initialThreads = listOf(
+                    ThreadSyncSnapshot(
+                        id = "generated-title-thread",
+                        title = "Conversation",
+                        name = "Conversation",
+                        preview = "Cached generated title",
+                        projectPath = "/tmp/remodex",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 2_000L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            ),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        val thread = repository.session.value.threads.firstOrNull()
+        assertEquals("Generated Android Title", thread?.name)
+        assertEquals("Generated Android Title", thread?.title)
+        assertEquals("Generated Android Title", thread?.displayTitle)
+    }
+
+    @Test
+    fun `rename writes thread cache before next sync refresh`() = runTest {
+        val cacheStore = InMemoryThreadCacheStore()
+        val syncService = FakeThreadSyncService(
+            initialThreads = listOf(
+                testThreadSnapshot(
+                    id = "rename-cache-thread",
+                    title = "Conversation",
+                    projectPath = "/tmp/remodex",
+                    lastUpdatedEpochMs = 1_000L,
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            syncService = syncService,
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        repository.renameThread("rename-cache-thread", "Persisted Before Sync")
+        advanceUntilIdle()
+
+        assertEquals(
+            "Persisted Before Sync",
+            cacheStore.peekThreads().firstOrNull { it.id == "rename-cache-thread" }?.name,
+        )
+
+        val recreatedRepository = createRepository(
+            scope = backgroundScope,
+            syncService = FakeThreadSyncService(initialThreads = emptyList()),
+            threadCacheStore = cacheStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "Persisted Before Sync",
+            recreatedRepository.session.value.threads.firstOrNull { it.id == "rename-cache-thread" }?.displayTitle,
+        )
+    }
+
+    @Test
+    fun `persisted thread name survives empty room cache when sync returns placeholder title`() = runTest {
+        val preferencesRepository = TestAppPreferencesRepository(
+            initialPreferences = AppPreferences(
+                renamedThreadNamesByThread = mapOf(
+                    "renamed-thread" to "Persisted DataStore Title",
+                ),
+            ),
+        )
+        val repository = createRepository(
+            scope = backgroundScope,
+            preferencesRepository = preferencesRepository,
+            syncService = FakeThreadSyncService(
+                initialThreads = listOf(
+                    ThreadSyncSnapshot(
+                        id = "renamed-thread",
+                        title = "Conversation",
+                        name = "Conversation",
+                        preview = "Remote placeholder",
+                        projectPath = "/tmp/remodex",
+                        lastUpdatedLabel = "Updated just now",
+                        lastUpdatedEpochMs = 2_000L,
+                        isRunning = false,
+                        runtimeConfig = RemodexRuntimeConfig(),
+                        timelineMutations = emptyList(),
+                    ),
+                ),
+            ),
+            threadCacheStore = InMemoryThreadCacheStore(),
+        )
+        advanceUntilIdle()
+
+        val thread = repository.session.value.threads.firstOrNull()
+        assertEquals("Persisted DataStore Title", thread?.name)
+        assertEquals("Persisted DataStore Title", thread?.title)
+        assertEquals("Persisted DataStore Title", thread?.displayTitle)
+    }
+
+    @Test
     fun `persisted associated managed worktree path restores thread without timeline hint`() = runTest {
         val worktreePath = "/Users/wangkai/.codex/worktrees/e12e/remodex"
         val preferencesRepository = TestAppPreferencesRepository(
@@ -3198,6 +3323,21 @@ class DefaultRemodexAppRepositoryTest {
                 }
             }
             backingState.value = backingState.value.copy(deletedThreadIds = updatedDeletedThreadIds)
+        }
+
+        override suspend fun setThreadName(
+            threadId: String,
+            name: String?,
+        ) {
+            val updatedNames = backingState.value.renamedThreadNamesByThread.toMutableMap().apply {
+                val normalizedName = name?.trim().orEmpty()
+                if (normalizedName.isEmpty()) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = normalizedName
+                }
+            }
+            backingState.value = backingState.value.copy(renamedThreadNamesByThread = updatedNames)
         }
 
         override suspend fun setAssociatedManagedWorktreePath(

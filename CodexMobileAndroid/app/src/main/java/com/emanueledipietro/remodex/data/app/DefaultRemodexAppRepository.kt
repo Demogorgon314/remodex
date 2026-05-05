@@ -184,6 +184,7 @@ class DefaultRemodexAppRepository(
             .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs)
             .map(CachedThreadRecord::toBaseThreadSummary)
             .map { thread -> thread.applyAssociatedManagedWorktreePreference(initialPreferences) }
+            .map { thread -> thread.applyPersistedThreadName(initialPreferences) }
         val cachedThreadsById = cachedThreads.associateBy(RemodexThreadSummary::id)
         val syncedThreads = threadSyncService.threads.value
             .map { snapshot -> snapshot.toCachedThreadRecord(projectThreadTimelineItems(snapshot)) }
@@ -198,6 +199,7 @@ class DefaultRemodexAppRepository(
                         )
                 } ?: syncedThread
             }
+            .map { thread -> thread.applyPersistedThreadName(initialPreferences) }
         buildList {
             addAll(syncedThreads)
             addAll(cachedThreads.filterNot { cachedThread ->
@@ -1315,6 +1317,12 @@ class DefaultRemodexAppRepository(
             threadId = normalizedThreadId,
             deleted = deleted,
         )
+        if (deleted) {
+            appPreferencesRepository.setThreadName(
+                threadId = normalizedThreadId,
+                name = null,
+            )
+        }
         val updatedDeletedThreadIds = preferencesState.value.deletedThreadIds.toMutableSet().apply {
             if (deleted) {
                 add(normalizedThreadId)
@@ -1322,9 +1330,15 @@ class DefaultRemodexAppRepository(
                 remove(normalizedThreadId)
             }
         }
+        val updatedRenamedThreadNames = preferencesState.value.renamedThreadNamesByThread.toMutableMap().apply {
+            if (deleted) {
+                remove(normalizedThreadId)
+            }
+        }
         applyPreferencesLocally(
             preferencesState.value.copy(
                 deletedThreadIds = updatedDeletedThreadIds,
+                renamedThreadNamesByThread = updatedRenamedThreadNames,
             ),
         )
     }
@@ -1553,6 +1567,17 @@ class DefaultRemodexAppRepository(
                 }
             },
         )
+        scheduleThreadCacheWrite(
+            cachedThreads = baseThreadsState.value
+                .map(RemodexThreadSummary::toCachedThreadRecord)
+                .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs),
+            debounce = false,
+        )
+        preferencesState.value = preferencesState.value.copy(
+            renamedThreadNamesByThread = preferencesState.value.renamedThreadNamesByThread +
+                (threadId to trimmedName),
+        )
+        appPreferencesRepository.setThreadName(threadId, trimmedName)
         threadCommandService.renameThread(threadId, trimmedName)
     }
 
@@ -2717,6 +2742,7 @@ class DefaultRemodexAppRepository(
             baseThreads = projected.mergedBaseThreads,
             deferThreadListUpdate = shouldDeferThreadListUpdate,
         )
+        persistThreadNamesFromThreads(projected.mergedBaseThreads)
         scheduleThreadCacheWrite(
             cachedThreads = projected.mergedBaseThreads
                 .map(RemodexThreadSummary::toCachedThreadRecord)
@@ -3539,7 +3565,34 @@ class DefaultRemodexAppRepository(
         }
         return mergedById.values
             .map { thread -> thread.applyAssociatedManagedWorktreePreference(preferencesState.value) }
+            .map { thread -> thread.applyPersistedThreadName(preferencesState.value) }
             .toList()
+    }
+
+    private fun persistThreadNamesFromThreads(threads: List<RemodexThreadSummary>) {
+        val nextNames = threads
+            .mapNotNull { thread ->
+                val name = thread.name?.trim()?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+                if (RemodexThreadSummary.isGenericPlaceholderTitle(name)) {
+                    return@mapNotNull null
+                }
+                thread.id to name
+            }
+            .toMap()
+        val changedNames = nextNames.filter { (threadId, name) ->
+            preferencesState.value.renamedThreadNamesByThread[threadId] != name
+        }
+        if (changedNames.isEmpty()) {
+            return
+        }
+        preferencesState.value = preferencesState.value.copy(
+            renamedThreadNamesByThread = preferencesState.value.renamedThreadNamesByThread + changedNames,
+        )
+        changedNames.forEach { (threadId, name) ->
+            repositoryScope.launch {
+                appPreferencesRepository.setThreadName(threadId, name)
+            }
+        }
     }
 
     private fun logRecovery(message: String) {
@@ -3612,11 +3665,27 @@ private fun RemodexThreadSummary.withPersistentLocalThreadName(
     localThread: RemodexThreadSummary,
 ): RemodexThreadSummary {
     val syncedName = name?.trim()?.takeIf(String::isNotEmpty)
-    if (syncedName != null) {
+    if (syncedName != null && !RemodexThreadSummary.isGenericPlaceholderTitle(syncedName)) {
         return this
     }
     val localName = localThread.name?.trim()?.takeIf(String::isNotEmpty) ?: return this
+    if (RemodexThreadSummary.isGenericPlaceholderTitle(localName)) {
+        return this
+    }
     return copy(title = localName, name = localName)
+}
+
+private fun RemodexThreadSummary.applyPersistedThreadName(
+    preferences: AppPreferences,
+): RemodexThreadSummary {
+    val persistedName = preferences.renamedThreadNamesByThread[id]
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: return this
+    if (RemodexThreadSummary.isGenericPlaceholderTitle(persistedName)) {
+        return this
+    }
+    return copy(title = persistedName, name = persistedName)
 }
 
 private const val ThreadCacheStreamingWriteDebounceMs = 120L

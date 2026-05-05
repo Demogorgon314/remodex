@@ -31,6 +31,11 @@ interface AppPreferencesRepository {
         deleted: Boolean,
     )
 
+    suspend fun setThreadName(
+        threadId: String,
+        name: String?,
+    )
+
     suspend fun setAssociatedManagedWorktreePath(
         threadId: String,
         projectPath: String?,
