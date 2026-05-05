@@ -2381,6 +2381,7 @@ class AppViewModel(
                         threadId = threadId,
                         message = "There are no repository changes to show.",
                     )
+                    refreshGitState(threadId)
                 }
             } catch (error: Throwable) {
                 showGitSyncAlert(
