@@ -959,14 +959,9 @@ private fun SettingsButton(
     enabled: Boolean = true,
 ) {
     val containerColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
-        MaterialTheme.colorScheme.error.copy(alpha = 0.07f)
+        MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
     } else {
-        MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.9f)
-    }
-    val borderColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
-        MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
-    } else {
-        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.95f)
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
     }
     val contentColor = if (role == SettingsButtonRole.DESTRUCTIVE) {
         MaterialTheme.colorScheme.error
@@ -976,23 +971,20 @@ private fun SettingsButton(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(10.dp),
         color = containerColor,
-        border = BorderStroke(
-            width = 1.dp,
-            color = borderColor,
-        ),
+        border = null,
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(enabled = enabled, onClick = onClick)
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 color = if (enabled) contentColor else contentColor.copy(alpha = 0.55f),
             )
