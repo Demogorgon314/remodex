@@ -81,6 +81,7 @@ data class RemodexGitState(
     val sync: RemodexGitRepoSync? = null,
     val branches: RemodexGitBranches = RemodexGitBranches(),
     val isLoading: Boolean = false,
+    val isSwitchingBranch: Boolean = false,
     val lastActionMessage: String? = null,
     val errorMessage: String? = null,
 ) {

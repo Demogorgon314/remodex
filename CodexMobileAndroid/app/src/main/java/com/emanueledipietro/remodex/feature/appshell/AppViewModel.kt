@@ -100,6 +100,7 @@ data class ComposerUiState(
     val sendLabel: String = "Send",
     val canSend: Boolean = false,
     val canStop: Boolean = false,
+    val isStartingRun: Boolean = false,
     val voice: ComposerVoiceUiState = ComposerVoiceUiState(),
     val mentionedFiles: List<RemodexComposerMentionedFile> = emptyList(),
     val mentionedSkills: List<RemodexComposerMentionedSkill> = emptyList(),
@@ -226,6 +227,7 @@ private data class BaseUiOverlayState(
     val sendSignalsByThread: Map<String, ComposerSendUiSignals>,
     val planSessionsByThread: Map<String, PlanComposerSessionUiState>,
     val voiceUiState: ComposerVoiceUiState,
+    val sendingThreadIds: Set<String>,
     val creatingGitWorktreeThreadIds: Set<String>,
     val isAppForeground: Boolean,
     val dismissedApprovalBannerRequestIds: Set<String>,
@@ -403,6 +405,7 @@ class AppViewModel(
     private val completionHapticSignalState = MutableStateFlow(0L)
     private val composerSendUiSignals = MutableStateFlow<Map<String, ComposerSendUiSignals>>(emptyMap())
     private val planComposerSessions = MutableStateFlow<Map<String, PlanComposerSessionUiState>>(emptyMap())
+    private val sendingThreadIdsState = MutableStateFlow<Set<String>>(emptySet())
     private val voiceButtonModeState = MutableStateFlow(ComposerVoiceButtonMode.IDLE)
     private val isCreatingThreadState = MutableStateFlow(false)
     private val creatingGitWorktreeThreadIdsState = MutableStateFlow<Set<String>>(emptySet())
@@ -572,21 +575,30 @@ class AppViewModel(
             )
         }
 
+    private val composerBusyThreadState =
+        combine(
+            sendingThreadIdsState,
+            creatingGitWorktreeThreadIdsState,
+        ) { sendingThreadIds, creatingGitWorktreeThreadIds ->
+            sendingThreadIds to creatingGitWorktreeThreadIds
+        }
+
     private val baseUiOverlayState =
         combine(
             baseUiTransientState,
             voiceUiRenderState,
-            creatingGitWorktreeThreadIdsState,
+            composerBusyThreadState,
             isAppForegroundState,
             dismissedApprovalBannerRequestIdsState,
-        ) { transientState, voiceUiState, creatingGitWorktreeThreadIds, isAppForeground, dismissedApprovalBannerRequestIds ->
+        ) { transientState, voiceUiState, busyThreadState, isAppForeground, dismissedApprovalBannerRequestIds ->
             val (gitUiState, sendSignalsByThread, planSessionsByThread) = transientState
             BaseUiOverlayState(
                 gitUiState = gitUiState,
                 sendSignalsByThread = sendSignalsByThread,
                 planSessionsByThread = planSessionsByThread,
                 voiceUiState = voiceUiState,
-                creatingGitWorktreeThreadIds = creatingGitWorktreeThreadIds,
+                sendingThreadIds = busyThreadState.first,
+                creatingGitWorktreeThreadIds = busyThreadState.second,
                 isAppForeground = isAppForeground,
                 dismissedApprovalBannerRequestIds = dismissedApprovalBannerRequestIds,
             )
@@ -679,6 +691,7 @@ class AppViewModel(
                     isConnected = snapshot.connectionStatus.phase == RemodexConnectionPhase.CONNECTED,
                     gitState = gitState,
                     selectedGitBaseBranch = selectedGitBaseBranch,
+                    isSending = selectedThread?.id?.let(overlayState.sendingThreadIds::contains) == true,
                     thread = selectedThread,
                 ),
                 planComposerSession = selectedThread?.id?.let(overlayState.planSessionsByThread::get),
@@ -1263,6 +1276,7 @@ class AppViewModel(
                 bumpComposerSendDismissSignal(threadId)
                 bumpComposerSendAnchorSignal(threadId)
                 clearComposer(threadId)
+                setComposerSendInFlight(threadId = threadId, isInFlight = true)
                 try {
                     repository.startCodeReview(
                         threadId = threadId,
@@ -1278,6 +1292,8 @@ class AppViewModel(
                         threadId = threadId,
                         message = error.message ?: "Could not start this code review.",
                     )
+                } finally {
+                    setComposerSendInFlight(threadId = threadId, isInFlight = false)
                 }
                 return@launch
             }
@@ -1320,6 +1336,7 @@ class AppViewModel(
                 bumpComposerSendDismissSignal(threadId)
                 bumpComposerSendAnchorSignal(threadId)
                 clearComposer(threadId)
+                setComposerSendInFlight(threadId = threadId, isInFlight = true)
                 try {
                     repository.compactThread(threadId)
                 } catch (error: Throwable) {
@@ -1331,6 +1348,8 @@ class AppViewModel(
                         threadId = threadId,
                         message = error.message ?: "Could not compact this thread.",
                     )
+                } finally {
+                    setComposerSendInFlight(threadId = threadId, isInFlight = false)
                 }
                 return@launch
             }
@@ -1393,6 +1412,7 @@ class AppViewModel(
             bumpComposerSendDismissSignal(threadId)
             bumpComposerSendAnchorSignal(threadId)
             clearComposer(threadId)
+            setComposerSendInFlight(threadId = threadId, isInFlight = true)
             try {
                 repository.sendPrompt(
                     threadId = threadId,
@@ -1419,6 +1439,8 @@ class AppViewModel(
                     threadId = threadId,
                     message = error.message ?: "Could not send this message.",
                 )
+            } finally {
+                setComposerSendInFlight(threadId = threadId, isInFlight = false)
             }
         }
     }
@@ -3810,7 +3832,9 @@ class AppViewModel(
 
     private fun refreshGitState(threadId: String) {
         viewModelScope.launch {
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
+            updateGitState(threadId) {
+                it.copy(isLoading = true, isSwitchingBranch = false, errorMessage = null)
+            }
             runCatching { repository.loadGitState(threadId) }
                 .onSuccess { nextState ->
                     selectedGitBaseBranchByThread.update { branchesByThread ->
@@ -3829,6 +3853,7 @@ class AppViewModel(
                     updateGitState(threadId) { currentState ->
                         currentState.copy(
                             isLoading = false,
+                            isSwitchingBranch = false,
                             errorMessage = null,
                         )
                     }
@@ -4381,6 +4406,7 @@ class AppViewModel(
                     threadId = threadId,
                     title = "Branch Creation Failed",
                     fallbackMessage = "Could not create branch.",
+                    isSwitchingBranch = true,
                 ) {
                     repository.createGitBranch(threadId, operation.branchName)
                 }
@@ -4390,6 +4416,7 @@ class AppViewModel(
                     threadId = threadId,
                     title = "Branch Switch Failed",
                     fallbackMessage = "Could not switch branch.",
+                    isSwitchingBranch = true,
                 ) {
                     repository.checkoutGitBranch(threadId, operation.branchName)
                 }
@@ -4489,6 +4516,7 @@ class AppViewModel(
         }
         return !selectedThread.isRunning &&
             !uiState.value.composer.gitState.isLoading &&
+            !uiState.value.composer.gitState.isSwitchingBranch &&
             !uiState.value.isCreatingGitWorktree
     }
 
@@ -4499,6 +4527,21 @@ class AppViewModel(
         creatingGitWorktreeThreadIdsState.update { threadIds ->
             threadIds.toMutableSet().apply {
                 if (isInProgress) {
+                    add(threadId)
+                } else {
+                    remove(threadId)
+                }
+            }
+        }
+    }
+
+    private fun setComposerSendInFlight(
+        threadId: String,
+        isInFlight: Boolean,
+    ) {
+        sendingThreadIdsState.update { threadIds ->
+            threadIds.toMutableSet().apply {
+                if (isInFlight) {
                     add(threadId)
                 } else {
                     remove(threadId)
@@ -4655,21 +4698,29 @@ class AppViewModel(
         threadId: String,
         title: String,
         fallbackMessage: String,
+        isSwitchingBranch: Boolean = false,
         action: suspend () -> RemodexGitState,
     ) {
         viewModelScope.launch {
             clearGitSyncAlert(threadId)
-            updateGitState(threadId) { currentState -> currentState.copy(isLoading = true, errorMessage = null) }
+            updateGitState(threadId) {
+                it.copy(
+                    isLoading = true,
+                    isSwitchingBranch = isSwitchingBranch,
+                    errorMessage = null,
+                )
+            }
             runCatching { action() }
                 .onSuccess { nextState ->
                     updateGitState(threadId) {
-                        nextState.copy(errorMessage = null)
+                        nextState.copy(isSwitchingBranch = false, errorMessage = null)
                     }
                 }
                 .onFailure { error ->
                     updateGitState(threadId) { currentState ->
                         currentState.copy(
                             isLoading = false,
+                            isSwitchingBranch = false,
                             errorMessage = null,
                         )
                     }
@@ -5039,12 +5090,14 @@ class AppViewModel(
         isConnected: Boolean,
         gitState: RemodexGitState,
         selectedGitBaseBranch: String,
+        isSending: Boolean,
         thread: RemodexThreadSummary?,
     ): ComposerUiState {
         if (thread == null) {
             return ComposerUiState()
         }
         val showsRunningUi = thread.isRunning
+        val isStartingRun = showsRunningUi && isSending && thread.activeTurnId.isNullOrBlank()
         val hasConfirmedReviewSelection = reviewSelection?.request != null
         val hasPendingReviewSelection = false
         val hasComposerDraftContent = draftText.isNotBlank() ||
@@ -5070,6 +5123,7 @@ class AppViewModel(
             },
             canSend = canSend,
             canStop = showsRunningUi,
+            isStartingRun = isStartingRun,
             voice = voiceUiState.copy(isConnected = isConnected),
             mentionedFiles = mentionedFiles,
             mentionedSkills = mentionedSkills,

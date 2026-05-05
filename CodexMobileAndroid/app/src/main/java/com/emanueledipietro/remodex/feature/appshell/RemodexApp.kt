@@ -2305,6 +2305,8 @@ private fun ShellTopBarGitActionsButton(
                     Icon(
                         painter = painterResource(id = R.drawable.ic_cloud_upload),
                         contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = menuIconColor,
                     )
                 },
                 enabled = isEnabled && onCommitAndPushGitChanges != null,
@@ -2319,6 +2321,8 @@ private fun ShellTopBarGitActionsButton(
                     Icon(
                         painter = painterResource(id = R.drawable.ic_github_invertocat_black),
                         contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = menuIconColor,
                     )
                 },
                 enabled = isEnabled && canCreatePullRequest && onCreatePullRequest != null,

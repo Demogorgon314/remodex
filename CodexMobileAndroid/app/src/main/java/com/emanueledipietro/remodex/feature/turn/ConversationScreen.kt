@@ -4966,6 +4966,60 @@ private fun ComposerSecondaryBar(
                     }
                 }
 
+                if (showsGitBranchSelector) {
+                    Box(
+                        modifier = Modifier.widthIn(max = branchPillMaxWidth),
+                    ) {
+                        SecondaryBarPill(
+                            onClick = { branchMenuState.onTriggerClick() },
+                            enabled = branchSelectorEnabled,
+                            hapticOnClick = true,
+                        ) {
+                            RemodexGitBranchGlyph(
+                                color = chrome.secondaryText,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = branchLabel,
+                                modifier = Modifier.weight(1f, fill = false),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                color = chrome.secondaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            RuntimeSelectorChevron()
+                        }
+                        GitBranchPickerPopover(
+                            expanded = branchMenuState.expanded,
+                            mode = GitBranchPickerMode.CHECKOUT,
+                            gitState = gitState,
+                            selectedBaseBranch = selectedGitBaseBranch,
+                            onDismiss = branchMenuState::onDismissRequest,
+                            onSelectBaseBranch = { branch ->
+                                branchMenuState.collapse()
+                                onSelectGitBaseBranch(branch)
+                            },
+                            onRefresh = onRefreshGitState,
+                            onCheckoutBranch = { branch ->
+                                branchMenuState.collapse()
+                                onCheckoutGitBranch(branch)
+                            },
+                            onCreateBranch = { branch ->
+                                branchMenuState.collapse()
+                                onCreateGitBranch(branch)
+                            },
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
                 Box {
                     SecondaryBarPill(
                         onClick = { accessMenuState.onTriggerClick() },
@@ -5003,64 +5057,6 @@ private fun ComposerSecondaryBar(
                                 },
                             )
                         }
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End,
-            ) {
-                if (showsGitBranchSelector) {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .weight(1f, fill = false)
-                            .widthIn(max = branchPillMaxWidth),
-                    ) {
-                        SecondaryBarPill(
-                            onClick = { branchMenuState.onTriggerClick() },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = branchSelectorEnabled,
-                            hapticOnClick = true,
-                        ) {
-                            RemodexGitBranchGlyph(
-                                color = chrome.secondaryText,
-                                modifier = Modifier.size(12.dp),
-                            )
-                            Text(
-                                text = branchLabel,
-                                modifier = Modifier.weight(1f, fill = false),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Medium,
-                                color = chrome.secondaryText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            RuntimeSelectorChevron()
-                        }
-                        GitBranchPickerPopover(
-                            expanded = branchMenuState.expanded,
-                            mode = GitBranchPickerMode.CHECKOUT,
-                            gitState = gitState,
-                            selectedBaseBranch = selectedGitBaseBranch,
-                            onDismiss = branchMenuState::onDismissRequest,
-                            onSelectBaseBranch = { branch ->
-                                branchMenuState.collapse()
-                                onSelectGitBaseBranch(branch)
-                            },
-                            onRefresh = onRefreshGitState,
-                            onCheckoutBranch = { branch ->
-                                branchMenuState.collapse()
-                                onCheckoutGitBranch(branch)
-                            },
-                            onCreateBranch = { branch ->
-                                branchMenuState.collapse()
-                                onCreateGitBranch(branch)
-                            },
-                        )
                     }
                 }
 
@@ -5837,6 +5833,7 @@ private fun ComposerCard(
     val orderedModels = remember(composer.runtimeConfig.availableModels) {
         RemodexRuntimeMetaMapper.orderedModels(composer.runtimeConfig.availableModels)
     }
+    val isRuntimeSelectionLoading = uiState.isConnected && orderedModels.isEmpty()
     val selectedModelOption = remember(orderedModels, composer.runtimeConfig.selectedModelId) {
         composer.runtimeConfig.selectedModelOption(from = orderedModels)
             ?: orderedModels.firstOrNull { option -> option.isDefault }
@@ -6085,12 +6082,16 @@ private fun ComposerCard(
                         }
 
                         ComposerRuntimeSelector(
-                            title = compactRuntimeTitle(
-                                modelTitle = selectedModelTitle,
-                                reasoningTitle = composer.runtimeConfig.reasoningEffort
-                                    ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
-                                    ?: "Select reasoning",
-                            ),
+                            title = if (isRuntimeSelectionLoading) {
+                                "Loading..."
+                            } else {
+                                compactRuntimeTitle(
+                                    modelTitle = selectedModelTitle,
+                                    reasoningTitle = composer.runtimeConfig.reasoningEffort
+                                        ?.let(RemodexRuntimeMetaMapper::reasoningTitle)
+                                        ?: "Select reasoning",
+                                )
+                            },
                             modelOptions = orderedModels,
                             selectedModel = selectedModelOption,
                             reasoningOptions = composer.runtimeConfig.availableReasoningEfforts,
@@ -6131,7 +6132,22 @@ private fun ComposerCard(
                             voiceUiState = composer.voice,
                             onClick = onTapVoiceButton,
                         )
-                        if (composer.canStop) {
+                        if (composer.isStartingRun) {
+                            Box(
+                                modifier = Modifier
+                                    .requiredSize(ComposerTrailingButtonSize)
+                                    .semantics {
+                                        contentDescription = "Starting run"
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = chrome.titleText,
+                                )
+                            }
+                        } else if (composer.canStop) {
                             ConversationStopButton(
                                 modifier = Modifier.testTag(ComposerStopButtonTag),
                                 onClick = onStopTurn,
@@ -8660,6 +8676,7 @@ private fun GitBranchPickerPopover(
                 ?: ""
         }
     }
+    val branchPickerBusy = gitState.isLoading || gitState.isSwitchingBranch
     val disabledBranchReference = when (mode) {
         GitBranchPickerMode.CHECKOUT -> currentBranch
         GitBranchPickerMode.BASE_BRANCH -> selectedBranch
@@ -8767,7 +8784,7 @@ private fun GitBranchPickerPopover(
                                         gitState = gitState,
                                         allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
                                     ),
-                                    enabled = !gitState.isLoading &&
+                                    enabled = !branchPickerBusy &&
                                         !remodexCurrentBranchSelectionIsDisabled(
                                             branch = defaultBranch,
                                             currentBranch = disabledBranchReference,
@@ -8798,7 +8815,7 @@ private fun GitBranchPickerPopover(
                                     gitState = gitState,
                                     allowsSelectingCurrentBranch = allowsSelectingCurrentBranch,
                                 ),
-                                enabled = !gitState.isLoading &&
+                                enabled = !branchPickerBusy &&
                                     !remodexCurrentBranchSelectionIsDisabled(
                                         branch = branch,
                                         currentBranch = disabledBranchReference,
@@ -8841,7 +8858,7 @@ private fun GitBranchPickerPopover(
                                 GitBranchPickerActionRow(
                                     label = "Create and checkout '$branchName'",
                                     leadingIcon = Icons.Outlined.Add,
-                                    enabled = !gitState.isLoading,
+                                    enabled = !branchPickerBusy,
                                     onClick = { onCreateBranch(branchName) },
                                 )
                                 HorizontalDivider()
@@ -8849,7 +8866,7 @@ private fun GitBranchPickerPopover(
                             GitBranchPickerActionRow(
                                 label = "New branch...",
                                 leadingIcon = Icons.Outlined.Checklist,
-                                enabled = !gitState.isLoading,
+                                enabled = !branchPickerBusy,
                                 onClick = {
                                     onDismiss()
                                     val normalizedSearchBranch = remodexNormalizedCreatedBranchName(searchText)
@@ -8864,9 +8881,13 @@ private fun GitBranchPickerPopover(
                             HorizontalDivider()
                         }
                         GitBranchPickerActionRow(
-                            label = if (gitState.isLoading) "Refreshing..." else "Reload branch list",
+                            label = when {
+                                gitState.isSwitchingBranch -> "Switching..."
+                                gitState.isLoading -> "Refreshing..."
+                                else -> "Reload branch list"
+                            },
                             leadingIcon = Icons.Outlined.Refresh,
-                            enabled = !gitState.isLoading,
+                            enabled = !branchPickerBusy,
                             onClick = onRefresh,
                         )
                     }
