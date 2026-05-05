@@ -2,13 +2,15 @@
 // Purpose: Runs Codex locally, bridges relay traffic, and coordinates desktop refreshes for Codex.app.
 // Layer: CLI service
 // Exports: startBridge
-// Depends on: ws, crypto, os, ./qr, ./codex-desktop-refresher, ./codex-transport, ./rollout-watch, ./voice-handler, ./ios-app-compatibility
+// Depends on: ws, crypto, os, path, ./codex-home, ./qr, ./codex-desktop-refresher, ./codex-transport, ./rollout-watch, ./voice-handler, ./ios-app-compatibility
 
 const WebSocket = require("ws");
 const { randomBytes } = require("crypto");
 const { execFile } = require("child_process");
 const os = require("os");
+const path = require("path");
 const { promisify } = require("util");
+const { resolveCodexGeneratedImagesRoot } = require("./codex-home");
 const {
   CodexDesktopRefresher,
   readBridgeConfig,
@@ -57,6 +59,21 @@ const RELAY_WATCHDOG_STALE_AFTER_MS = 70_000;
 const BRIDGE_STATUS_HEARTBEAT_INTERVAL_MS = 5_000;
 const STALE_RELAY_STATUS_MESSAGE = "Relay heartbeat stalled; reconnect pending.";
 const RELAY_HISTORY_IMAGE_REFERENCE_URL = "remodex://history-image-elided";
+const RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES = 4 * 1024 * 1024;
+const RELAY_HISTORY_TEXT_TAIL_LIMIT_CHARS = 24_000;
+const RELAY_HISTORY_RECENT_TURN_TARGET = 40;
+const RELAY_TURNS_LIST_TARGET_BUDGET_MS = 5_500;
+const RELAY_TURNS_LIST_BUDGET_RESERVE_MS = 1_000;
+const RELAY_TURNS_LIST_RESULT_KEYS = ["data", "items", "turns"];
+const RELAY_TURNS_LIST_PAGINATION_RESULT_KEYS = [
+  "nextCursor",
+  "next_cursor",
+  "cursor",
+  "hasNextCursor",
+  "has_next_cursor",
+  "hasNextPage",
+  "has_next_page",
+];
 const TRAFFIC_REQUEST_METHOD_TTL_MS = 2 * 60_000;
 const TRAFFIC_TOP_LABEL_LIMIT = 8;
 function startBridge({
@@ -139,6 +156,7 @@ function startBridge({
   const relaySanitizedRequestMethods = new Set([
     "thread/read",
     "thread/resume",
+    "thread/turns/list",
   ]);
   const forwardedRequestMethodTTLms = 2 * 60_000;
   const pendingAuthLogin = {
@@ -533,6 +551,9 @@ function startBridge({
     }
     desktopRefresher.handleInbound(rawMessage);
     rolloutLiveMirror?.observeInbound(rawMessage);
+    if (handleBridgeManagedThreadTurnsListRequest(rawMessage)) {
+      return;
+    }
     rememberForwardedRequestMethod(rawMessage);
     rememberThreadFromMessage("phone", rawMessage);
     bridgeTrafficStats.record("codexOutbound", rawMessage, {
@@ -673,6 +694,38 @@ function startBridge({
     };
   }
 
+  function handleBridgeManagedThreadTurnsListRequest(rawMessage) {
+    const request = parseAdaptiveThreadTurnsListRequest(rawMessage);
+    if (!request) {
+      return false;
+    }
+
+    rememberThreadFromMessage("phone", rawMessage);
+    (async () => {
+      try {
+        const response = await fetchAdaptiveThreadTurnsListForRelay(request, {
+          fetchPage: (params) => sendCodexRequest("thread/turns/list", params),
+        });
+        relaySanitizedResponseMethodsById.set(String(request.id), {
+          method: "thread/turns/list",
+          createdAt: Date.now(),
+        });
+        sendApplicationResponse(sanitizeThreadHistoryImagesForRelay(
+          JSON.stringify(response),
+          "thread/turns/list"
+        ));
+      } catch (error) {
+        sendApplicationResponse(createJsonRpcErrorResponse(
+          request.id,
+          error,
+          "thread_turns_list_failed"
+        ));
+      }
+    })();
+
+    return true;
+  }
+
   function createJsonRpcErrorResponse(requestId, error, defaultErrorCode) {
     return JSON.stringify({
       id: requestId,
@@ -714,10 +767,10 @@ function startBridge({
   function sanitizeRelayBoundCodexMessage(rawMessage) {
     pruneExpiredForwardedRequestMethods();
     const parsed = safeParseJSON(rawMessage);
-    const responseId = parsed?.id;
-    if (responseId == null) {
-      return rawMessage;
-    }
+  const responseId = parsed?.id;
+  if (responseId == null) {
+      return sanitizeLiveGeneratedImageMessageForRelay(rawMessage);
+  }
 
     const trackedRequest = relaySanitizedResponseMethodsById.get(String(responseId));
     if (!trackedRequest) {
@@ -1233,9 +1286,205 @@ function normalizeNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+function parseAdaptiveThreadTurnsListRequest(rawMessage) {
+  const parsed = parseBridgeJSON(rawMessage);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+
+  if (parsed.method !== "thread/turns/list" || parsed.id == null) {
+    return null;
+  }
+
+  const params = parsed.params;
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return null;
+  }
+
+  if (!Number.isInteger(params.limit) || params.limit <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
+async function fetchAdaptiveThreadTurnsListForRelay(request, {
+  fetchPage,
+  now = Date.now,
+  targetBudgetMs = RELAY_TURNS_LIST_TARGET_BUDGET_MS,
+  budgetReserveMs = RELAY_TURNS_LIST_BUDGET_RESERVE_MS,
+  rawPageSoftLimitBytes = RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES,
+  payloadSoftLimitBytes = RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES,
+  sanitizeForRelay = sanitizeThreadHistoryImagesForRelay,
+} = {}) {
+  if (typeof fetchPage !== "function") {
+    throw new Error("fetchPage is required for adaptive turns-list pagination.");
+  }
+
+  const params = request?.params;
+  const requestedLimit = Number.isInteger(params?.limit) && params.limit > 0 ? params.limit : 1;
+  const startedAt = now();
+  let nextCursor = params?.cursor;
+  let turnsKey = null;
+  let firstResult = null;
+  let lastResult = null;
+  let combinedTurns = [];
+  let response = null;
+
+  while (combinedTurns.length < requestedLimit) {
+    const remaining = requestedLimit - combinedTurns.length;
+    const pageLimit = selectAdaptiveTurnsListBatchLimit(combinedTurns.length, remaining);
+    const pageParams = buildAdaptiveTurnsListPageParams(params, pageLimit, nextCursor);
+    let page;
+
+    try {
+      page = await fetchMeasuredAdaptiveTurnsListPage(fetchPage, pageParams, now);
+    } catch (error) {
+      if (response) {
+        return response;
+      }
+      throw error;
+    }
+
+    const pageResult = page.result;
+    const pageTurnsKey = findTurnsListResultKey(pageResult);
+    if (!pageTurnsKey) {
+      return response ?? {
+        id: request.id,
+        result: pageResult ?? null,
+      };
+    }
+
+    turnsKey = turnsKey || pageTurnsKey;
+    firstResult = firstResult || pageResult;
+    lastResult = pageResult;
+    combinedTurns = combinedTurns.concat(pageResult[pageTurnsKey]);
+    response = {
+      id: request.id,
+      result: buildAdaptiveTurnsListResult(firstResult, lastResult, turnsKey, combinedTurns),
+    };
+
+    nextCursor = readTurnsListNextCursor(pageResult);
+    if (combinedTurns.length >= requestedLimit || !hasRelayCursor(nextCursor) || pageResult[pageTurnsKey].length === 0) {
+      break;
+    }
+
+    const rawPageBytes = jsonByteLength(pageResult);
+    const sanitizedResponseBytes = measureSanitizedTurnsListResponseBytes(response, sanitizeForRelay);
+    const elapsedMs = Math.max(0, now() - startedAt);
+    const remainingBudgetMs = Math.max(0, targetBudgetMs - elapsedMs);
+    if (
+      rawPageBytes >= rawPageSoftLimitBytes ||
+      sanitizedResponseBytes >= payloadSoftLimitBytes ||
+      page.elapsedMs >= Math.max(0, targetBudgetMs - budgetReserveMs) ||
+      remainingBudgetMs <= budgetReserveMs
+    ) {
+      break;
+    }
+  }
+
+  return response ?? {
+    id: request.id,
+    result: { data: [] },
+  };
+}
+
+async function fetchMeasuredAdaptiveTurnsListPage(fetchPage, params, now) {
+  const startedAt = now();
+  const result = await fetchPage(params);
+  return {
+    result,
+    elapsedMs: Math.max(0, now() - startedAt),
+  };
+}
+
+function selectAdaptiveTurnsListBatchLimit(fetchedTurnCount, remainingTurnCount) {
+  if (fetchedTurnCount <= 0) {
+    return Math.min(1, remainingTurnCount);
+  }
+  if (fetchedTurnCount <= 1) {
+    return Math.min(4, remainingTurnCount);
+  }
+  return remainingTurnCount;
+}
+
+function buildAdaptiveTurnsListPageParams(baseParams, limit, cursor) {
+  const params = { ...baseParams, limit };
+  if (hasRelayCursor(cursor)) {
+    params.cursor = cursor;
+  } else {
+    delete params.cursor;
+  }
+  return params;
+}
+
+function findTurnsListResultKey(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+  return RELAY_TURNS_LIST_RESULT_KEYS.find((key) => Array.isArray(result[key])) || null;
+}
+
+function buildAdaptiveTurnsListResult(firstResult, lastResult, turnsKey, turns) {
+  const result = { ...firstResult };
+  for (const key of RELAY_TURNS_LIST_RESULT_KEYS) {
+    delete result[key];
+  }
+  result[turnsKey] = turns;
+
+  for (const key of RELAY_TURNS_LIST_PAGINATION_RESULT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(lastResult, key)) {
+      result[key] = lastResult[key];
+    } else {
+      delete result[key];
+    }
+  }
+
+  return result;
+}
+
+function readTurnsListNextCursor(result) {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+  if (hasRelayCursor(result.nextCursor)) {
+    return result.nextCursor;
+  }
+  if (hasRelayCursor(result.next_cursor)) {
+    return result.next_cursor;
+  }
+  return undefined;
+}
+
+function hasRelayCursor(cursor) {
+  return cursor !== undefined && cursor !== null && cursor !== "";
+}
+
+function jsonByteLength(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function measureSanitizedTurnsListResponseBytes(response, sanitizeForRelay) {
+  try {
+    const rawResponse = JSON.stringify(response);
+    const sanitizedResponse = sanitizeForRelay(rawResponse, "thread/turns/list");
+    return Buffer.byteLength(sanitizedResponse, "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
 // Shrinks `thread/read` and `thread/resume` snapshots by eliding bulky history payloads
 // that the iPhone does not render directly (inline images, compaction replacement history).
 function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod, requestParams = null) {
+  if (requestMethod === "thread/turns/list") {
+    return sanitizeThreadTurnsListForRelay(rawMessage);
+  }
+
   if (requestMethod !== "thread/read" && requestMethod !== "thread/resume") {
     return rawMessage;
   }
@@ -1310,10 +1559,11 @@ function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod, requestP
   });
 
   if (!didSanitize) {
-    return rawMessage;
+    const trimmedPayload = trimThreadPayloadForRelay(parsed, thread);
+    return trimmedPayload == null ? rawMessage : trimmedPayload;
   }
 
-  return JSON.stringify({
+  const sanitizedPayload = JSON.stringify({
     ...parsed,
     result: {
       ...parsed.result,
@@ -1323,6 +1573,103 @@ function sanitizeThreadHistoryImagesForRelay(rawMessage, requestMethod, requestP
       },
     },
   });
+
+  return trimThreadPayloadForRelay(parseBridgeJSON(sanitizedPayload), null) ?? sanitizedPayload;
+}
+
+function sanitizeThreadTurnsListForRelay(rawMessage) {
+  const parsed = parseBridgeJSON(rawMessage);
+  const result = parsed?.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return rawMessage;
+  }
+
+  const turnsKey = RELAY_TURNS_LIST_RESULT_KEYS.find((key) => Array.isArray(result[key]));
+  if (!turnsKey) {
+    return rawMessage;
+  }
+
+  let didSanitize = false;
+  const sanitizedTurns = result[turnsKey].map((turn) => {
+    const sanitizedTurn = sanitizeRelayHistoryTurn(turn);
+    if (sanitizedTurn !== turn) {
+      didSanitize = true;
+    }
+    return sanitizedTurn;
+  });
+
+  const sanitizedParsed = didSanitize
+    ? {
+      ...parsed,
+      result: {
+        ...result,
+        [turnsKey]: sanitizedTurns,
+      },
+    }
+    : parsed;
+
+  return trimTurnsListPayloadForRelay(sanitizedParsed, turnsKey, didSanitize ? null : rawMessage);
+}
+
+function sanitizeRelayHistoryTurn(turn) {
+  if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+    return turn;
+  }
+
+  let turnDidChange = false;
+  const turnThreadId = normalizeNonEmptyString(turn.threadId)
+    || normalizeNonEmptyString(turn.thread_id);
+  const sanitizedItems = turn.items.map((item) => {
+    const sanitizedItem = sanitizeRelayHistoryItem(item, turnThreadId);
+    if (sanitizedItem !== item) {
+      turnDidChange = true;
+    }
+    return sanitizedItem;
+  });
+
+  return turnDidChange
+    ? {
+      ...turn,
+      items: sanitizedItems,
+    }
+    : turn;
+}
+
+function sanitizeRelayHistoryItem(item, threadId = "") {
+  if (!item || typeof item !== "object") {
+    return item;
+  }
+
+  let itemDidChange = false;
+  let sanitizedItem = annotateImageGenerationHistoryItem(item, threadId);
+  if (sanitizedItem !== item) {
+    itemDidChange = true;
+  }
+
+  if (Array.isArray(item.content)) {
+    const sanitizedContent = item.content.map((contentItem) => {
+      const sanitizedEntry = sanitizeInlineHistoryImageContentItem(contentItem);
+      if (sanitizedEntry !== contentItem) {
+        itemDidChange = true;
+      }
+      return sanitizedEntry;
+    });
+
+    if (itemDidChange) {
+      sanitizedItem = {
+        ...sanitizedItem,
+        content: sanitizedContent,
+      };
+    }
+  }
+
+  const sanitizedCompactionItem = sanitizeCompactionHistoryItem(sanitizedItem);
+  if (sanitizedCompactionItem !== sanitizedItem) {
+    sanitizedItem = sanitizedCompactionItem;
+    itemDidChange = true;
+  }
+
+  return itemDidChange ? sanitizedItem : item;
 }
 
 function isTitleSeedOnlyThreadRead(params) {
@@ -1388,6 +1735,84 @@ function isRelayUserMessageItem(item) {
   return typeof item.role === "string" && item.role.toLowerCase().includes("user");
 }
 
+// Annotates live image-generation notifications so the phone can render a local-file
+// preview and does not receive the bulky inline base64 result over the relay.
+function sanitizeLiveGeneratedImageMessageForRelay(rawMessage) {
+  const parsed = parseBridgeJSON(rawMessage);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return rawMessage;
+  }
+
+  const params = parsed.params;
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return rawMessage;
+  }
+
+  const sanitizedParams = sanitizeLiveGeneratedImageParams(params);
+  if (sanitizedParams === params) {
+    return rawMessage;
+  }
+
+  return JSON.stringify({
+    ...parsed,
+    params: sanitizedParams,
+  });
+}
+
+function sanitizeLiveGeneratedImageParams(params) {
+  const threadId = liveGeneratedImageThreadId(params);
+  let nextParams = params;
+  let didChange = false;
+
+  const item = params.item;
+  if (item && typeof item === "object" && !Array.isArray(item)) {
+    const sanitizedItem = annotateImageGenerationPayload(item, threadId);
+    if (sanitizedItem !== item) {
+      nextParams = { ...nextParams, item: sanitizedItem };
+      didChange = true;
+    }
+  }
+
+  const event = params.event;
+  if (event && typeof event === "object" && !Array.isArray(event)) {
+    const sanitizedEvent = sanitizeNestedGeneratedImagePayloads(event, threadId);
+    if (sanitizedEvent !== event) {
+      nextParams = { ...nextParams, event: sanitizedEvent };
+      didChange = true;
+    }
+  }
+
+  const sanitizedDirectParams = annotateImageGenerationPayload(nextParams, threadId);
+  if (sanitizedDirectParams !== nextParams) {
+    nextParams = sanitizedDirectParams;
+    didChange = true;
+  }
+
+  return didChange ? nextParams : params;
+}
+
+function sanitizeNestedGeneratedImagePayloads(value, threadId) {
+  let nextValue = annotateImageGenerationPayload(value, threadId);
+  let didChange = nextValue !== value;
+
+  for (const key of ["item", "payload", "data"]) {
+    const nested = nextValue?.[key];
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+      continue;
+    }
+    const sanitizedNested = sanitizeNestedGeneratedImagePayloads(nested, threadId);
+    if (sanitizedNested !== nested) {
+      if (!didChange) {
+        nextValue = { ...nextValue };
+        didChange = true;
+      }
+      nextValue[key] = sanitizedNested;
+    }
+  }
+
+  return didChange ? nextValue : value;
+}
+
 // Drops huge replacement-history blobs from compaction items because the phone only needs
 // the compacted marker itself, not the entire pre-compaction transcript snapshot.
 function sanitizeCompactionHistoryItem(item) {
@@ -1430,6 +1855,108 @@ function omitCompactionReplacementHistory(value) {
   return didChange ? nextValue : value;
 }
 
+function annotateImageGenerationHistoryItem(item, threadId = "") {
+  if (!item || typeof item !== "object") {
+    return item;
+  }
+
+  const normalizedType = normalizeRelayHistoryContentType(item.type);
+  if (!isGeneratedImageRelayType(normalizedType)) {
+    return item;
+  }
+
+  return annotateImageGenerationPayload(item, threadId);
+}
+
+function annotateImageGenerationPayload(item, threadId) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return item;
+  }
+
+  const normalizedType = normalizeRelayHistoryContentType(item.type);
+  if (!isGeneratedImageRelayType(normalizedType)) {
+    return item;
+  }
+
+  let nextItem = item;
+  let didChange = false;
+  const existingPath = normalizeNonEmptyString(item.saved_path)
+    || normalizeNonEmptyString(item.savedPath)
+    || normalizeNonEmptyString(item.path)
+    || normalizeNonEmptyString(item.file_path);
+  const generatedPath = existingPath || generatedImagePathForHistoryItem(item, threadId);
+  if (generatedPath && !existingPath) {
+    nextItem = {
+      ...nextItem,
+      saved_path: generatedPath,
+    };
+    didChange = true;
+  }
+
+  if (typeof nextItem.result === "string" && nextItem.result.length > 0) {
+    const {
+      result: _result,
+      ...withoutInlineResult
+    } = nextItem;
+    nextItem = {
+      ...withoutInlineResult,
+      result_elided_for_relay: true,
+    };
+    didChange = true;
+  }
+
+  return didChange ? nextItem : item;
+}
+
+function generatedImagePathForHistoryItem(item, threadId) {
+  const resolvedThreadId = normalizeNonEmptyString(threadId);
+  const normalizedType = normalizeRelayHistoryContentType(item.type);
+  const callId = normalizedType === "imagegenerationend"
+    ? normalizeNonEmptyString(item.call_id)
+      || normalizeNonEmptyString(item.callId)
+      || normalizeNonEmptyString(item.itemId)
+      || normalizeNonEmptyString(item.item_id)
+      || normalizeNonEmptyString(item.id)
+    : normalizeNonEmptyString(item.id)
+      || normalizeNonEmptyString(item.call_id)
+      || normalizeNonEmptyString(item.callId)
+      || normalizeNonEmptyString(item.itemId)
+      || normalizeNonEmptyString(item.item_id);
+  if (!resolvedThreadId || !callId) {
+    return "";
+  }
+
+  return path.join(resolveCodexGeneratedImagesRoot(), resolvedThreadId, `${callId}.png`);
+}
+
+function isGeneratedImageRelayType(normalizedType) {
+  return normalizedType === "imagegeneration"
+    || normalizedType === "imagegenerationcall"
+    || normalizedType === "imagegenerationend"
+    || normalizedType === "imageview";
+}
+
+function liveGeneratedImageThreadId(params) {
+  const event = params?.event && typeof params.event === "object" && !Array.isArray(params.event)
+    ? params.event
+    : null;
+  const item = params?.item && typeof params.item === "object" && !Array.isArray(params.item)
+    ? params.item
+    : null;
+
+  return normalizeNonEmptyString(params?.threadId)
+    || normalizeNonEmptyString(params?.thread_id)
+    || normalizeNonEmptyString(params?.conversationId)
+    || normalizeNonEmptyString(params?.conversation_id)
+    || normalizeNonEmptyString(event?.threadId)
+    || normalizeNonEmptyString(event?.thread_id)
+    || normalizeNonEmptyString(event?.conversationId)
+    || normalizeNonEmptyString(event?.conversation_id)
+    || normalizeNonEmptyString(item?.threadId)
+    || normalizeNonEmptyString(item?.thread_id)
+    || "";
+}
+
 // Converts `data:image/...` history content into a tiny placeholder the iPhone can render safely.
 function sanitizeInlineHistoryImageContentItem(contentItem) {
   if (!contentItem || typeof contentItem !== "object") {
@@ -1437,13 +1964,13 @@ function sanitizeInlineHistoryImageContentItem(contentItem) {
   }
 
   const normalizedType = normalizeRelayHistoryContentType(contentItem.type);
-  if (normalizedType !== "image" && normalizedType !== "localimage") {
+  if (!isRelayHistoryImageContentType(normalizedType)) {
     return contentItem;
   }
 
-  const hasInlineUrl = isInlineHistoryImageDataURL(contentItem.url)
-    || isInlineHistoryImageDataURL(contentItem.image_url)
-    || isInlineHistoryImageDataURL(contentItem.path);
+  const hasInlineUrl = hasInlineHistoryImageDataURL(contentItem.url)
+    || hasInlineHistoryImageDataURL(contentItem.image_url)
+    || hasInlineHistoryImageDataURL(contentItem.path);
   if (!hasInlineUrl) {
     return contentItem;
   }
@@ -1467,8 +1994,28 @@ function normalizeRelayHistoryContentType(value) {
     : "";
 }
 
-function isInlineHistoryImageDataURL(value) {
-  return typeof value === "string" && value.toLowerCase().startsWith("data:image");
+// Covers Codex history variants such as image, local_image, and input_image.
+function isRelayHistoryImageContentType(normalizedType) {
+  return normalizedType === "image"
+    || normalizedType === "localimage"
+    || normalizedType === "inputimage"
+    || normalizedType === "outputimage";
+}
+
+function hasInlineHistoryImageDataURL(value) {
+  if (typeof value === "string") {
+    return value.toLowerCase().startsWith("data:image");
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(hasInlineHistoryImageDataURL);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasInlineHistoryImageDataURL);
+  }
+
+  return false;
 }
 
 function parseBridgeJSON(value) {
@@ -1477,6 +2024,335 @@ function parseBridgeJSON(value) {
   } catch {
     return null;
   }
+}
+
+function trimThreadPayloadForRelay(parsed, explicitThread = undefined) {
+  const thread = explicitThread ?? parsed?.result?.thread;
+  if (!parsed || !thread || typeof thread !== "object" || !Array.isArray(thread.turns)) {
+    return null;
+  }
+
+  let workingThread = thread;
+  let encoded = encodeRelayThreadPayload(parsed, workingThread);
+  if (encoded == null) {
+    return null;
+  }
+
+  if (Buffer.byteLength(encoded, "utf8") <= RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES) {
+    return explicitThread === undefined ? null : encoded;
+  }
+
+  const turns = thread.turns;
+  let trimmedTurns = turns.length > RELAY_HISTORY_RECENT_TURN_TARGET
+    ? turns.slice(-RELAY_HISTORY_RECENT_TURN_TARGET)
+    : turns.slice();
+  while (trimmedTurns.length > 1) {
+    if (trimmedTurns.length === turns.length) {
+      trimmedTurns = trimmedTurns.slice(1);
+    }
+    const candidateThread = buildRelayHistoryCompactedThread(
+      thread,
+      buildRelayCompactedHistoryTurns(turns, trimmedTurns),
+      Math.max(0, turns.length - trimmedTurns.length),
+      trimmedTurns.length
+    );
+    encoded = encodeRelayThreadPayload(parsed, candidateThread);
+    if (encoded != null && Buffer.byteLength(encoded, "utf8") <= RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES) {
+      return encoded;
+    }
+    workingThread = candidateThread;
+    trimmedTurns = trimmedTurns.slice(1);
+  }
+
+  const newestTurn = trimmedTurns[0];
+  if (!newestTurn || typeof newestTurn !== "object" || !Array.isArray(newestTurn.items)) {
+    return encodeRelayThreadPayload(parsed, workingThread);
+  }
+
+  let trimmedItems = newestTurn.items.slice();
+  while (trimmedItems.length > 1) {
+    trimmedItems = trimmedItems.slice(1);
+    const compactedTurnPrefix = buildRelayHistoryCompactionTurn(
+      Math.max(0, turns.length - 1),
+      1,
+      thread
+    );
+    const candidateThread = buildRelayHistoryCompactedThread(
+      thread,
+      compactedTurnPrefix ? [compactedTurnPrefix, {
+        ...newestTurn,
+        items: trimmedItems,
+      }] : [{
+        ...newestTurn,
+        items: trimmedItems,
+      }],
+      Math.max(0, turns.length - 1),
+      1
+    );
+    encoded = encodeRelayThreadPayload(parsed, candidateThread);
+    if (encoded != null && Buffer.byteLength(encoded, "utf8") <= RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES) {
+      return encoded;
+    }
+    workingThread = candidateThread;
+  }
+
+  const mostRecentItem = trimmedItems[0];
+  if (!mostRecentItem || typeof mostRecentItem !== "object") {
+    return encodeRelayThreadPayload(parsed, workingThread);
+  }
+
+  const truncatedItem = truncateHistoryItemTextForRelay(
+    mostRecentItem,
+    RELAY_HISTORY_TEXT_TAIL_LIMIT_CHARS
+  );
+  let candidateThread = buildRelayHistoryCompactedThread(
+    thread,
+    [
+      ...buildRelayCompactedHistoryTurns(turns, [newestTurn]).slice(0, -1),
+      {
+        ...newestTurn,
+        items: [truncatedItem],
+      },
+    ],
+    Math.max(0, turns.length - 1),
+    1
+  );
+  encoded = encodeRelayThreadPayload(parsed, candidateThread);
+  if (encoded != null && Buffer.byteLength(encoded, "utf8") <= RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES) {
+    return encoded;
+  }
+
+  candidateThread = buildRelayHistoryCompactedThread(
+    thread,
+    [
+      ...buildRelayCompactedHistoryTurns(turns, [newestTurn]).slice(0, -1),
+      {
+        ...newestTurn,
+        items: [compactHistoryItemForRelay(mostRecentItem, RELAY_HISTORY_TEXT_TAIL_LIMIT_CHARS)],
+      },
+    ],
+    Math.max(0, turns.length - 1),
+    1
+  );
+  return encodeRelayThreadPayload(parsed, candidateThread);
+}
+
+function trimTurnsListPayloadForRelay(parsed, turnsKey, originalRawMessage = null) {
+  const result = parsed?.result;
+  const turns = result?.[turnsKey];
+  if (!parsed || !result || !Array.isArray(turns)) {
+    return originalRawMessage ?? JSON.stringify(parsed);
+  }
+
+  const encoded = JSON.stringify(parsed);
+  if (Buffer.byteLength(encoded, "utf8") <= RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES) {
+    return originalRawMessage ?? encoded;
+  }
+
+  let fallbackCompactedPayload = null;
+  for (const maxChars of [
+    RELAY_HISTORY_TEXT_TAIL_LIMIT_CHARS,
+    Math.floor(RELAY_HISTORY_TEXT_TAIL_LIMIT_CHARS / 4),
+    1_000,
+    0,
+  ]) {
+    const compactedTurns = turns.map((turn) => compactTurnsListTurnForRelay(turn, maxChars));
+    const compactedPayload = JSON.stringify({
+      ...parsed,
+      result: {
+        ...result,
+        [turnsKey]: compactedTurns,
+        remodexPageCompactedForRelay: true,
+      },
+    });
+    fallbackCompactedPayload = compactedPayload;
+    if (Buffer.byteLength(compactedPayload, "utf8") <= RELAY_THREAD_PAYLOAD_SOFT_LIMIT_BYTES) {
+      return compactedPayload;
+    }
+  }
+
+  return fallbackCompactedPayload ?? (originalRawMessage ?? encoded);
+}
+
+function compactTurnsListTurnForRelay(turn, maxChars) {
+  if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+    return turn;
+  }
+
+  return {
+    ...turn,
+    items: turn.items.map((item) => compactHistoryItemForRelay(item, maxChars)),
+    remodexPageCompactedForRelay: true,
+  };
+}
+
+function buildRelayHistoryCompactedThread(thread, turns, omittedTurnCount, keptTurnCount) {
+  return {
+    ...thread,
+    turns,
+    historyTailTruncatedForRelay: true,
+    remodexHistoryCompacted: omittedTurnCount > 0,
+    remodexOmittedTurnCount: omittedTurnCount,
+    remodexKeptTurnCount: keptTurnCount,
+  };
+}
+
+function buildRelayCompactedHistoryTurns(allTurns, keptTurns) {
+  const omittedTurnCount = Math.max(0, allTurns.length - keptTurns.length);
+  const compactionTurn = buildRelayHistoryCompactionTurn(
+    omittedTurnCount,
+    keptTurns.length,
+    allTurns[0]
+  );
+  return compactionTurn ? [compactionTurn, ...keptTurns] : keptTurns;
+}
+
+function buildRelayHistoryCompactionTurn(omittedTurnCount, keptTurnCount, idSource = {}) {
+  if (omittedTurnCount <= 0) {
+    return null;
+  }
+
+  const baseId = normalizeNonEmptyString(idSource?.id)
+    || normalizeNonEmptyString(idSource?.turnId)
+    || normalizeNonEmptyString(idSource?.turn_id)
+    || "history";
+  const text = [
+    "Earlier conversation compacted for mobile loading.",
+    "",
+    `Older turns omitted: ${omittedTurnCount}`,
+    `Recent turns kept: ${keptTurnCount}`,
+    "Full history remains available on the Mac runtime.",
+  ].join("\n");
+
+  return {
+    id: `remodex-history-compacted-${baseId}`,
+    remodexSynthetic: true,
+    remodexHistoryCompacted: true,
+    remodexOmittedTurnCount: omittedTurnCount,
+    remodexKeptTurnCount: keptTurnCount,
+    items: [
+      {
+        id: `remodex-history-compacted-item-${baseId}`,
+        type: "assistant_message",
+        role: "assistant",
+        text,
+        remodexSynthetic: true,
+        remodexHistoryCompacted: true,
+      },
+    ],
+  };
+}
+
+function encodeRelayThreadPayload(parsed, thread) {
+  try {
+    return JSON.stringify({
+      ...parsed,
+      result: {
+        ...parsed.result,
+        thread,
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
+function truncateHistoryItemTextForRelay(item, maxChars) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return item;
+  }
+
+  let didChange = false;
+  let nextItem = item;
+  const textKeys = ["text", "message", "summary", "output", "outputText", "output_text"];
+
+  for (const key of textKeys) {
+    if (typeof item[key] === "string" && item[key].length > maxChars) {
+      nextItem = {
+        ...nextItem,
+        [key]: truncateRelayTextTail(item[key], maxChars),
+      };
+      didChange = true;
+    }
+  }
+
+  if (Array.isArray(item.content)) {
+    const nextContent = item.content.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return entry;
+      }
+
+      const truncatedEntry = truncateHistoryItemTextForRelay(entry, maxChars);
+      if (truncatedEntry !== entry) {
+        didChange = true;
+      }
+      return truncatedEntry;
+    });
+
+    if (didChange) {
+      nextItem = {
+        ...nextItem,
+        content: nextContent,
+      };
+    }
+  }
+
+  return didChange
+    ? {
+      ...nextItem,
+      relayTextTailTruncated: true,
+    }
+    : item;
+}
+
+function compactHistoryItemForRelay(item, maxChars) {
+  const compactItem = {
+    id: typeof item?.id === "string" ? item.id : undefined,
+    type: typeof item?.type === "string" ? item.type : "relay_truncated_item",
+    role: typeof item?.role === "string" ? item.role : undefined,
+    itemId: typeof item?.itemId === "string" ? item.itemId : undefined,
+    relayPayloadTruncated: true,
+  };
+  const tailText = maxChars > 0 ? firstRelayTextTail(item, maxChars) : "";
+  if (tailText) {
+    compactItem.text = tailText;
+  }
+
+  return Object.fromEntries(
+    Object.entries(compactItem).filter(([, value]) => value !== undefined)
+  );
+}
+
+function firstRelayTextTail(value, maxChars) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+
+  for (const key of ["text", "message", "summary", "output", "outputText", "output_text"]) {
+    if (typeof value[key] === "string" && value[key].trim()) {
+      return truncateRelayTextTail(value[key], maxChars);
+    }
+  }
+
+  if (Array.isArray(value.content)) {
+    for (const entry of value.content) {
+      const tail = firstRelayTextTail(entry, maxChars);
+      if (tail) {
+        return tail;
+      }
+    }
+  }
+
+  return "";
+}
+
+function truncateRelayTextTail(value, maxChars) {
+  if (typeof value !== "string" || value.length <= maxChars) {
+    return value;
+  }
+
+  const tail = value.slice(-maxChars).trimStart();
+  return `…\n${tail}`;
 }
 
 // Treats silent relay sockets as stale so the daemon can self-heal after sleep/wake.
@@ -1726,9 +2602,11 @@ module.exports = {
   buildPublishedBridgeStatus,
   classifyBridgeTrafficMessageLabel,
   createBridgeTrafficStats,
+  fetchAdaptiveThreadTurnsListForRelay,
   buildHeartbeatBridgeStatus,
   hasRelayConnectionGoneStale,
   rememberTrafficRequestMethod,
+  sanitizeLiveGeneratedImageMessageForRelay,
   sanitizeThreadHistoryImagesForRelay,
   startBridge,
 };
