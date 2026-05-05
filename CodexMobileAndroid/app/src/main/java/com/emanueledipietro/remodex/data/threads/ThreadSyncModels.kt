@@ -44,6 +44,7 @@ import com.emanueledipietro.remodex.model.RemodexStructuredUserInputResponse
 import com.emanueledipietro.remodex.model.RemodexSubagentAction
 import com.emanueledipietro.remodex.model.RemodexTurnTerminalState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
+import com.emanueledipietro.remodex.model.RemodexThreadHistoryPaginationState
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonElement
 
@@ -72,6 +73,7 @@ data class ThreadSyncSnapshot(
     val isLoadingOlderHistory: Boolean = false,
     val olderHistoryLoadErrorMessage: String? = null,
     val initialTurnsLoaded: Boolean = false,
+    val historyPaginationState: RemodexThreadHistoryPaginationState? = null,
 )
 
 class StreamingAssistantTextHandle internal constructor(
@@ -313,6 +315,10 @@ interface ThreadHydrationService {
     suspend fun hydrateThread(threadId: String)
 
     suspend fun loadOlderThreadHistoryPage(threadId: String) = Unit
+
+    fun setThreadHistoryPaginationStates(
+        statesByThreadId: Map<String, RemodexThreadHistoryPaginationState>,
+    ) = Unit
 }
 
 interface ThreadResumeService {

@@ -3340,6 +3340,20 @@ class DefaultRemodexAppRepositoryTest {
             backingState.value = backingState.value.copy(renamedThreadNamesByThread = updatedNames)
         }
 
+        override suspend fun setThreadHistoryPaginationState(
+            threadId: String,
+            state: com.emanueledipietro.remodex.model.RemodexThreadHistoryPaginationState?,
+        ) {
+            val updatedState = backingState.value.threadHistoryPaginationStateByThread.toMutableMap().apply {
+                if (state == null) {
+                    remove(threadId)
+                } else {
+                    this[threadId] = state
+                }
+            }
+            backingState.value = backingState.value.copy(threadHistoryPaginationStateByThread = updatedState)
+        }
+
         override suspend fun setAssociatedManagedWorktreePath(
             threadId: String,
             projectPath: String?,

@@ -6,6 +6,7 @@ import com.emanueledipietro.remodex.model.RemodexAppLanguage
 import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
+import com.emanueledipietro.remodex.model.RemodexThreadHistoryPaginationState
 
 data class AppPreferences(
     val onboardingCompleted: Boolean = false,
@@ -13,6 +14,7 @@ data class AppPreferences(
     val collapsedProjectGroupIds: Set<String> = emptySet(),
     val deletedThreadIds: Set<String> = emptySet(),
     val renamedThreadNamesByThread: Map<String, String> = emptyMap(),
+    val threadHistoryPaginationStateByThread: Map<String, RemodexThreadHistoryPaginationState> = emptyMap(),
     val associatedManagedWorktreePathsByThread: Map<String, String> = emptyMap(),
     val queuedDraftsByThread: Map<String, List<RemodexQueuedDraft>> = emptyMap(),
     val runtimeOverridesByThread: Map<String, RemodexRuntimeOverrides> = emptyMap(),

@@ -12,6 +12,7 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexQueuedDraft
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
+import com.emanueledipietro.remodex.model.RemodexThreadHistoryPaginationState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -31,6 +32,8 @@ private val CollapsedProjectGroupIdsByProfileJsonKey = stringPreferencesKey("col
 private val DeletedThreadIdsJsonKey = stringPreferencesKey("deleted_thread_ids_json")
 private val DeletedThreadIdsByProfileJsonKey = stringPreferencesKey("deleted_thread_ids_by_profile_json")
 private val RenamedThreadNamesByProfileJsonKey = stringPreferencesKey("renamed_thread_names_by_profile_json")
+private val ThreadHistoryPaginationStateByProfileJsonKey =
+    stringPreferencesKey("thread_history_pagination_state_by_profile_json")
 private val AssociatedManagedWorktreePathsByProfileJsonKey =
     stringPreferencesKey("associated_managed_worktree_paths_by_profile_json")
 private val QueuedDraftsJsonKey = stringPreferencesKey("queued_drafts_json")
@@ -173,6 +176,37 @@ class DataStoreAppPreferencesRepository(
                 current[profileId] = perProfile
             }
             preferences[RenamedThreadNamesByProfileJsonKey] = json.encodeToString(ProfileStringMapEnvelope(current))
+        }
+    }
+
+    override suspend fun setThreadHistoryPaginationState(
+        threadId: String,
+        state: RemodexThreadHistoryPaginationState?,
+    ) {
+        context.remodexDataStore.edit { preferences: MutablePreferences ->
+            val profileId = normalizeProfileId(activeBridgeProfileId.value) ?: return@edit
+            val normalizedThreadId = threadId.trim()
+            if (normalizedThreadId.isEmpty()) {
+                return@edit
+            }
+            val current = preferences[ThreadHistoryPaginationStateByProfileJsonKey]
+                ?.let { raw -> json.decodeFromString<ProfileThreadHistoryPaginationStateEnvelope>(raw).profiles }
+                ?.toMutableMap()
+                ?: mutableMapOf()
+            val perProfile = current[profileId]?.toMutableMap() ?: mutableMapOf()
+            val normalizedState = state?.takeIf(::hasPersistablePaginationState)
+            if (normalizedState == null) {
+                perProfile.remove(normalizedThreadId)
+            } else {
+                perProfile[normalizedThreadId] = normalizedState
+            }
+            if (perProfile.isEmpty()) {
+                current.remove(profileId)
+            } else {
+                current[profileId] = perProfile
+            }
+            preferences[ThreadHistoryPaginationStateByProfileJsonKey] =
+                json.encodeToString(ProfileThreadHistoryPaginationStateEnvelope(current))
         }
     }
 
@@ -352,6 +386,13 @@ class DataStoreAppPreferencesRepository(
         ) { raw ->
             json.decodeFromString<ProfileStringMapEnvelope>(raw).profiles
         }
+        val threadHistoryPaginationState = profileNestedMapValue(
+            rawValue = preferences[ThreadHistoryPaginationStateByProfileJsonKey],
+            profileId = normalizedProfileId,
+            fallback = { emptyMap() },
+        ) { raw ->
+            json.decodeFromString<ProfileThreadHistoryPaginationStateEnvelope>(raw).profiles
+        }
         val collapsedProjectGroupIds = profileMapValue(
             rawValue = preferences[CollapsedProjectGroupIdsByProfileJsonKey],
             profileId = normalizedProfileId,
@@ -406,6 +447,7 @@ class DataStoreAppPreferencesRepository(
             collapsedProjectGroupIds = collapsedProjectGroupIds,
             deletedThreadIds = deletedThreadIds,
             renamedThreadNamesByThread = renamedThreadNames,
+            threadHistoryPaginationStateByThread = threadHistoryPaginationState,
             associatedManagedWorktreePathsByThread = associatedManagedWorktreePaths,
             queuedDraftsByThread = queuedDrafts,
             runtimeOverridesByThread = runtimeOverrides,
@@ -421,6 +463,12 @@ class DataStoreAppPreferencesRepository(
                 ?: RemodexAppFontStyle.SYSTEM,
             macNicknamesByDeviceId = macNicknames,
         )
+    }
+
+    private fun hasPersistablePaginationState(state: RemodexThreadHistoryPaginationState): Boolean {
+        return state.olderCursor != null ||
+            state.exhaustedOlderCursor != null ||
+            state.hasAuthoritativeLocalHistoryStart
     }
 
     private fun mutateProfileStringEnvelope(
@@ -562,6 +610,11 @@ private data class ProfileRuntimeOverridesEnvelope(
 @Serializable
 private data class ProfileRuntimeDefaultsEnvelope(
     val profiles: Map<String, RemodexRuntimeDefaults> = emptyMap(),
+)
+
+@Serializable
+private data class ProfileThreadHistoryPaginationStateEnvelope(
+    val profiles: Map<String, Map<String, RemodexThreadHistoryPaginationState>> = emptyMap(),
 )
 
 @Serializable

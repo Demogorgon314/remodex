@@ -320,6 +320,7 @@ private val ComposerMentionPluginTint = Color(0xFF0F766E)
 private val ComposerMentionChipCornerRadius = 8.dp
 private val ComposerMentionRemoveButtonSize = 14.dp
 private const val ConversationTimelinePageSize = 40
+private const val ConversationTimelineInitialVisibleCount = 80
 private const val ConversationLoadEarlierMessagesKey = "conversation-load-earlier-messages"
 private const val ConversationBottomAnchorKey = "conversation-bottom-anchor"
 private const val ThreadMarkdownPrewarmAllItems = Int.MAX_VALUE
@@ -1517,7 +1518,7 @@ fun ConversationScreen(
     var userInitiatedScrollInProgress by rememberSaveable(thread.id) { mutableStateOf(false) }
     var userScrollCooldownUntilMs by rememberSaveable(thread.id) { mutableStateOf<Long?>(null) }
     var isUserScrollCooldownActive by rememberSaveable(thread.id) { mutableStateOf(false) }
-    var visibleTailCount by rememberSaveable(thread.id) { mutableStateOf(ConversationTimelinePageSize) }
+    var visibleTailCount by rememberSaveable(thread.id) { mutableStateOf(ConversationTimelineInitialVisibleCount) }
     var previousRemoteHistoryTimelineSize by rememberSaveable(thread.id) { mutableStateOf(0) }
     var previousRemoteHistoryLoading by rememberSaveable(thread.id) { mutableStateOf(false) }
     var animatedLoadEarlierMessageIds by remember(thread.id) { mutableStateOf(emptySet<String>()) }

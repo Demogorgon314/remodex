@@ -73,6 +73,7 @@ import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
 import com.emanueledipietro.remodex.model.RemodexServiceTier
 import com.emanueledipietro.remodex.model.RemodexSkillMetadata
 import com.emanueledipietro.remodex.model.RemodexThreadSummary
+import com.emanueledipietro.remodex.model.RemodexThreadHistoryPaginationState
 import com.emanueledipietro.remodex.model.RemodexThreadSyncState
 import com.emanueledipietro.remodex.model.RemodexTrustedMacPresentation
 import com.emanueledipietro.remodex.model.RemodexUsageStatus
@@ -178,6 +179,7 @@ class DefaultRemodexAppRepository(
     private var suppressBridgeScopedThreadsUntilNextSync = false
     private val reconnectCatchupJobByThread = mutableMapOf<String, Job>()
     private val initialPreferences = appPreferencesRepository.peekPreferences()
+    private var lastAppliedThreadHistoryPaginationStateByThread: Map<String, RemodexThreadHistoryPaginationState>? = null
     private val initialBaseThreads = run {
         threadCacheStore.setActiveProfileId(activeBridgeProfileId)
         val cachedThreads = threadCacheStore.peekThreads()
@@ -319,6 +321,7 @@ class DefaultRemodexAppRepository(
     init {
         appPreferencesRepository.setActiveBridgeProfileId(activeBridgeProfileId)
         threadCacheStore.setActiveProfileId(activeBridgeProfileId)
+        applyThreadHistoryPaginationStateToHydrationService(initialPreferences.threadHistoryPaginationStateByThread)
         syncActiveThreadHint(sessionState.value.selectedThreadId)
 
         repositoryScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -439,6 +442,7 @@ class DefaultRemodexAppRepository(
                 )
             }.collectLatest { inputs ->
                 val preferences = inputs.preferences
+                applyThreadHistoryPaginationStateToHydrationService(preferences.threadHistoryPaginationStateByThread)
                 val secureConnection = inputs.secureConnection
                 val baseThreads = bridgeScopedBaseThreads(baseThreadsState.value)
                 val resolvedAvailableModels = inputs.availableModels.takeIf(List<RemodexModelOption>::isNotEmpty)
@@ -2748,12 +2752,37 @@ class DefaultRemodexAppRepository(
             deferThreadListUpdate = shouldDeferThreadListUpdate,
         )
         persistThreadNamesFromThreads(projected.mergedBaseThreads)
+        persistThreadHistoryPaginationStatesFromSnapshots(snapshots)
         scheduleThreadCacheWrite(
             cachedThreads = projected.mergedBaseThreads
                 .map(RemodexThreadSummary::toCachedThreadRecord)
                 .sortedByDescending(CachedThreadRecord::lastUpdatedEpochMs),
             debounce = snapshots.any(ThreadSyncSnapshot::isRunning),
         )
+    }
+
+    private fun applyThreadHistoryPaginationStateToHydrationService(
+        statesByThreadId: Map<String, RemodexThreadHistoryPaginationState>,
+    ) {
+        if (lastAppliedThreadHistoryPaginationStateByThread == statesByThreadId) {
+            return
+        }
+        lastAppliedThreadHistoryPaginationStateByThread = statesByThreadId
+        hydrationService()?.setThreadHistoryPaginationStates(statesByThreadId)
+    }
+
+    private suspend fun persistThreadHistoryPaginationStatesFromSnapshots(snapshots: List<ThreadSyncSnapshot>) {
+        val current = preferencesState.value.threadHistoryPaginationStateByThread
+        snapshots.forEach { snapshot ->
+            val normalizedThreadId = snapshot.id.trim().takeIf(String::isNotEmpty) ?: return@forEach
+            val nextState = snapshot.historyPaginationState?.takeIf(::hasPersistableThreadHistoryPaginationState)
+            if (current[normalizedThreadId] != nextState) {
+                appPreferencesRepository.setThreadHistoryPaginationState(
+                    threadId = normalizedThreadId,
+                    state = nextState,
+                )
+            }
+        }
     }
 
     private suspend fun clearThreadsForExplicitDisconnect() {
@@ -3819,7 +3848,15 @@ private fun materializeThreads(
                 preferences = preferences,
                 availableModels = availableModels,
             )
-        }
+    }
+}
+
+private fun hasPersistableThreadHistoryPaginationState(
+    state: RemodexThreadHistoryPaginationState,
+): Boolean {
+    return state.olderCursor != null ||
+        state.exhaustedOlderCursor != null ||
+        state.hasAuthoritativeLocalHistoryStart
 }
 
 private fun projectThreadListSummaries(

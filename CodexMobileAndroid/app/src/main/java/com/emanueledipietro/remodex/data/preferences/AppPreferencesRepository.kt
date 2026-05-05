@@ -8,6 +8,7 @@ import com.emanueledipietro.remodex.model.RemodexAppFontStyle
 import com.emanueledipietro.remodex.model.RemodexRuntimeDefaults
 import com.emanueledipietro.remodex.model.RemodexRuntimeOverrides
 import com.emanueledipietro.remodex.model.RemodexServiceTier
+import com.emanueledipietro.remodex.model.RemodexThreadHistoryPaginationState
 import kotlinx.coroutines.flow.Flow
 
 interface AppPreferencesRepository {
@@ -34,6 +35,11 @@ interface AppPreferencesRepository {
     suspend fun setThreadName(
         threadId: String,
         name: String?,
+    )
+
+    suspend fun setThreadHistoryPaginationState(
+        threadId: String,
+        state: RemodexThreadHistoryPaginationState?,
     )
 
     suspend fun setAssociatedManagedWorktreePath(
